@@ -1,0 +1,63 @@
+# Development files
+.git/
+.github/
+.vscode/
+.idea/
+
+# Source files (published in package)
+# src/
+# cpp/
+# ios/
+# android/
+
+# Test files
+__tests__/
+__mocks__/
+__fixtures__/
+*.test.ts
+*.test.tsx
+*.spec.ts
+*.spec.tsx
+
+# Config files
+.eslintrc*
+.prettierrc*
+tsconfig.json
+tsconfig.build.json
+jest.config.js
+babel.config.js
+
+# Build scripts (kept for users who want to rebuild)
+# scripts/
+
+# Examples
+example/
+examples/
+
+# Documentation source
+docs/
+
+# CI/CD
+.circleci/
+.travis.yml
+.github/
+
+# IDE
+*.iml
+.idea/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Logs
+*.log
+
+# TypeScript cache
+*.tsbuildinfo
+
+# Built lib is included
+# lib/
+
+# Prebuilt FFmpeg libraries should be included
+# prebuilt/

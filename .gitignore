@@ -1,0 +1,39 @@
+# Dependencies
+node_modules/
+
+# Build outputs
+lib/
+*.tgz
+
+# IDE
+.idea/
+.vscode/
+*.iml
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Debug
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+
+# TypeScript
+*.tsbuildinfo
+
+# iOS
+ios/build/
+ios/Pods/
+*.xcworkspace
+*.xcuserdata
+
+# Android
+android/build/
+android/.gradle/
+android/.cxx/
+local.properties
+
+# Prebuilt binaries (should be committed for distribution)
+# prebuilt/

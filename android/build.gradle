@@ -1,0 +1,100 @@
+buildscript {
+    repositories {
+        google()
+        mavenCentral()
+    }
+
+    dependencies {
+        classpath 'com.android.tools.build:gradle:7.4.2'
+    }
+}
+
+def isNewArchitectureEnabled() {
+    return rootProject.hasProperty("newArchEnabled") && rootProject.getProperty("newArchEnabled") == "true"
+}
+
+apply plugin: 'com.android.library'
+
+def getExtOrDefault(name, defaultValue) {
+    return rootProject.ext.has(name) ? rootProject.ext.get(name) : defaultValue
+}
+
+android {
+    namespace "com.danielkpl2.webmalphaplayer"
+    compileSdkVersion getExtOrDefault('compileSdkVersion', 34)
+
+    defaultConfig {
+        minSdkVersion getExtOrDefault('minSdkVersion', 21)
+        targetSdkVersion getExtOrDefault('targetSdkVersion', 34)
+        buildConfigField "boolean", "IS_NEW_ARCHITECTURE_ENABLED", isNewArchitectureEnabled().toString()
+
+        externalNativeBuild {
+            cmake {
+                cppFlags "-std=c++17 -frtti -fexceptions -O3"
+                abiFilters 'armeabi-v7a', 'arm64-v8a', 'x86_64'
+                
+                arguments "-DANDROID_STL=c++_shared",
+                          "-DFFMPEG_ROOT=${project.projectDir}/../prebuilt/android"
+            }
+        }
+    }
+
+    externalNativeBuild {
+        cmake {
+            path "src/main/cpp/CMakeLists.txt"
+            version "3.22.1"
+        }
+    }
+
+    buildTypes {
+        release {
+            minifyEnabled false
+        }
+    }
+
+    compileOptions {
+        sourceCompatibility JavaVersion.VERSION_1_8
+        targetCompatibility JavaVersion.VERSION_1_8
+    }
+
+    sourceSets {
+        main {
+            java.srcDirs = ['src/main/java']
+            jniLibs.srcDirs = ['../prebuilt/android']
+        }
+    }
+}
+
+repositories {
+    mavenCentral()
+    google()
+}
+
+dependencies {
+    implementation "com.facebook.react:react-native:+"
+}
+
+// Publishing configuration - only applied when publishing task is invoked
+// Use: ./gradlew publish OR ./gradlew -b android/publish.gradle publish
+if (project.hasProperty('publishStandalone')) {
+    apply plugin: 'maven-publish'
+    
+    afterEvaluate {
+        publishing {
+            publications {
+                release(MavenPublication) {
+                    from components.release
+                    groupId = 'com.danielkpl2'
+                    artifactId = 'webm-alpha-player-android'
+                    version = '1.0.0'
+                }
+            }
+            repositories {
+                maven {
+                    name = 'local'
+                    url = uri("${rootProject.projectDir}/../dist/android")
+                }
+            }
+        }
+    }
+}

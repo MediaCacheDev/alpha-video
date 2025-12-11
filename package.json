@@ -1,0 +1,113 @@
+{
+  "name": "react-native-webm-alpha-player",
+  "version": "1.0.0",
+  "description": "High-performance WebM VP9 video player with alpha transparency support for React Native. Features a C++ core with FFmpeg/libvpx, Metal rendering on iOS, and OpenGL ES on Android.",
+  "main": "lib/commonjs/index.js",
+  "module": "lib/module/index.js",
+  "types": "lib/typescript/src/index.d.ts",
+  "files": [
+    "src",
+    "lib",
+    "cpp",
+    "ios",
+    "android",
+    "scripts",
+    "prebuilt",
+    "RNWebMAlphaPlayer.podspec",
+    "react-native.config.js",
+    "!**/__tests__",
+    "!**/__fixtures__",
+    "!**/__mocks__",
+    "!android/build",
+    "!ios/build",
+    "!.DS_Store"
+  ],
+  "scripts": {
+    "build": "bob build",
+    "typescript": "tsc --noEmit",
+    "lint": "eslint \"**/*.{js,ts,tsx}\"",
+    "prepare": "bob build",
+    "prepack": "bob build",
+    "build:ffmpeg:ios": "cd scripts && ./build_ffmpeg_ios.sh",
+    "build:ffmpeg:ios:device": "cd scripts && ./build_ffmpeg_ios_device.sh",
+    "build:ffmpeg:ios:simulator": "cd scripts && ./build_ffmpeg_ios_simulator.sh",
+    "build:ffmpeg:android": "cd scripts && ./build_ffmpeg_android.sh",
+    "build:ffmpeg:all": "npm run build:ffmpeg:ios && npm run build:ffmpeg:android",
+    "build:android:aar": "cd scripts && ./build_android_aar.sh",
+    "build:ios:framework": "cd scripts && ./build_ios_framework.sh",
+    "build:standalone:all": "npm run build:android:aar && npm run build:ios:framework"
+  },
+  "keywords": [
+    "react-native",
+    "webm",
+    "vp9",
+    "alpha",
+    "transparency",
+    "video",
+    "player",
+    "ffmpeg",
+    "ios",
+    "android",
+    "web",
+    "react-native-web",
+    "metal",
+    "opengl"
+  ],
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/danielkpl2/react-native-webm-alpha-player.git"
+  },
+  "author": "danielkpl2",
+  "license": "LGPL-2.1-or-later",
+  "bugs": {
+    "url": "https://github.com/danielkpl2/react-native-webm-alpha-player/issues"
+  },
+  "homepage": "https://github.com/danielkpl2/react-native-webm-alpha-player#readme",
+  "publishConfig": {
+    "registry": "https://registry.npmjs.org/"
+  },
+  "devDependencies": {
+    "@babel/preset-env": "^7.28.5",
+    "@babel/preset-react": "^7.28.5",
+    "@babel/preset-typescript": "^7.28.5",
+    "@types/react": "^18.2.0",
+    "@types/react-native": "^0.72.0",
+    "react": "^18.2.0",
+    "react-native": "^0.73.0",
+    "react-native-builder-bob": "^0.23.0",
+    "typescript": "^5.0.0"
+  },
+  "peerDependencies": {
+    "react": "*",
+    "react-native": "*"
+  },
+  "peerDependenciesMeta": {
+    "react-native-web": {
+      "optional": true
+    }
+  },
+  "react-native-builder-bob": {
+    "source": "src",
+    "output": "lib",
+    "targets": [
+      [
+        "commonjs",
+        {
+          "configFile": true
+        }
+      ],
+      [
+        "module",
+        {
+          "configFile": true
+        }
+      ],
+      [
+        "typescript",
+        {
+          "project": "tsconfig.build.json"
+        }
+      ]
+    ]
+  }
+}

@@ -1,0 +1,1396 @@
+/**
+ * WebMAlphaPlayer.cpp
+ * High-performance VP9+Alpha WebM player implementation
+ * 
+ * Uses FFmpeg C API directly for maximum performance.
+ * No dependency on platform-specific wrappers.
+ */
+
+#include "WebMAlphaPlayer.h"
+
+extern "C" {
+#include <libavcodec/avcodec.h>
+#include <libavformat/avformat.h>
+#include <libavutil/avutil.h>
+#include <libavutil/imgutils.h>
+#include <libavutil/opt.h>
+#include <libswscale/swscale.h>
+}
+
+#include <chrono>
+#include <cstring>
+#include <algorithm>
+#include <fstream>
+
+#ifdef __APPLE__
+#include <sys/mman.h>
+#include <sys/stat.h>
+#include <fcntl.h>
+#include <unistd.h>
+#include <stdio.h>
+#define LOG_TAG "WebMAlphaPlayer"
+#define LOGI(...) do { fprintf(stderr, "[%s] ", LOG_TAG); fprintf(stderr, __VA_ARGS__); fprintf(stderr, "\n"); fflush(stderr); } while(0)
+#define LOGE(...) do { fprintf(stderr, "[%s ERROR] ", LOG_TAG); fprintf(stderr, __VA_ARGS__); fprintf(stderr, "\n"); fflush(stderr); } while(0)
+#elif defined(__ANDROID__)
+#include <sys/mman.h>
+#include <sys/stat.h>
+#include <fcntl.h>
+#include <unistd.h>
+#include <android/log.h>
+#define LOG_TAG "WebMAlphaPlayer"
+#define LOGI(...) __android_log_print(ANDROID_LOG_INFO, LOG_TAG, __VA_ARGS__)
+#define LOGE(...) __android_log_print(ANDROID_LOG_ERROR, LOG_TAG, __VA_ARGS__)
+#else
+// Desktop/other platforms
+#include <sys/mman.h>
+#include <sys/stat.h>
+#include <fcntl.h>
+#include <unistd.h>
+#endif
+
+#if !defined(LOGI)
+#define LOGI(...) printf(__VA_ARGS__); printf("\n")
+#endif
+#if !defined(LOGE)
+#define LOGE(...) fprintf(stderr, __VA_ARGS__); fprintf(stderr, "\n")
+#endif
+
+namespace webm {
+
+// Static initialization flag
+static std::once_flag ffmpegInitFlag;
+static bool ffmpegInitialized = false;
+
+//==============================================================================
+// Memory buffer context for custom AVIO reading
+//==============================================================================
+
+struct MemoryBufferContext {
+    const uint8_t* data;
+    size_t size;
+    size_t pos;
+};
+
+// Custom read callback for memory buffer
+static int memoryReadPacket(void* opaque, uint8_t* buf, int buf_size) {
+    MemoryBufferContext* ctx = static_cast<MemoryBufferContext*>(opaque);
+    if (!ctx || !ctx->data) return AVERROR(EINVAL);
+    
+    size_t remaining = ctx->size - ctx->pos;
+    if (remaining == 0) return AVERROR_EOF;
+    
+    size_t toRead = std::min(static_cast<size_t>(buf_size), remaining);
+    memcpy(buf, ctx->data + ctx->pos, toRead);
+    ctx->pos += toRead;
+    
+    return static_cast<int>(toRead);
+}
+
+// Custom seek callback for memory buffer
+static int64_t memorySeek(void* opaque, int64_t offset, int whence) {
+    MemoryBufferContext* ctx = static_cast<MemoryBufferContext*>(opaque);
+    if (!ctx) return AVERROR(EINVAL);
+    
+    int64_t newPos;
+    switch (whence) {
+        case SEEK_SET:
+            newPos = offset;
+            break;
+        case SEEK_CUR:
+            newPos = static_cast<int64_t>(ctx->pos) + offset;
+            break;
+        case SEEK_END:
+            newPos = static_cast<int64_t>(ctx->size) + offset;
+            break;
+        case AVSEEK_SIZE:
+            return static_cast<int64_t>(ctx->size);
+        default:
+            return AVERROR(EINVAL);
+    }
+    
+    if (newPos < 0 || static_cast<size_t>(newPos) > ctx->size) {
+        return AVERROR(EINVAL);
+    }
+    
+    ctx->pos = static_cast<size_t>(newPos);
+    return newPos;
+}
+
+//==============================================================================
+// YUVAFrame Implementation
+//==============================================================================
+
+YUVAFrame::YUVAFrame()
+    : yPlane(nullptr), uPlane(nullptr), vPlane(nullptr), aPlane(nullptr)
+    , ySize(0), uSize(0), vSize(0), aSize(0)
+    , width(0), height(0), pts(0), timeBase(0.0), frameIndex(0)
+    , yStride(0), uvStride(0), aStride(0)
+{}
+
+YUVAFrame::~YUVAFrame() {
+    // Use av_freep for FFmpeg-aligned memory
+    if (yPlane) { av_freep(&yPlane); }
+    if (uPlane) { av_freep(&uPlane); }
+    if (vPlane) { av_freep(&vPlane); }
+    if (aPlane) { av_freep(&aPlane); }
+}
+
+YUVAFrame::YUVAFrame(YUVAFrame&& other) noexcept
+    : yPlane(other.yPlane), uPlane(other.uPlane)
+    , vPlane(other.vPlane), aPlane(other.aPlane)
+    , ySize(other.ySize), uSize(other.uSize)
+    , vSize(other.vSize), aSize(other.aSize)
+    , width(other.width), height(other.height)
+    , pts(other.pts), timeBase(other.timeBase)
+    , frameIndex(other.frameIndex)
+    , yStride(other.yStride), uvStride(other.uvStride), aStride(other.aStride)
+{
+    other.yPlane = nullptr;
+    other.uPlane = nullptr;
+    other.vPlane = nullptr;
+    other.aPlane = nullptr;
+}
+
+YUVAFrame& YUVAFrame::operator=(YUVAFrame&& other) noexcept {
+    if (this != &other) {
+        // Free existing memory
+        if (yPlane) { av_freep(&yPlane); }
+        if (uPlane) { av_freep(&uPlane); }
+        if (vPlane) { av_freep(&vPlane); }
+        if (aPlane) { av_freep(&aPlane); }
+        
+        // Move from other
+        yPlane = other.yPlane;
+        uPlane = other.uPlane;
+        vPlane = other.vPlane;
+        aPlane = other.aPlane;
+        ySize = other.ySize;
+        uSize = other.uSize;
+        vSize = other.vSize;
+        aSize = other.aSize;
+        width = other.width;
+        height = other.height;
+        pts = other.pts;
+        timeBase = other.timeBase;
+        frameIndex = other.frameIndex;
+        yStride = other.yStride;
+        uvStride = other.uvStride;
+        aStride = other.aStride;
+        
+        other.yPlane = nullptr;
+        other.uPlane = nullptr;
+        other.vPlane = nullptr;
+        other.aPlane = nullptr;
+    }
+    return *this;
+}
+
+bool YUVAFrame::allocate(int w, int h) {
+    width = w;
+    height = h;
+    
+    // Calculate sizes (YUV420 - UV planes are half resolution)
+    ySize = w * h;
+    uSize = (w / 2) * (h / 2);
+    vSize = (w / 2) * (h / 2);
+    aSize = w * h;
+    
+    yStride = w;
+    uvStride = w / 2;
+    aStride = w;
+    
+    // Use av_malloc for SIMD-aligned memory (32-byte alignment)
+    yPlane = static_cast<uint8_t*>(av_malloc(ySize));
+    uPlane = static_cast<uint8_t*>(av_malloc(uSize));
+    vPlane = static_cast<uint8_t*>(av_malloc(vSize));
+    aPlane = static_cast<uint8_t*>(av_malloc(aSize));
+    
+    return yPlane && uPlane && vPlane && aPlane;
+}
+
+// Static counter for logging - only log first frame
+static int copyFrameLogCount = 0;
+
+void YUVAFrame::copyFromAVFrame(AVFrame* colorFrame, AVFrame* alphaFrame) {
+    if (!colorFrame) return;
+    
+    // Safety check - ensure all planes are allocated
+    if (!yPlane || !uPlane || !vPlane || !aPlane) {
+        LOGE("copyFromAVFrame: plane buffers not allocated!");
+        return;
+    }
+    
+    // Log the pixel format for debugging (first frame only)
+    bool shouldLog = (copyFrameLogCount++ == 0);
+    if (shouldLog) {
+        LOGI("copyFromAVFrame: format=%d (YUVA420P=%d, YUV420P=%d), linesize[0]=%d, linesize[1]=%d, linesize[2]=%d, linesize[3]=%d, w=%d, h=%d",
+             colorFrame->format, AV_PIX_FMT_YUVA420P, AV_PIX_FMT_YUV420P,
+             colorFrame->linesize[0], colorFrame->linesize[1], colorFrame->linesize[2], colorFrame->linesize[3],
+             colorFrame->width, colorFrame->height);
+    }
+    
+    // Use actual frame dimensions (might differ from allocated)
+    int frameW = colorFrame->width;
+    int frameH = colorFrame->height;
+    
+    // Ensure we don't overflow our buffers
+    int copyW = std::min(frameW, width);
+    int copyH = std::min(frameH, height);
+    
+    // Copy Y plane (line by line to handle stride differences)
+    for (int y = 0; y < copyH; ++y) {
+        memcpy(yPlane + y * yStride, 
+               colorFrame->data[0] + y * colorFrame->linesize[0],
+               copyW);
+    }
+    
+    // Copy U plane (half resolution for YUV420)
+    int uvWidth = copyW / 2;
+    int uvHeight = copyH / 2;
+    for (int y = 0; y < uvHeight; ++y) {
+        memcpy(uPlane + y * uvStride,
+               colorFrame->data[1] + y * colorFrame->linesize[1],
+               uvWidth);
+    }
+    
+    // Copy V plane
+    for (int y = 0; y < uvHeight; ++y) {
+        memcpy(vPlane + y * uvStride,
+               colorFrame->data[2] + y * colorFrame->linesize[2],
+               uvWidth);
+    }
+    
+    // Handle alpha - check for YUVA420P format first (alpha in data[3] of same frame)
+    bool hasBuiltInAlpha = (colorFrame->format == AV_PIX_FMT_YUVA420P) && 
+                           colorFrame->data[3] && colorFrame->linesize[3] > 0;
+    
+    if (hasBuiltInAlpha) {
+        // YUVA420P - alpha is in the same frame's data[3]
+        if (shouldLog) {
+            LOGI("Using built-in alpha from YUVA420P frame, linesize[3]=%d, aStride=%d, copyW=%d, copyH=%d", 
+                 colorFrame->linesize[3], aStride, copyW, copyH);
+            // Log first row of alpha from source
+            uint8_t* srcAlpha = colorFrame->data[3];
+            LOGI("Source alpha row 0 bytes 0-7: %02x %02x %02x %02x %02x %02x %02x %02x",
+                 srcAlpha[0], srcAlpha[1], srcAlpha[2], srcAlpha[3],
+                 srcAlpha[4], srcAlpha[5], srcAlpha[6], srcAlpha[7]);
+            // Log middle of frame (where glow should be visible)
+            int midRow = copyH / 2;
+            int midCol = copyW / 2;
+            uint8_t* midAlpha = colorFrame->data[3] + midRow * colorFrame->linesize[3] + midCol;
+            LOGI("Source alpha center (row %d, col %d): %02x %02x %02x %02x",
+                 midRow, midCol, midAlpha[0], midAlpha[1], midAlpha[2], midAlpha[3]);
+        }
+        for (int y = 0; y < copyH; ++y) {
+            memcpy(aPlane + y * aStride,
+                   colorFrame->data[3] + y * colorFrame->linesize[3],
+                   copyW);
+        }
+    } else if (alphaFrame && alphaFrame->data[0]) {
+        // Separate alpha frame (two-stream WebM)
+        int alphaW = std::min(alphaFrame->width, width);
+        int alphaH = std::min(alphaFrame->height, height);
+        for (int y = 0; y < alphaH; ++y) {
+            memcpy(aPlane + y * aStride,
+                   alphaFrame->data[0] + y * alphaFrame->linesize[0],
+                   alphaW);
+        }
+    } else {
+        // No alpha - fill with opaque (255)
+        memset(aPlane, 255, aSize);
+    }
+}
+
+double YUVAFrame::getDurationMs() const {
+    if (timeBase > 0) {
+        return (pts * timeBase) * 1000.0;
+    }
+    return 0.0;
+}
+
+//==============================================================================
+// FrameCache Implementation
+//==============================================================================
+
+FrameCache::FrameCache(size_t maxFrames) : maxSize_(maxFrames) {
+    LOGI("🗄️ FrameCache created with maxSize=%zu", maxSize_);
+}
+
+void FrameCache::put(const std::string& key, std::shared_ptr<YUVAFrame> frame) {
+    std::lock_guard<std::mutex> lock(mutex_);
+    
+    auto it = lruMap_.find(key);
+    if (it != lruMap_.end()) {
+        // Key exists - update and move to front
+        cache_[key] = frame;
+        lruList_.erase(it->second);
+        lruList_.push_front(key);
+        lruMap_[key] = lruList_.begin();
+    } else {
+        // New key - insert
+        if (cache_.size() >= maxSize_) {
+            LOGI("⚠️ Cache full (%zu >= %zu), evicting oldest before adding %s", 
+                 cache_.size(), maxSize_, key.c_str());
+            evictOldest();
+        }
+        cache_[key] = frame;
+        lruList_.push_front(key);
+        lruMap_[key] = lruList_.begin();
+        
+        // Log cache size periodically during preload
+        if (cache_.size() % 50 == 0) {
+            LOGI("📊 Cache now has %zu frames (max=%zu)", cache_.size(), maxSize_);
+        }
+    }
+}
+
+std::shared_ptr<YUVAFrame> FrameCache::get(const std::string& key) {
+    std::lock_guard<std::mutex> lock(mutex_);
+    
+    auto it = cache_.find(key);
+    if (it == cache_.end()) {
+        return nullptr;
+    }
+    
+    // Move to front (most recently used)
+    auto lruIt = lruMap_[key];
+    lruList_.erase(lruIt);
+    lruList_.push_front(key);
+    lruMap_[key] = lruList_.begin();
+    
+    return it->second;
+}
+
+void FrameCache::clear() {
+    std::lock_guard<std::mutex> lock(mutex_);
+    cache_.clear();
+    lruList_.clear();
+    lruMap_.clear();
+}
+
+size_t FrameCache::size() const {
+    std::lock_guard<std::mutex> lock(const_cast<std::mutex&>(mutex_));
+    return cache_.size();
+}
+
+void FrameCache::evictOldest() {
+    if (lruList_.empty()) return;
+    
+    std::string oldestKey = lruList_.back();
+    lruList_.pop_back();
+    lruMap_.erase(oldestKey);
+    cache_.erase(oldestKey);
+}
+
+//==============================================================================
+// DecoderStats Implementation
+//==============================================================================
+
+double DecoderStats::getAverageDecodeTimeMs() const {
+    if (framesDecoded == 0) return 0.0;
+    return static_cast<double>(decodeTimeUs) / framesDecoded / 1000.0;
+}
+
+double DecoderStats::getCacheHitRate() const {
+    int64_t total = cacheHits + cacheMisses;
+    if (total == 0) return 0.0;
+    return static_cast<double>(cacheHits) / total * 100.0;
+}
+
+void DecoderStats::reset() {
+    framesDecoded = 0;
+    framesCached = 0;
+    cacheHits = 0;
+    cacheMisses = 0;
+    decodeTimeUs = 0;
+    peakMemoryBytes = 0;
+}
+
+//==============================================================================
+// WebMAlphaPlayer Implementation
+//==============================================================================
+
+WebMAlphaPlayer::WebMAlphaPlayer() {
+    initializeFFmpeg();
+    frameCache_ = std::make_unique<FrameCache>(config_.cacheSize);
+}
+
+WebMAlphaPlayer::~WebMAlphaPlayer() {
+    unload();
+}
+
+void WebMAlphaPlayer::setConfig(const PlayerConfig& config) {
+    std::lock_guard<std::mutex> lock(configMutex_);
+    LOGI("⚙️ setConfig called: cacheSize=%d, preloadAllFrames=%d", config.cacheSize, config.preloadAllFrames);
+    
+    // Check if cache size is actually changing
+    size_t oldCacheSize = config_.cacheSize;
+    config_ = config;
+    
+    // Only recreate cache if size changed AND cache is empty
+    // This preserves preloaded frames from decodeAllFrames()
+    if (frameCache_) {
+        size_t currentCacheFrames = frameCache_->size();
+        if (currentCacheFrames > 0) {
+            LOGI("⚙️ Preserving existing cache with %zu frames (not recreating)", currentCacheFrames);
+        } else if (config_.cacheSize != oldCacheSize) {
+            LOGI("⚙️ Recreating empty cache: %zu -> %d", oldCacheSize, config_.cacheSize);
+            frameCache_ = std::make_unique<FrameCache>(config_.cacheSize);
+        }
+    }
+}
+
+PlayerConfig WebMAlphaPlayer::getConfig() const {
+    std::lock_guard<std::mutex> lock(configMutex_);
+    return config_;
+}
+
+bool WebMAlphaPlayer::loadFromFile(const std::string& path) {
+    unload();
+    
+    // Reset stop flag so decodeAllFrames doesn't exit immediately
+    shouldStop_ = false;
+    
+    // Use FFmpeg's native file handling - it's optimized and handles cleanup properly
+    formatCtx_ = avformat_alloc_context();
+    if (!formatCtx_) {
+        emitEvent("error", "Failed to allocate format context");
+        return false;
+    }
+    
+    // Let FFmpeg handle file opening - it uses optimized I/O internally
+    int ret = avformat_open_input(&formatCtx_, path.c_str(), nullptr, nullptr);
+    
+    if (ret < 0) {
+        char err[AV_ERROR_MAX_STRING_SIZE];
+        av_strerror(ret, err, sizeof(err));
+        emitEvent("error", std::string("Failed to open file: ") + err);
+        return false;
+    }
+    
+    if (!openStreams()) {
+        return false;
+    }
+    
+    if (!initCodecs()) {
+        return false;
+    }
+    
+    loaded_ = true;
+    emitEvent("loaded", std::to_string(totalFrames_) + " frames");
+    
+    // Preload all frames if configured
+    if (config_.preloadAllFrames) {
+        decodeAllFrames();
+    }
+    
+    return true;
+}
+
+bool WebMAlphaPlayer::loadFromMemory(const uint8_t* data, size_t size) {
+    unload();
+    
+    // Reset stop flag so decodeAllFrames doesn't exit immediately
+    shouldStop_ = false;
+    
+    // Copy data (we need to own it)
+    mappedData_ = static_cast<uint8_t*>(av_malloc(size));
+    if (!mappedData_) {
+        emitEvent("error", "Failed to allocate memory for video data");
+        return false;
+    }
+    memcpy(mappedData_, data, size);
+    mappedSize_ = size;
+    useMmap_ = false;
+    
+    // Create memory buffer context for callbacks
+    MemoryBufferContext* memCtx = new MemoryBufferContext();
+    memCtx->data = mappedData_;
+    memCtx->size = mappedSize_;
+    memCtx->pos = 0;
+    bufferCtx_ = memCtx;
+    
+    // Allocate I/O buffer for FFmpeg (must be av_malloc'd, FFmpeg takes ownership)
+    const int ioBufferSize = 32768;  // 32KB buffer
+    avioBuffer_ = static_cast<uint8_t*>(av_malloc(ioBufferSize));
+    if (!avioBuffer_) {
+        emitEvent("error", "Failed to allocate I/O buffer");
+        return false;
+    }
+    
+    // Create custom AVIOContext with read callback
+    avioCtx_ = avio_alloc_context(
+        avioBuffer_, ioBufferSize,
+        0,              // write_flag = 0 (read only)
+        memCtx,         // opaque context
+        memoryReadPacket, // read callback
+        nullptr,        // write callback (not needed)
+        memorySeek      // seek callback
+    );
+    
+    if (!avioCtx_) {
+        emitEvent("error", "Failed to create AVIO context");
+        return false;
+    }
+    
+    // Create format context
+    formatCtx_ = avformat_alloc_context();
+    if (!formatCtx_) {
+        emitEvent("error", "Failed to allocate format context");
+        return false;
+    }
+    
+    formatCtx_->pb = avioCtx_;
+    formatCtx_->flags |= AVFMT_FLAG_CUSTOM_IO;
+    
+    int ret = avformat_open_input(&formatCtx_, nullptr, nullptr, nullptr);
+    if (ret < 0) {
+        char err[AV_ERROR_MAX_STRING_SIZE];
+        av_strerror(ret, err, sizeof(err));
+        emitEvent("error", std::string("Failed to open video: ") + err);
+        return false;
+    }
+    
+    if (!openStreams() || !initCodecs()) {
+        return false;
+    }
+    
+    loaded_ = true;
+    
+    if (config_.preloadAllFrames) {
+        decodeAllFrames();
+    }
+    
+    return true;
+}
+
+bool WebMAlphaPlayer::loadFromUrl(const std::string& url) {
+    // FFmpeg supports HTTP/HTTPS URLs directly
+    unload();
+    
+    // Reset stop flag so decodeAllFrames doesn't exit immediately
+    shouldStop_ = false;
+    
+    formatCtx_ = avformat_alloc_context();
+    if (!formatCtx_) {
+        emitEvent("error", "Failed to allocate format context");
+        return false;
+    }
+    
+    // Set network options
+    AVDictionary* opts = nullptr;
+    av_dict_set(&opts, "timeout", "10000000", 0);  // 10 second timeout
+    av_dict_set(&opts, "reconnect", "1", 0);
+    av_dict_set(&opts, "reconnect_streamed", "1", 0);
+    
+    int ret = avformat_open_input(&formatCtx_, url.c_str(), nullptr, &opts);
+    av_dict_free(&opts);
+    
+    if (ret < 0) {
+        char err[AV_ERROR_MAX_STRING_SIZE];
+        av_strerror(ret, err, sizeof(err));
+        emitEvent("error", std::string("Failed to open URL: ") + err);
+        return false;
+    }
+    
+    if (!openStreams() || !initCodecs()) {
+        return false;
+    }
+    
+    loaded_ = true;
+    
+    if (config_.preloadAllFrames) {
+        decodeAllFrames();
+    }
+    
+    return true;
+}
+
+void WebMAlphaPlayer::unload() {
+    stop();
+    
+    // Wait for any in-progress decode operations (including synchronous decodeAllFrames)
+    // Use a timeout to prevent ANR - if decode is stuck, shouldStop_ flag should
+    // eventually cause it to exit. We proceed with cleanup after timeout.
+    {
+        // Try to acquire lock with 500ms timeout - enough for normal operations,
+        // but short enough to not cause ANR (5 second threshold)
+        if (!decodeMutex_.try_lock_for(std::chrono::milliseconds(500))) {
+            LOGI("unload: decodeMutex_ acquisition timed out after 500ms - proceeding anyway");
+            // shouldStop_ is already set, decodeAllFrames will exit when it checks
+        } else {
+            // Lock acquired normally - immediately release since we just needed to wait
+            decodeMutex_.unlock();
+        }
+    }
+    
+    // Wait for threads to finish
+    if (decodeThread_ && decodeThread_->joinable()) {
+        decodeThread_->join();
+    }
+    if (playbackThread_ && playbackThread_->joinable()) {
+        playbackThread_->join();
+    }
+    
+    decodeThread_.reset();
+    playbackThread_.reset();
+    
+    closeCodecs();
+    
+    if (formatCtx_) {
+        avformat_close_input(&formatCtx_);
+        formatCtx_ = nullptr;
+    }
+    
+    // Clean up custom I/O context (must be done AFTER closing format context)
+    cleanupIO();
+    
+    unmapFile();
+    
+    if (frameCache_) {
+        frameCache_->clear();
+    }
+    
+    width_ = height_ = totalFrames_ = 0;
+    duration_ = frameRate_ = 0.0;
+    colorStreamIndex_ = alphaStreamIndex_ = -1;
+    loaded_ = false;
+    currentFrame_ = 0;
+}
+
+void WebMAlphaPlayer::cleanupIO() {
+    // Clean up AVIO context (buffer is NOT freed by avio_context_free if we allocated it)
+    if (avioCtx_) {
+        // Note: avioBuffer_ was passed to avio_alloc_context and may have been freed
+        // by avformat_close_input, or may be still held. We set it to null to be safe.
+        // The buffer is managed by FFmpeg after avio_alloc_context is called.
+        av_freep(&avioCtx_->buffer);  // Free buffer if FFmpeg didn't
+        avio_context_free(&avioCtx_);
+        avioCtx_ = nullptr;
+    }
+    avioBuffer_ = nullptr;  // Was freed above or by FFmpeg
+    
+    // Clean up our custom buffer context
+    if (bufferCtx_) {
+        delete static_cast<MemoryBufferContext*>(bufferCtx_);
+        bufferCtx_ = nullptr;
+    }
+}
+
+bool WebMAlphaPlayer::openStreams() {
+    int ret = avformat_find_stream_info(formatCtx_, nullptr);
+    if (ret < 0) {
+        emitEvent("error", "Failed to find stream info");
+        return false;
+    }
+    
+    // Log stream info
+    LOGI("Found %d streams in file", formatCtx_->nb_streams);
+    
+    // Find video streams (WebM alpha might have 2 video streams, or 1 YUVA420P stream)
+    for (unsigned i = 0; i < formatCtx_->nb_streams; ++i) {
+        AVStream* stream = formatCtx_->streams[i];
+        LOGI("Stream %d: type=%d (video=%d), codec_id=%d", 
+             i, stream->codecpar->codec_type, AVMEDIA_TYPE_VIDEO, stream->codecpar->codec_id);
+        if (stream->codecpar->codec_type == AVMEDIA_TYPE_VIDEO) {
+            LOGI("  -> Video stream %d: codec_id=%d, pix_fmt=%d, %dx%d", 
+                 i, stream->codecpar->codec_id, stream->codecpar->format,
+                 stream->codecpar->width, stream->codecpar->height);
+            if (colorStreamIndex_ < 0) {
+                colorStreamIndex_ = i;
+            } else if (alphaStreamIndex_ < 0) {
+                alphaStreamIndex_ = i;
+            }
+        }
+    }
+    
+    if (colorStreamIndex_ < 0) {
+        emitEvent("error", "No video stream found");
+        return false;
+    }
+    
+    LOGI("Using colorStreamIndex=%d, alphaStreamIndex=%d", colorStreamIndex_, alphaStreamIndex_);
+    
+    // Check for alpha side data in the stream
+    AVStream* colorStream = formatCtx_->streams[colorStreamIndex_];
+    
+    // Log codec parameters
+    LOGI("Codec params: codec_id=%d, format=%d, profile=%d, level=%d",
+         colorStream->codecpar->codec_id,
+         colorStream->codecpar->format,
+         colorStream->codecpar->profile,
+         colorStream->codecpar->level);
+    
+    // Check for VP9 alpha (BlockAdditional in WebM)
+    // VP9 Profile 1 or 3 can have alpha
+    bool mayHaveAlpha = (colorStream->codecpar->codec_id == AV_CODEC_ID_VP9);
+    if (mayHaveAlpha) {
+        LOGI("VP9 detected - checking for alpha capability");
+        LOGI("VP9 profile=%d (profile 1/3 support alpha in theory)", colorStream->codecpar->profile);
+    }
+    
+    // Check stream side data for alpha indication
+    for (int i = 0; i < colorStream->nb_side_data; i++) {
+        AVPacketSideData sd = colorStream->side_data[i];
+        LOGI("Stream side_data[%d]: type=%d, size=%d", i, sd.type, (int)sd.size);
+    }
+    width_ = colorStream->codecpar->width;
+    height_ = colorStream->codecpar->height;
+    
+    // Calculate frame rate
+    if (colorStream->avg_frame_rate.den > 0) {
+        frameRate_ = av_q2d(colorStream->avg_frame_rate);
+    } else if (colorStream->r_frame_rate.den > 0) {
+        frameRate_ = av_q2d(colorStream->r_frame_rate);
+    } else {
+        frameRate_ = 30.0;  // Default
+    }
+    
+    // Calculate duration
+    if (formatCtx_->duration > 0) {
+        duration_ = static_cast<double>(formatCtx_->duration) / AV_TIME_BASE;
+    } else if (colorStream->duration > 0) {
+        timeBase_ = av_q2d(colorStream->time_base);
+        duration_ = colorStream->duration * timeBase_;
+    }
+    
+    // Estimate total frames
+    totalFrames_ = static_cast<int>(duration_ * frameRate_);
+    if (totalFrames_ <= 0) {
+        totalFrames_ = colorStream->nb_frames > 0 ? colorStream->nb_frames : 100;
+    }
+    
+    timeBase_ = av_q2d(colorStream->time_base);
+    
+    return true;
+}
+
+bool WebMAlphaPlayer::initCodecs() {
+    // Find VP9 decoder (prefer libvpx-vp9 for alpha support)
+    const AVCodec* vp9Codec = avcodec_find_decoder_by_name("libvpx-vp9");
+    if (!vp9Codec) {
+        LOGI("libvpx-vp9 not found, falling back to generic VP9 decoder");
+        vp9Codec = avcodec_find_decoder(AV_CODEC_ID_VP9);
+    } else {
+        LOGI("Using libvpx-vp9 decoder (supports alpha)");
+    }
+    
+    if (!vp9Codec) {
+        emitEvent("error", "VP9 codec not found");
+        return false;
+    }
+    
+    LOGI("VP9 decoder: name=%s, id=%d, capabilities=0x%x", 
+         vp9Codec->name, vp9Codec->id, vp9Codec->capabilities);
+    
+    // List supported pixel formats for the decoder
+    if (vp9Codec->pix_fmts) {
+        LOGI("VP9 decoder supported pixel formats:");
+        for (int i = 0; vp9Codec->pix_fmts[i] != AV_PIX_FMT_NONE; i++) {
+            LOGI("  pix_fmt[%d] = %d (YUVA420P=%d, YUV420P=%d)", 
+                 i, vp9Codec->pix_fmts[i], AV_PIX_FMT_YUVA420P, AV_PIX_FMT_YUV420P);
+        }
+    } else {
+        LOGI("VP9 decoder has no pix_fmts list (accepts any)");
+    }
+    
+    // Init color codec
+    colorCodecCtx_ = avcodec_alloc_context3(vp9Codec);
+    if (!colorCodecCtx_) {
+        emitEvent("error", "Failed to allocate color codec context");
+        return false;
+    }
+    
+    AVStream* colorStream = formatCtx_->streams[colorStreamIndex_];
+    avcodec_parameters_to_context(colorCodecCtx_, colorStream->codecpar);
+    
+    // Set threading options
+    colorCodecCtx_->thread_count = config_.decodeThreads;
+    colorCodecCtx_->thread_type = FF_THREAD_FRAME | FF_THREAD_SLICE;
+    
+    // Note: We do NOT set pix_fmt before opening the codec.
+    // libvpx-vp9 will automatically detect alpha from BlockAdditional data
+    // and output YUVA420P if alpha is present, or YUV420P if not.
+    // Setting pix_fmt beforehand can cause crashes on some devices.
+    
+    if (avcodec_open2(colorCodecCtx_, vp9Codec, nullptr) < 0) {
+        emitEvent("error", "Failed to open color codec");
+        return false;
+    }
+    
+    // Log the pixel format the codec will output
+    LOGI("Codec opened - pix_fmt=%d (YUVA420P=%d, YUV420P=%d)", 
+         colorCodecCtx_->pix_fmt, AV_PIX_FMT_YUVA420P, AV_PIX_FMT_YUV420P);
+    
+    // Note: We don't create swscale context here anymore.
+    // The copyFromAVFrame function handles both YUVA420P (with alpha) and 
+    // YUV420P (filling alpha with 255) formats directly.
+    // swscale cannot create alpha data from a non-alpha source anyway.
+    
+    // Init alpha codec if present
+    if (alphaStreamIndex_ >= 0) {
+        alphaCodecCtx_ = avcodec_alloc_context3(vp9Codec);
+        if (!alphaCodecCtx_) {
+            emitEvent("error", "Failed to allocate alpha codec context");
+            return false;
+        }
+        
+        AVStream* alphaStream = formatCtx_->streams[alphaStreamIndex_];
+        avcodec_parameters_to_context(alphaCodecCtx_, alphaStream->codecpar);
+        
+        alphaCodecCtx_->thread_count = config_.decodeThreads;
+        alphaCodecCtx_->thread_type = FF_THREAD_FRAME | FF_THREAD_SLICE;
+        
+        if (avcodec_open2(alphaCodecCtx_, vp9Codec, nullptr) < 0) {
+            emitEvent("error", "Failed to open alpha codec");
+            return false;
+        }
+    }
+    
+    return true;
+}
+
+void WebMAlphaPlayer::closeCodecs() {
+    if (swsCtx_) {
+        sws_freeContext(swsCtx_);
+        swsCtx_ = nullptr;
+    }
+    if (swsFrame_) {
+        av_frame_free(&swsFrame_);
+        swsFrame_ = nullptr;
+    }
+    if (colorCodecCtx_) {
+        avcodec_free_context(&colorCodecCtx_);
+        colorCodecCtx_ = nullptr;
+    }
+    if (alphaCodecCtx_) {
+        avcodec_free_context(&alphaCodecCtx_);
+        alphaCodecCtx_ = nullptr;
+    }
+}
+
+std::shared_ptr<YUVAFrame> WebMAlphaPlayer::decodeFrame(int index) {
+    // Check cache first (with null safety)
+    if (!frameCache_) {
+        return nullptr;
+    }
+    
+    std::string cacheKey = makeFrameKey(index);
+    auto cachedFrame = frameCache_->get(cacheKey);
+    if (cachedFrame) {
+        stats_.cacheHits++;
+        return cachedFrame;
+    }
+    stats_.cacheMisses++;
+    
+    // Acquire decode mutex - FFmpeg contexts are NOT thread-safe
+    // This prevents concurrent access during preload (decodeAllFrames) or other decodes
+    std::lock_guard<std::timed_mutex> decodeLock(decodeMutex_);
+    
+    // Double-check cache after acquiring lock - another thread may have decoded this frame
+    cachedFrame = frameCache_->get(cacheKey);
+    if (cachedFrame) {
+        stats_.cacheHits++;
+        return cachedFrame;
+    }
+    
+    auto startTime = std::chrono::high_resolution_clock::now();
+    
+    // Seek to frame position
+    int64_t timestamp = static_cast<int64_t>(index / frameRate_ / timeBase_);
+    av_seek_frame(formatCtx_, colorStreamIndex_, timestamp, AVSEEK_FLAG_BACKWARD);
+    
+    // Flush decoder buffers after seek
+    avcodec_flush_buffers(colorCodecCtx_);
+    if (alphaCodecCtx_) {
+        avcodec_flush_buffers(alphaCodecCtx_);
+    }
+    
+    AVPacket* packet = av_packet_alloc();
+    AVFrame* colorFrame = av_frame_alloc();
+    AVFrame* alphaFrame = av_frame_alloc();
+    
+    std::shared_ptr<YUVAFrame> result;
+    int currentDecodedFrame = -1;
+    
+    while (av_read_frame(formatCtx_, packet) >= 0 && !shouldStop_) {
+        if (packet->stream_index == colorStreamIndex_) {
+            int ret = avcodec_send_packet(colorCodecCtx_, packet);
+            if (ret >= 0) {
+                ret = avcodec_receive_frame(colorCodecCtx_, colorFrame);
+                if (ret >= 0) {
+                    currentDecodedFrame++;
+                    
+                    if (currentDecodedFrame >= index) {
+                        // This is the frame we want - use actual decoded dimensions
+                        int frameW = colorFrame->width;
+                        int frameH = colorFrame->height;
+                        
+                        result = std::make_shared<YUVAFrame>();
+                        if (!result->allocate(frameW, frameH)) {
+                            LOGE("Failed to allocate frame buffer for %dx%d", frameW, frameH);
+                            result.reset();
+                            break;
+                        }
+                        result->frameIndex = index;
+                        result->pts = colorFrame->pts;
+                        result->timeBase = timeBase_;
+                        result->copyFromAVFrame(colorFrame, alphaFrame);
+                        
+                        break;
+                    }
+                }
+            }
+        } else if (packet->stream_index == alphaStreamIndex_ && alphaCodecCtx_) {
+            avcodec_send_packet(alphaCodecCtx_, packet);
+            avcodec_receive_frame(alphaCodecCtx_, alphaFrame);
+        }
+        
+        av_packet_unref(packet);
+    }
+    
+    av_packet_free(&packet);
+    av_frame_free(&colorFrame);
+    av_frame_free(&alphaFrame);
+    
+    auto endTime = std::chrono::high_resolution_clock::now();
+    auto duration = std::chrono::duration_cast<std::chrono::microseconds>(endTime - startTime);
+    stats_.decodeTimeUs += duration.count();
+    stats_.framesDecoded++;
+    
+    // Cache the frame (with null safety)
+    if (result && frameCache_ && !shouldStop_) {
+        frameCache_->put(cacheKey, result);
+        stats_.framesCached++;
+    }
+    
+    return result;
+}
+
+void WebMAlphaPlayer::decodeAllFrames() {
+    // Hold decode mutex for the entire operation - unload() will wait for this
+    std::lock_guard<std::timed_mutex> decodeLock(decodeMutex_);
+    
+    // Check if we should stop before starting (unload might have been called)
+    if (shouldStop_) {
+        LOGI("decodeAllFrames: Aborted - shouldStop_ already set");
+        return;
+    }
+    
+    emitEvent("preload_start", std::to_string(totalFrames_) + " frames");
+    
+    // Ensure cache can hold all frames
+    if (totalFrames_ > config_.cacheSize) {
+        LOGI("Resizing frame cache from %d to %d to fit all frames", config_.cacheSize, totalFrames_ + 10);
+        config_.cacheSize = totalFrames_ + 10;
+        frameCache_ = std::make_unique<FrameCache>(config_.cacheSize);
+    }
+    
+    auto startTime = std::chrono::high_resolution_clock::now();
+    
+    // Reset to beginning
+    av_seek_frame(formatCtx_, colorStreamIndex_, 0, AVSEEK_FLAG_BACKWARD);
+    avcodec_flush_buffers(colorCodecCtx_);
+    if (alphaCodecCtx_) {
+        avcodec_flush_buffers(alphaCodecCtx_);
+    }
+    
+    AVPacket* packet = av_packet_alloc();
+    AVFrame* colorFrame = av_frame_alloc();
+    AVFrame* alphaFrame = av_frame_alloc();
+    
+    int frameIndex = 0;
+    int alphaFrameIndex = 0;  // Track alpha frames separately (NOT static!)
+    bool hasMoreColorFrames = true;
+    bool hasMoreAlphaFrames = (alphaCodecCtx_ != nullptr);
+    
+    while ((hasMoreColorFrames || hasMoreAlphaFrames) && !shouldStop_) {
+        int ret = av_read_frame(formatCtx_, packet);
+        if (ret < 0) {
+            // End of file or error - flush decoders
+            avcodec_send_packet(colorCodecCtx_, nullptr);
+            if (alphaCodecCtx_) {
+                avcodec_send_packet(alphaCodecCtx_, nullptr);
+            }
+            
+            while (avcodec_receive_frame(colorCodecCtx_, colorFrame) >= 0 && !shouldStop_) {
+                int frameW = colorFrame->width;
+                int frameH = colorFrame->height;
+                
+                auto yuvFrame = std::make_shared<YUVAFrame>();
+                if (!yuvFrame->allocate(frameW, frameH)) {
+                    LOGE("Failed to allocate frame buffer for %dx%d during flush", frameW, frameH);
+                    continue;
+                }
+                yuvFrame->frameIndex = frameIndex;
+                yuvFrame->pts = colorFrame->pts;
+                yuvFrame->timeBase = timeBase_;
+                
+                // Try to get matching alpha frame
+                if (alphaCodecCtx_) {
+                    avcodec_receive_frame(alphaCodecCtx_, alphaFrame);
+                }
+                
+                // copyFromAVFrame handles both YUVA420P (with alpha) and YUV420P (fills alpha with 255)
+                yuvFrame->copyFromAVFrame(colorFrame, alphaFrame);
+                
+                // Check before cache access - unload() may have been called
+                if (shouldStop_ || !frameCache_) {
+                    break;
+                }
+                frameCache_->put(makeFrameKey(frameIndex), yuvFrame);
+                
+                frameIndex++;
+                stats_.framesDecoded++;
+                stats_.framesCached++;
+            }
+            break;
+        }
+        
+        if (packet->stream_index == colorStreamIndex_) {
+            // Log packet side data for first packet only
+            if (frameIndex == 0) {
+                LOGI("Packet %d: size=%d, side_data_elems=%d", frameIndex, packet->size, packet->side_data_elems);
+                for (int sd = 0; sd < packet->side_data_elems; sd++) {
+                    LOGI("  Packet side_data[%d]: type=%d (BLOCKADDITIONAL=%d), size=%d", 
+                         sd, packet->side_data[sd].type, 
+                         AV_PKT_DATA_MATROSKA_BLOCKADDITIONAL,
+                         (int)packet->side_data[sd].size);
+                    if (packet->side_data[sd].type == AV_PKT_DATA_MATROSKA_BLOCKADDITIONAL) {
+                        LOGI("  -> Found VP9 alpha block additional data!");
+                    }
+                }
+            }
+            
+            ret = avcodec_send_packet(colorCodecCtx_, packet);
+            if (ret >= 0) {
+                while (avcodec_receive_frame(colorCodecCtx_, colorFrame) >= 0 && !shouldStop_) {
+                    // Use actual decoded frame dimensions
+                    int frameW = colorFrame->width;
+                    int frameH = colorFrame->height;
+                    
+                    // Log first frame's pixel format
+                    if (frameIndex == 0) {
+                        LOGI("First decoded frame: format=%d (YUVA420P=%d), linesize=[%d,%d,%d,%d], data[3]=%p, hasAlpha=%s",
+                             colorFrame->format, AV_PIX_FMT_YUVA420P,
+                             colorFrame->linesize[0], colorFrame->linesize[1], 
+                             colorFrame->linesize[2], colorFrame->linesize[3],
+                             (void*)colorFrame->data[3],
+                             (colorFrame->format == AV_PIX_FMT_YUVA420P && colorFrame->data[3]) ? "YES" : "NO");
+                    }
+                    
+                    // Update stored dimensions if needed
+                    if (frameIndex == 0) {
+                        width_ = frameW;
+                        height_ = frameH;
+                    }
+                    
+                    auto yuvFrame = std::make_shared<YUVAFrame>();
+                    if (!yuvFrame->allocate(frameW, frameH)) {
+                        LOGE("Failed to allocate frame buffer for %dx%d at frame %d", frameW, frameH, frameIndex);
+                        continue;
+                    }
+                    yuvFrame->frameIndex = frameIndex;
+                    yuvFrame->pts = colorFrame->pts;
+                    yuvFrame->timeBase = timeBase_;
+                    
+                    // copyFromAVFrame handles both YUVA420P (with alpha) and YUV420P (fills alpha with 255)
+                    yuvFrame->copyFromAVFrame(colorFrame, nullptr);
+                    
+                    // Check before cache access - unload() may have been called
+                    if (shouldStop_ || !frameCache_) {
+                        break;
+                    }
+                    
+                    // Store temporarily - alpha might come later
+                    frameCache_->put(makeFrameKey(frameIndex), yuvFrame);
+                    
+                    frameIndex++;
+                    stats_.framesDecoded++;
+                    stats_.framesCached++;
+                }
+            }
+        } else if (packet->stream_index == alphaStreamIndex_ && alphaCodecCtx_) {
+            ret = avcodec_send_packet(alphaCodecCtx_, packet);
+            if (ret >= 0) {
+                while (avcodec_receive_frame(alphaCodecCtx_, alphaFrame) >= 0 && !shouldStop_) {
+                    // Log first alpha frame
+                    if (alphaFrameIndex == 0) {
+                        LOGI("First alpha frame decoded: %dx%d, linesize[0]=%d, format=%d, data[0]=%p",
+                             alphaFrame->width, alphaFrame->height, 
+                             alphaFrame->linesize[0], alphaFrame->format,
+                             (void*)alphaFrame->data[0]);
+                    }
+                    
+                    // Check before cache access - unload() may have been called
+                    if (shouldStop_ || !frameCache_) {
+                        break;
+                    }
+                    
+                    // Update corresponding color frame with alpha
+                    auto existingFrame = frameCache_->get(makeFrameKey(alphaFrameIndex));
+                    if (existingFrame) {
+                        // For alpha stream, the Y plane contains the alpha values
+                        // The alpha video is typically grayscale (YUV420P with Y=alpha)
+                        int alphaW = std::min(alphaFrame->width, existingFrame->width);
+                        int alphaH = std::min(alphaFrame->height, existingFrame->height);
+                        
+                        // Log stride mismatch if any
+                        if (alphaFrameIndex == 0) {
+                            LOGI("Copying alpha: src linesize=%d, dst stride=%d, copying %dx%d",
+                                 alphaFrame->linesize[0], existingFrame->aStride, alphaW, alphaH);
+                        }
+                        
+                        for (int y = 0; y < alphaH; ++y) {
+                            memcpy(existingFrame->aPlane + y * existingFrame->aStride,
+                                   alphaFrame->data[0] + y * alphaFrame->linesize[0],
+                                   alphaW);
+                        }
+                    } else if (alphaFrameIndex < 3) {
+                        LOGI("WARNING: No color frame found for alpha frame %d", alphaFrameIndex);
+                    }
+                    alphaFrameIndex++;
+                }
+            }
+        }
+        
+        av_packet_unref(packet);
+    }
+    
+    av_packet_free(&packet);
+    av_frame_free(&colorFrame);
+    av_frame_free(&alphaFrame);
+    
+    // Update total frames to actual count
+    totalFrames_ = frameIndex;
+    
+    auto endTime = std::chrono::high_resolution_clock::now();
+    auto duration = std::chrono::duration_cast<std::chrono::milliseconds>(endTime - startTime);
+    
+    // Log final cache stats (check frameCache_ not destroyed)
+    if (frameCache_ && !shouldStop_) {
+        LOGI("📊 Preload finished: decoded %d frames, cache size=%zu (max=%d)", 
+             frameIndex, frameCache_->size(), config_.cacheSize);
+        
+        emitEvent("preload_complete", 
+                  std::to_string(frameIndex) + " frames in " + 
+                  std::to_string(duration.count()) + "ms");
+    } else {
+        LOGI("📊 Preload interrupted: decoded %d frames before stop", frameIndex);
+    }
+}
+
+void WebMAlphaPlayer::play() {
+    if (!loaded_) return;
+    
+    // If already playing, nothing to do
+    if (playing_) return;
+    
+    playing_ = true;
+    shouldStop_ = false;
+    
+    // Only create a new thread if one isn't already running
+    // (pause just sets playing_ = false, thread keeps running)
+    if (!playbackThread_ || !playbackThread_->joinable()) {
+        playbackThread_ = std::make_unique<std::thread>(&WebMAlphaPlayer::playbackLoop, this);
+    }
+    
+    emitEvent("play");
+}
+
+void WebMAlphaPlayer::pause() {
+    playing_ = false;
+    emitEvent("pause");
+}
+
+void WebMAlphaPlayer::stop() {
+    shouldStop_ = true;
+    playing_ = false;
+    currentFrame_ = 0;
+    
+    decodeCV_.notify_all();
+    
+    if (playbackThread_ && playbackThread_->joinable()) {
+        playbackThread_->join();
+    }
+    playbackThread_.reset();
+    
+    emitEvent("stop");
+}
+
+void WebMAlphaPlayer::seekTo(double timeSeconds) {
+    int targetFrame = static_cast<int>(timeSeconds * frameRate_);
+    seekToFrame(targetFrame);
+}
+
+void WebMAlphaPlayer::seekToFrame(int frameIndex) {
+    frameIndex = std::max(0, std::min(frameIndex, totalFrames_ - 1));
+    currentFrame_ = frameIndex;
+    
+    // Emit the sought frame immediately
+    auto frame = getFrame(frameIndex);
+    if (frame) {
+        emitFrame(frame);
+    }
+    
+    emitEvent("seek", std::to_string(frameIndex));
+}
+
+void WebMAlphaPlayer::playbackLoop() {
+    auto lastFrameTime = std::chrono::high_resolution_clock::now();
+    double frameDurationMs = 1000.0 / (frameRate_ * config_.playbackSpeed);
+    
+    while (!shouldStop_ && loaded_) {
+        if (!playing_) {
+            std::this_thread::sleep_for(std::chrono::milliseconds(16));
+            continue;
+        }
+        
+        auto now = std::chrono::high_resolution_clock::now();
+        auto elapsed = std::chrono::duration<double, std::milli>(now - lastFrameTime);
+        
+        if (elapsed.count() >= frameDurationMs) {
+            int frameIdx = currentFrame_.load();
+            auto frame = getFrame(frameIdx);
+            
+            if (frame) {
+                emitFrame(frame);
+            }
+            
+            // Advance frame
+            frameIdx++;
+            if (frameIdx >= totalFrames_) {
+                if (config_.loopPlayback) {
+                    frameIdx = 0;
+                    emitEvent("loop");
+                } else {
+                    playing_ = false;
+                    emitEvent("ended");
+                    break;
+                }
+            }
+            currentFrame_ = frameIdx;
+            lastFrameTime = now;
+        } else {
+            // Sleep until next frame is due (avoid busy waiting)
+            auto sleepTime = frameDurationMs - elapsed.count();
+            if (sleepTime > 1.0) {
+                std::this_thread::sleep_for(std::chrono::microseconds(
+                    static_cast<int64_t>((sleepTime - 1.0) * 1000)
+                ));
+            }
+        }
+    }
+}
+
+std::shared_ptr<YUVAFrame> WebMAlphaPlayer::getFrame(int index) {
+    if (!loaded_ || index < 0 || index >= totalFrames_ || !frameCache_) {
+        return nullptr;
+    }
+    
+    // Try cache first
+    std::string key = makeFrameKey(index);
+    auto frame = frameCache_->get(key);
+    
+    if (frame) {
+        return frame;
+    }
+    
+    // Decode on demand
+    return decodeFrame(index);
+}
+
+std::shared_ptr<YUVAFrame> WebMAlphaPlayer::getCachedFrame(int index) {
+    if (!loaded_ || index < 0 || index >= totalFrames_ || !frameCache_) {
+        return nullptr;
+    }
+    
+    // Cache-only lookup - never triggers decoding
+    // Safe to call from any thread
+    std::string key = makeFrameKey(index);
+    return frameCache_->get(key);
+}
+
+std::shared_ptr<YUVAFrame> WebMAlphaPlayer::getCurrentFrameData() {
+    return getFrame(currentFrame_);
+}
+
+bool WebMAlphaPlayer::isLoaded() const { return loaded_; }
+bool WebMAlphaPlayer::isPlaying() const { return playing_; }
+int WebMAlphaPlayer::getCurrentFrame() const { return currentFrame_; }
+double WebMAlphaPlayer::getCurrentTime() const { 
+    return currentFrame_ / frameRate_; 
+}
+double WebMAlphaPlayer::getDuration() const { return duration_; }
+int WebMAlphaPlayer::getTotalFrames() const { return totalFrames_; }
+int WebMAlphaPlayer::getWidth() const { return width_; }
+int WebMAlphaPlayer::getHeight() const { return height_; }
+double WebMAlphaPlayer::getFrameRate() const { return frameRate_; }
+
+void WebMAlphaPlayer::setFrameCallback(FrameCallback callback) {
+    std::lock_guard<std::mutex> lock(callbackMutex_);
+    frameCallback_ = std::move(callback);
+}
+
+void WebMAlphaPlayer::setEventCallback(EventCallback callback) {
+    std::lock_guard<std::mutex> lock(callbackMutex_);
+    eventCallback_ = std::move(callback);
+}
+
+DecoderStatsSnapshot WebMAlphaPlayer::getStats() const {
+    return stats_.snapshot();
+}
+
+void WebMAlphaPlayer::resetStats() {
+    stats_.reset();
+}
+
+void WebMAlphaPlayer::emitEvent(const std::string& event, const std::string& data) {
+    std::lock_guard<std::mutex> lock(callbackMutex_);
+    if (eventCallback_) {
+        eventCallback_(event, data);
+    }
+}
+
+void WebMAlphaPlayer::emitFrame(std::shared_ptr<YUVAFrame> frame) {
+    std::lock_guard<std::mutex> lock(callbackMutex_);
+    if (frameCallback_ && frame) {
+        frameCallback_(frame);
+    }
+}
+
+std::string WebMAlphaPlayer::makeFrameKey(int index) const {
+    return std::to_string(index);
+}
+
+void WebMAlphaPlayer::unmapFile() {
+    if (mappedData_) {
+        if (useMmap_) {
+            munmap(mappedData_, mappedSize_);
+        } else {
+            av_freep(&mappedData_);
+        }
+        mappedData_ = nullptr;
+        mappedSize_ = 0;
+        useMmap_ = false;
+    }
+}
+
+// Static methods
+bool WebMAlphaPlayer::isFFmpegInitialized() {
+    return ffmpegInitialized;
+}
+
+void WebMAlphaPlayer::initializeFFmpeg() {
+    std::call_once(ffmpegInitFlag, []() {
+        // Modern FFmpeg (4.0+) doesn't require av_register_all()
+        // Network is initialized automatically when needed
+        ffmpegInitialized = true;
+    });
+}
+
+std::string WebMAlphaPlayer::getFFmpegVersion() {
+    return av_version_info();
+}
+
+} // namespace webm

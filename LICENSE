@@ -1,0 +1,36 @@
+GNU LESSER GENERAL PUBLIC LICENSE
+Version 2.1, February 1999
+
+Copyright (C) 1991, 1999 Free Software Foundation, Inc.
+Everyone is permitted to copy and distribute verbatim copies
+of this license document, but changing it is not allowed.
+
+---
+
+This project is licensed under the **GNU Lesser General Public License v2.1 (LGPL-2.1)**.
+
+You may use, modify, and distribute this library under the terms of the LGPL-2.1. In summary:
+
+1. **You may link this library with your applications** (including proprietary apps), as long as you:
+
+   * Allow users to replace or relink the library with their own version.
+   * Provide a way for users to relink your application with a modified version of this library (e.g., by providing object files or using dynamic linking).
+
+2. **Modifications to this library** must be released under the LGPL-2.1 and you must:
+
+   * Make the modified source code available.
+   * Clearly state the changes made.
+
+3. **You are not required to release your entire application** under the LGPL-2.1 if you only link to this library.
+
+---
+
+For the full terms of the license, please see the official text at the Free Software Foundation:
+
+[https://www.gnu.org/licenses/old-licenses/lgpl-2.1.html](https://www.gnu.org/licenses/old-licenses/lgpl-2.1.html)
+
+---
+
+This project uses FFmpeg libraries, which are also licensed under LGPL-2.1 (or GPL if configured accordingly). Make sure your build configuration is compliant.
+
+By using this project, you agree to the terms of the LGPL-2.1.

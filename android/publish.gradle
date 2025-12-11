@@ -1,0 +1,67 @@
+// Publishing configuration for standalone Android library
+// This file is only used when publishing to Maven, not when consumed as a node module
+//
+// Usage: ./gradlew -b publish.gradle publishToMavenLocal
+//    or: ./gradlew -b publish.gradle publish
+
+apply from: 'build.gradle'
+apply plugin: 'maven-publish'
+
+afterEvaluate {
+    publishing {
+        publications {
+            release(MavenPublication) {
+                from components.release
+                
+                groupId = 'com.danielkpl2'
+                artifactId = 'webm-alpha-player-android'
+                version = '1.0.0'
+                
+                pom {
+                    name = 'WebM Alpha Player Android'
+                    description = 'High-performance WebM VP9 video player with alpha transparency support for Android'
+                    url = 'https://github.com/danielkpl2/webm-alpha-player-android'
+                    
+                    licenses {
+                        license {
+                            name = 'LGPL-2.1-or-later'
+                            url = 'https://www.gnu.org/licenses/lgpl-2.1.html'
+                        }
+                    }
+                    
+                    developers {
+                        developer {
+                            id = 'danielkpl2'
+                            name = 'Daniel'
+                        }
+                    }
+                    
+                    scm {
+                        connection = 'scm:git:git://github.com/danielkpl2/webm-alpha-player-android.git'
+                        developerConnection = 'scm:git:ssh://github.com/danielkpl2/webm-alpha-player-android.git'
+                        url = 'https://github.com/danielkpl2/webm-alpha-player-android'
+                    }
+                }
+            }
+        }
+        
+        repositories {
+            // Local directory for testing
+            maven {
+                name = 'local'
+                url = uri("${rootProject.projectDir}/../dist/android")
+            }
+            
+            // Maven Central (Sonatype OSSRH)
+            // Uncomment and configure when ready to publish
+            // maven {
+            //     name = 'ossrh'
+            //     url = uri('https://s01.oss.sonatype.org/service/local/staging/deploy/maven2/')
+            //     credentials {
+            //         username = System.getenv('OSSRH_USERNAME')
+            //         password = System.getenv('OSSRH_PASSWORD')
+            //     }
+            // }
+        }
+    }
+}
