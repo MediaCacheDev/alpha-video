@@ -44,6 +44,7 @@ React (JS) WebMAlphaView props
     - Playback loop that clocks frames at FPS, pulls from cache/decodes, and emits to the platform renderer.
     - `PlayerConfig`: cache size, `preloadAllFrames`, playback speed, etc.
 
+
 ## Threading Model
 
 ```
@@ -63,10 +64,13 @@ C++ core (both platforms)
   ├─ Decoder thread: FFmpeg demux/decode → YUVA frames → FrameCache
   ├─ Playback/render thread: time-based loop → fetch from cache (or decode) → render to surface
   └─ Optional preload thread: `decodeAllFrames` to fill cache up-front
+```
+
 
 ## Thread Lifecycle & Interaction
 
-```
+
+```text
 JS/Main thread                 Playback thread                Decode path (same thread)        Resources
 --------------                 ----------------                -------------------------        ---------
 play()                     →  spawn playbackThread_      →   (none yet)                       FrameCache constructed
@@ -166,7 +170,7 @@ Thread lifecycle summary: `playbackThread_` is created on first `play()`, runs u
 
 ## Key Interactions
 
-```
+```text
 JS sets source + cacheKey
    ↓
 Platform ViewManager
