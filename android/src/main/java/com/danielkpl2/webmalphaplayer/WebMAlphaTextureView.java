@@ -70,8 +70,11 @@ public class WebMAlphaTextureView extends TextureView implements
     private boolean autoplay = true;
     private boolean loop = true;
     private double playbackSpeed = 1.0;
-    private int decodeThreads = 4;
-    private int cacheSize = 250;
+    // Reduced defaults for better performance with multiple simultaneous players
+    // 2 decode threads is sufficient for most glow videos (60-360px, 60-120 frames)
+    // 90 frame cache is enough for typical 60-90 frame glow loops
+    private int decodeThreads = 2;
+    private int cacheSize = 90;
 
     // Render thread - handles all GL operations
     private ExecutorService renderThread;
@@ -109,15 +112,36 @@ public class WebMAlphaTextureView extends TextureView implements
         setSurfaceTextureListener(this);
         setOpaque(false);  // Enable transparency
         
-        // Create executors
-        renderThread = createRenderThread();
-        nativeLoadExecutor = createLoadExecutor();
+        // Create executors lazily - only render thread is created now
+        // Native player creation is deferred to onSurfaceTextureAvailable
+        // to prevent resource flooding when many views are created at once
+        Log.i(TAG, "TextureView initialized (player creation deferred)");
+    }
+    
+    /**
+     * Initialize the native player - called when surface is available
+     * This prevents resource flooding when many views are created but not yet visible
+     */
+    private void initializePlayer() {
+        if (playerId != 0) {
+            Log.d(TAG, "Player already initialized: " + playerId);
+            return;
+        }
+        
+        // Create executors if not already created
+        if (renderThread == null || renderThread.isShutdown()) {
+            renderThread = createRenderThread();
+        }
+        if (nativeLoadExecutor == null || nativeLoadExecutor.isShutdown()) {
+            nativeLoadExecutor = createLoadExecutor();
+        }
         
         // Create C++ player
         playerId = WebMAlphaPlayerNative.nativeCreate(
             decodeThreads, cacheSize, true, loop, playbackSpeed
         );
         WebMAlphaPlayerNative.nativeSetListener(playerId, this);
+        isReleased = false;
         
         Log.i(TAG, "Created TextureView player: " + playerId + 
               ", FFmpeg: " + WebMAlphaPlayerNative.nativeGetFFmpegVersion());
@@ -167,9 +191,10 @@ public class WebMAlphaTextureView extends TextureView implements
         pendingSourcePath = path;
         pendingSourceIsUrl = false;
         
-        if (isReleased) {
-            Log.i(TAG, "🔄 Re-initializing released view for loadFromFile");
-            initializePlayer();
+        // If player isn't initialized yet, just store the path - it will be loaded in onAttachedToWindow
+        if (isReleased || playerId == 0) {
+            Log.i(TAG, "📋 Storing source for deferred load: " + path);
+            return;
         }
         
         enqueueNativeLoad(() -> WebMAlphaPlayerNative.nativeLoadFromFile(playerId, path),
@@ -179,9 +204,9 @@ public class WebMAlphaTextureView extends TextureView implements
     public void loadFromBytes(byte[] data) {
         pendingSourcePath = null;
         
-        if (isReleased) {
-            Log.i(TAG, "🔄 Re-initializing released view for loadFromBytes");
-            initializePlayer();
+        if (isReleased || playerId == 0) {
+            Log.w(TAG, "Cannot load from bytes before player is initialized");
+            return;
         }
         
         enqueueNativeLoad(() -> WebMAlphaPlayerNative.nativeLoadFromBytes(playerId, data),
@@ -192,9 +217,10 @@ public class WebMAlphaTextureView extends TextureView implements
         pendingSourcePath = url;
         pendingSourceIsUrl = true;
         
-        if (isReleased) {
-            Log.i(TAG, "🔄 Re-initializing released view for loadFromUrl");
-            initializePlayer();
+        // If player isn't initialized yet, just store the URL - it will be loaded in onAttachedToWindow
+        if (isReleased || playerId == 0) {
+            Log.i(TAG, "📋 Storing URL for deferred load: " + url);
+            return;
         }
         
         enqueueNativeLoad(() -> WebMAlphaPlayerNative.nativeLoadFromUrl(playerId, url),
@@ -258,8 +284,26 @@ public class WebMAlphaTextureView extends TextureView implements
         this.surfaceHeight = height;
         surfaceAvailable.set(true);
         
+        // Initialize player lazily when surface is ready
+        // This prevents resource flooding when many views are created but not visible
+        initializePlayer();
+        
         // Initialize EGL on render thread
-        renderThread.execute(this::initEGL);
+        renderThread.execute(() -> {
+            initEGL();
+            
+            // Load any pending source now that player is ready
+            if (pendingSourcePath != null) {
+                Log.i(TAG, "🔄 Loading deferred source: " + pendingSourcePath);
+                if (pendingSourceIsUrl) {
+                    enqueueNativeLoad(() -> WebMAlphaPlayerNative.nativeLoadFromUrl(playerId, pendingSourcePath),
+                        "from url (deferred)");
+                } else {
+                    enqueueNativeLoad(() -> WebMAlphaPlayerNative.nativeLoadFromFile(playerId, pendingSourcePath),
+                        "from file (deferred)");
+                }
+            }
+        });
     }
     
     @Override
@@ -282,15 +326,23 @@ public class WebMAlphaTextureView extends TextureView implements
         Log.i(TAG, "🗑️ Surface destroyed");
         surfaceAvailable.set(false);
         
-        // Clean up EGL on render thread and wait for completion
-        try {
-            renderThread.submit(this::destroyEGL).get();
-        } catch (Exception e) {
-            Log.e(TAG, "Error waiting for EGL cleanup: " + e.getMessage());
-        }
-        
+        // Store reference before nulling so we can release it async
+        final SurfaceTexture surfaceToRelease = this.surfaceTexture;
         this.surfaceTexture = null;
-        return true;  // Return true to let TextureView release the SurfaceTexture
+        
+        // Clean up EGL on render thread WITHOUT blocking main thread
+        // This prevents ANRs when multiple players are destroyed simultaneously
+        renderThread.execute(() -> {
+            try {
+                destroyEGL();
+            } catch (Exception e) {
+                Log.e(TAG, "Error during EGL cleanup: " + e.getMessage());
+            }
+        });
+        
+        // Return false - we'll manage SurfaceTexture lifecycle ourselves to avoid blocking
+        // The render thread will clean up EGL and we don't need the SurfaceTexture after that
+        return true;
     }
     
     @Override
@@ -773,25 +825,6 @@ public class WebMAlphaTextureView extends TextureView implements
     // Lifecycle
     //------------------------------------------------------------------------------
     
-    private void initializePlayer() {
-        if (nativeLoadExecutor == null || nativeLoadExecutor.isShutdown()) {
-            nativeLoadExecutor = createLoadExecutor();
-        }
-        
-        if (renderThread == null || renderThread.isShutdown()) {
-            renderThread = createRenderThread();
-        }
-        
-        if (playerId == 0) {
-            playerId = WebMAlphaPlayerNative.nativeCreate(
-                decodeThreads, cacheSize, true, loop, playbackSpeed
-            );
-            WebMAlphaPlayerNative.nativeSetListener(playerId, this);
-        }
-        
-        isReleased = false;
-    }
-    
     public void release() {
         Log.i(TAG, "🗑️ Full release of player " + playerId);
         
@@ -858,6 +891,8 @@ public class WebMAlphaTextureView extends TextureView implements
         super.onAttachedToWindow();
         Log.i(TAG, "🔄 View attached (isReleased=" + isReleased + ", playerId=" + playerId + ")");
         
+        // If we were previously released but player still exists, just reset flag
+        // The surface callback will handle re-initialization if needed
         if (isReleased && playerId != 0) {
             isReleased = false;
             
@@ -865,26 +900,10 @@ public class WebMAlphaTextureView extends TextureView implements
                 renderThread = createRenderThread();
             }
             
-            if (pendingSourcePath != null) {
-                Log.i(TAG, "🔄 Re-loading source: " + pendingSourcePath);
-                if (pendingSourceIsUrl) {
-                    loadFromUrl(pendingSourcePath);
-                } else {
-                    loadFromFile(pendingSourcePath);
-                }
-            }
-        } else if (isReleased && playerId == 0) {
-            initializePlayer();
-            
-            if (pendingSourcePath != null) {
-                Log.i(TAG, "🔄 Re-loading source: " + pendingSourcePath);
-                if (pendingSourceIsUrl) {
-                    loadFromUrl(pendingSourcePath);
-                } else {
-                    loadFromFile(pendingSourcePath);
-                }
-            }
+            // Don't try to load here - let onSurfaceTextureAvailable handle it
+            // when the surface becomes available again
         }
+        // Note: If playerId == 0, player initialization happens in onSurfaceTextureAvailable
     }
     
     @Override

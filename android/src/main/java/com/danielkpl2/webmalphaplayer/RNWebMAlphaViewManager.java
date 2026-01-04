@@ -89,9 +89,120 @@ public class RNWebMAlphaViewManager extends SimpleViewManager<WebMAlphaTextureVi
             view.loadFromFile(sourceUri.substring(7));
         } else if (sourceUri.startsWith("asset://") || sourceUri.startsWith("asset:/")) {
             loadFromAsset(view, sourceUri);
+        } else if (isBundledResourceName(sourceUri)) {
+            // Load from bundled assets (release build)
+            loadFromBundledAsset(view, sourceUri);
         } else {
             view.loadFromFile(sourceUri);
         }
+    }
+    
+    /**
+     * Check if the URI looks like a bundled asset resource name (from release build)
+     * These look like: "src_assets_test_webm" (no slashes, no scheme, no dots except extension)
+     */
+    private boolean isBundledResourceName(String uri) {
+        if (uri == null || uri.isEmpty()) return false;
+        if (uri.contains("/") || uri.contains(":")) return false;
+        // Check if it looks like a resource name (alphanumeric with underscores, starting with letter)
+        return uri.matches("^[a-zA-Z][a-zA-Z0-9_]*$");
+    }
+    
+    /**
+     * Load WebM from bundled assets (for release build)
+     * React Native bundles custom assets into the APK's res/raw folder or assets folder.
+     */
+    private void loadFromBundledAsset(WebMAlphaTextureView view, String resourceName) {
+        downloadExecutor.execute(() -> {
+            try {
+                // First, try to find in assets folder
+                String foundPath = findWebMAsset(resourceName, "");
+                if (foundPath != null) {
+                    // Copy from assets to cache (FFmpeg needs a real file path)
+                    File cacheFile = new File(reactContext.getCacheDir(), 
+                        "webm_bundled_" + resourceName.hashCode() + ".webm");
+                    
+                    if (!cacheFile.exists()) {
+                        InputStream is = reactContext.getAssets().open(foundPath);
+                        FileOutputStream fos = new FileOutputStream(cacheFile);
+                        byte[] buffer = new byte[8192];
+                        int read;
+                        while ((read = is.read(buffer)) != -1) {
+                            fos.write(buffer, 0, read);
+                        }
+                        fos.close();
+                        is.close();
+                        Log.d(TAG, "Copied bundled asset to cache: " + cacheFile.getAbsolutePath());
+                    }
+                    
+                    view.post(() -> view.loadFromFile(cacheFile.getAbsolutePath()));
+                    return;
+                }
+                
+                // Fallback: try raw resources
+                int resourceId = reactContext.getResources().getIdentifier(
+                    resourceName, "raw", reactContext.getPackageName());
+                if (resourceId != 0) {
+                    File cacheFile = new File(reactContext.getCacheDir(), 
+                        "webm_raw_" + resourceName.hashCode() + ".webm");
+                    
+                    if (!cacheFile.exists()) {
+                        InputStream is = reactContext.getResources().openRawResource(resourceId);
+                        FileOutputStream fos = new FileOutputStream(cacheFile);
+                        byte[] buffer = new byte[8192];
+                        int read;
+                        while ((read = is.read(buffer)) != -1) {
+                            fos.write(buffer, 0, read);
+                        }
+                        fos.close();
+                        is.close();
+                        Log.d(TAG, "Copied raw resource to cache: " + cacheFile.getAbsolutePath());
+                    }
+                    
+                    view.post(() -> view.loadFromFile(cacheFile.getAbsolutePath()));
+                    return;
+                }
+                
+                Log.e(TAG, "Bundled asset not found: " + resourceName);
+            } catch (Exception e) {
+                Log.e(TAG, "Failed to load bundled asset: " + resourceName, e);
+            }
+        });
+    }
+    
+    /**
+     * Search assets folder for a .webm file matching the resource name
+     */
+    private String findWebMAsset(String resourceName, String path) {
+        try {
+            String[] files = reactContext.getAssets().list(path);
+            if (files == null) return null;
+            
+            // Extract a search key from the resource name
+            String searchKey = resourceName.toLowerCase().replace("_", "");
+            
+            for (String file : files) {
+                String fullPath = path.isEmpty() ? file : path + "/" + file;
+                
+                if (file.endsWith(".webm")) {
+                    // Normalize filename for comparison
+                    String normalized = file.replace(".webm", "").replace("-", "").replace("_", "").toLowerCase();
+                    if (normalized.contains(searchKey) || searchKey.contains(normalized) ||
+                        resourceName.toLowerCase().contains(file.replace(".webm", "").toLowerCase())) {
+                        Log.d(TAG, "Found WebM asset: " + fullPath + " for resource: " + resourceName);
+                        return fullPath;
+                    }
+                }
+                
+                // Recurse into directories
+                String[] subFiles = reactContext.getAssets().list(fullPath);
+                if (subFiles != null && subFiles.length > 0) {
+                    String found = findWebMAsset(resourceName, fullPath);
+                    if (found != null) return found;
+                }
+            }
+        } catch (Exception ignored) {}
+        return null;
     }
     
     private void loadFromAsset(WebMAlphaTextureView view, String assetUri) {
