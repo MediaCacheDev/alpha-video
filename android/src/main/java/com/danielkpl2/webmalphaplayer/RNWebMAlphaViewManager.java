@@ -332,6 +332,35 @@ public class RNWebMAlphaViewManager extends SimpleViewManager<WebMAlphaTextureVi
         }
     }
     
+    /**
+     * Enable streaming mode for low RAM usage.
+     * When true: decode on-demand with sliding window cache (good for long videos)
+     * When false (default): preload all frames (good for short loops)
+     */
+    @ReactProp(name = "stream", defaultBoolean = false)
+    public void setStream(WebMAlphaTextureView view, boolean stream) {
+        view.setStream(stream);
+        Log.d(TAG, "📺 Set stream mode: " + stream);
+    }
+    
+    /**
+     * Set the cache size when streaming (number of frames to keep in memory)
+     * Default: 30 frames (~1 second at 30fps)
+     */
+    @ReactProp(name = "streamCacheSize", defaultInt = 30)
+    public void setStreamCacheSize(WebMAlphaTextureView view, int size) {
+        view.setStreamCacheSize(size);
+    }
+    
+    /**
+     * Set how many frames to prefetch ahead of playback position when streaming
+     * Default: 15 frames (~0.5 seconds at 30fps)
+     */
+    @ReactProp(name = "streamPrefetchAhead", defaultInt = 15)
+    public void setStreamPrefetchAhead(WebMAlphaTextureView view, int frames) {
+        view.setStreamPrefetchAhead(frames);
+    }
+    
     @Nullable
     @Override
     public Map<String, Object> getExportedCustomDirectEventTypeConstants() {

@@ -90,7 +90,10 @@ Java_com_danielkpl2_webmalphaplayer_WebMAlphaPlayerNative_nativeCreate(
     jint cacheSize,
     jboolean preloadAllFrames,
     jboolean loopPlayback,
-    jdouble playbackSpeed
+    jdouble playbackSpeed,
+    jboolean stream,
+    jint streamCacheSize,
+    jint streamPrefetchAhead
 ) {
     auto player = std::make_shared<webm::WebMAlphaPlayer>();
     
@@ -100,6 +103,9 @@ Java_com_danielkpl2_webmalphaplayer_WebMAlphaPlayerNative_nativeCreate(
     config.preloadAllFrames = preloadAllFrames;
     config.loopPlayback = loopPlayback;
     config.playbackSpeed = playbackSpeed;
+    config.stream = stream;
+    config.streamCacheSize = streamCacheSize > 0 ? streamCacheSize : 30;
+    config.streamPrefetchAhead = streamPrefetchAhead > 0 ? streamPrefetchAhead : 15;
     player->setConfig(config);
     
     std::lock_guard<std::mutex> lock(playersMutex);

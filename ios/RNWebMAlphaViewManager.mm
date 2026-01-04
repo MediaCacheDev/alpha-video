@@ -26,6 +26,11 @@
 @property (nonatomic, assign) double playbackSpeed;
 @property (nonatomic, copy) NSString *cacheKey;
 
+// Streaming mode props
+@property (nonatomic, assign) BOOL stream;
+@property (nonatomic, assign) int streamCacheSize;
+@property (nonatomic, assign) int streamPrefetchAhead;
+
 // Event callbacks
 @property (nonatomic, copy) RCTDirectEventBlock onLoad;
 @property (nonatomic, copy) RCTDirectEventBlock onError;
@@ -51,6 +56,9 @@
     _loop = YES;
     _paused = NO;
     _playbackSpeed = 1.0;
+    _stream = NO;
+    _streamCacheSize = 30;
+    _streamPrefetchAhead = 15;
     
     _metalView = [[WebMAlphaMetalPlayerView alloc] initWithFrame:self.bounds config:config];
     _metalView.playerDelegate = self;
@@ -102,13 +110,43 @@
     self.metalView.playbackSpeed = playbackSpeed;
 }
 
+- (void)setStream:(BOOL)stream {
+    _stream = stream;
+    [self updatePlayerConfig];
+}
+
+- (void)setStreamCacheSize:(int)streamCacheSize {
+    _streamCacheSize = streamCacheSize > 0 ? streamCacheSize : 30;
+    [self updatePlayerConfig];
+}
+
+- (void)setStreamPrefetchAhead:(int)streamPrefetchAhead {
+    _streamPrefetchAhead = streamPrefetchAhead > 0 ? streamPrefetchAhead : 15;
+    [self updatePlayerConfig];
+}
+
+- (void)updatePlayerConfig {
+    WebMPlayerConfig *config = [self.metalView.player getConfig];
+    config.stream = _stream;
+    config.streamCacheSize = _streamCacheSize;
+    config.streamPrefetchAhead = _streamPrefetchAhead;
+    [self.metalView.player setConfig:config];
+    
+    if (_stream) {
+        NSLog(@"📺 iOS streaming mode: cacheSize=%d, prefetchAhead=%d", _streamCacheSize, _streamPrefetchAhead);
+    }
+}
+
 #pragma mark - Source Loading
 
 - (void)loadSource {
     NSString *sourceUri = self.currentSourceUri;
     if (!sourceUri || sourceUri.length == 0) return;
     
-    NSLog(@"🎬 RNWebMAlphaWrapper loading: %@", sourceUri);
+    // Apply streaming config before loading
+    [self updatePlayerConfig];
+    
+    NSLog(@"🎬 RNWebMAlphaWrapper loading: %@ (stream=%d)", sourceUri, _stream);
     
     if ([sourceUri hasPrefix:@"http://"] || [sourceUri hasPrefix:@"https://"]) {
         [self downloadAndLoadURL:sourceUri];
@@ -306,6 +344,11 @@ RCT_EXPORT_VIEW_PROPERTY(loop, BOOL)
 RCT_EXPORT_VIEW_PROPERTY(paused, BOOL)
 RCT_EXPORT_VIEW_PROPERTY(playbackSpeed, double)
 RCT_EXPORT_VIEW_PROPERTY(cacheKey, NSString)
+
+// Streaming mode props
+RCT_EXPORT_VIEW_PROPERTY(stream, BOOL)
+RCT_EXPORT_VIEW_PROPERTY(streamCacheSize, int)
+RCT_EXPORT_VIEW_PROPERTY(streamPrefetchAhead, int)
 
 // Events
 RCT_EXPORT_VIEW_PROPERTY(onLoad, RCTDirectEventBlock)

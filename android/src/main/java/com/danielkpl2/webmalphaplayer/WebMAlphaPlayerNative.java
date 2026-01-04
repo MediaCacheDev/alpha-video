@@ -33,7 +33,10 @@ public class WebMAlphaPlayerNative {
         int cacheSize,
         boolean preloadAllFrames,
         boolean loopPlayback,
-        double playbackSpeed
+        double playbackSpeed,
+        boolean stream,           // Enable streaming mode (decode on-demand)
+        int streamCacheSize,      // Cache size when streaming (default: 30)
+        int streamPrefetchAhead   // Frames to prefetch ahead (default: 15)
     );
     
     public static native void nativeDestroy(long playerId);

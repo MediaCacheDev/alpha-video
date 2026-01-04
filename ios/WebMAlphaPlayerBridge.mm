@@ -100,6 +100,9 @@
     config.preloadAllFrames = YES;
     config.loopPlayback = YES;
     config.playbackSpeed = 1.0;
+    config.stream = NO;
+    config.streamCacheSize = 30;
+    config.streamPrefetchAhead = 15;
     return config;
 }
 
@@ -110,6 +113,9 @@
     cfg.preloadAllFrames = self.preloadAllFrames;
     cfg.loopPlayback = self.loopPlayback;
     cfg.playbackSpeed = self.playbackSpeed;
+    cfg.stream = self.stream;
+    cfg.streamCacheSize = self.streamCacheSize > 0 ? self.streamCacheSize : 30;
+    cfg.streamPrefetchAhead = self.streamPrefetchAhead > 0 ? self.streamPrefetchAhead : 15;
     return cfg;
 }
 
@@ -234,6 +240,9 @@
     config.preloadAllFrames = cfg.preloadAllFrames;
     config.loopPlayback = cfg.loopPlayback;
     config.playbackSpeed = cfg.playbackSpeed;
+    config.stream = cfg.stream;
+    config.streamCacheSize = cfg.streamCacheSize;
+    config.streamPrefetchAhead = cfg.streamPrefetchAhead;
     return config;
 }
 

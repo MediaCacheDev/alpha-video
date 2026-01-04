@@ -12,6 +12,28 @@ export interface NativeProps extends ViewProps {
   playbackSpeed?: number;
   /** Custom cache key/path for downloaded files */
   cacheKey?: string;
+  
+  /**
+   * Enable streaming mode for low RAM usage.
+   * When true: decode on-demand with sliding window cache (good for long videos)
+   * When false (default): preload all frames (good for short loops)
+   */
+  stream?: boolean;
+  
+  /**
+   * Number of frames to keep in cache when streaming.
+   * Default: 30 frames (~1 second at 30fps)
+   * Only used when stream=true
+   */
+  streamCacheSize?: number;
+  
+  /**
+   * Number of frames to prefetch ahead of playback position when streaming.
+   * Default: 15 frames (~0.5 seconds at 30fps)
+   * Only used when stream=true
+   */
+  streamPrefetchAhead?: number;
+  
   onLoad?: (event: { nativeEvent: { totalFrames: number; width: number; height: number } }) => void;
   onError?: (event: { nativeEvent: { error: string } }) => void;
   onEnd?: (event: { nativeEvent: {} }) => void;

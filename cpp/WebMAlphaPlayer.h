@@ -106,10 +106,13 @@ public:
     std::shared_ptr<YUVAFrame> get(const std::string& key);
     void clear();
     size_t size() const;
+    bool contains(const std::string& key) const;
+    void evict(const std::string& key);  // Remove specific frame from cache
+    void setMaxSize(size_t maxFrames);   // Dynamically adjust cache size
     
 private:
     size_t maxSize_;
-    std::mutex mutex_;
+    mutable std::mutex mutex_;
     std::unordered_map<std::string, std::shared_ptr<YUVAFrame>> cache_;
     std::list<std::string> lruList_;
     std::unordered_map<std::string, std::list<std::string>::iterator> lruMap_;
@@ -172,9 +175,16 @@ struct PlayerConfig {
     int decodeThreads = 4;          // FFmpeg decoder threads
     bool useHardwareAccel = false;  // Try hardware decode (rarely works for VP9+alpha)
     int cacheSize = 250;            // Max frames in cache (should be >= totalFrames when preloading)
-    bool preloadAllFrames = true;   // Decode all frames upfront
+    bool preloadAllFrames = true;   // Decode all frames upfront (ignored if stream=true)
     bool loopPlayback = true;       // Loop at end
     double playbackSpeed = 1.0;     // Playback speed multiplier
+    
+    // Streaming mode - decode on-demand with sliding window cache
+    // When true: low RAM usage, suitable for long videos
+    // When false (default): preload all frames, best for short loops
+    bool stream = false;
+    int streamCacheSize = 30;       // Frames to keep in cache when streaming (default: ~1 second at 30fps)
+    int streamPrefetchAhead = 15;   // Frames to decode ahead of playback position
 };
 
 /**
@@ -257,9 +267,13 @@ private:
     // Threading
     std::unique_ptr<std::thread> decodeThread_;
     std::unique_ptr<std::thread> playbackThread_;
+    std::unique_ptr<std::thread> prefetchThread_;  // Background prefetch for streaming mode
     std::timed_mutex decodeMutex_;  // timed_mutex allows try_lock_for() for non-blocking unload
     std::condition_variable decodeCV_;
+    std::condition_variable_any prefetchCV_;  // Signal prefetch thread
     std::atomic<bool> shouldStop_{false};
+    std::atomic<int> prefetchTarget_{-1};  // Target frame for prefetch thread
+    std::atomic<int> streamDecodePos_{0};  // Current sequential decode position for streaming
     
     // Caching
     std::unique_ptr<FrameCache> frameCache_;
@@ -284,6 +298,12 @@ private:
     std::shared_ptr<YUVAFrame> decodeFrame(int index);
     void decodeAllFrames();
     void playbackLoop();
+    void streamingPrefetch(int currentFrame);  // Prefetch frames ahead in streaming mode
+    void evictOldFrames(int currentFrame);     // Remove frames behind playback position
+    void prefetchLoop();                        // Background prefetch thread loop
+    void requestPrefetch(int currentFrame);     // Request prefetch from playback thread (non-blocking)
+    void streamingDecodeLoop();                 // Sequential decode loop for streaming mode
+    std::shared_ptr<YUVAFrame> decodeNextFrame(); // Decode next frame sequentially (no seeking)
     
     void emitEvent(const std::string& event, const std::string& data = "");
     void emitFrame(std::shared_ptr<YUVAFrame> frame);

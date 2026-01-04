@@ -75,6 +75,13 @@ public class WebMAlphaTextureView extends TextureView implements
     // 90 frame cache is enough for typical 60-90 frame glow loops
     private int decodeThreads = 2;
     private int cacheSize = 90;
+    
+    // Streaming mode - decode on-demand with sliding window cache
+    // When true: low RAM usage, suitable for long videos
+    // When false (default): preload all frames, best for short loops
+    private boolean stream = false;
+    private int streamCacheSize = 30;      // Frames to keep in cache when streaming
+    private int streamPrefetchAhead = 15;  // Frames to decode ahead of playback
 
     // Render thread - handles all GL operations
     private ExecutorService renderThread;
@@ -138,7 +145,8 @@ public class WebMAlphaTextureView extends TextureView implements
         
         // Create C++ player
         playerId = WebMAlphaPlayerNative.nativeCreate(
-            decodeThreads, cacheSize, true, loop, playbackSpeed
+            decodeThreads, cacheSize, true, loop, playbackSpeed,
+            stream, streamCacheSize, streamPrefetchAhead
         );
         WebMAlphaPlayerNative.nativeSetListener(playerId, this);
         isReleased = false;
@@ -177,6 +185,32 @@ public class WebMAlphaTextureView extends TextureView implements
     
     public void setLoop(boolean loop) {
         this.loop = loop;
+    }
+    
+    /**
+     * Enable streaming mode for low RAM usage.
+     * When true: decode on-demand with sliding window cache (good for long videos)
+     * When false (default): preload all frames (good for short loops)
+     * Must be called before player is initialized (before surface is available)
+     */
+    public void setStream(boolean stream) {
+        this.stream = stream;
+    }
+    
+    /**
+     * Set the cache size when streaming (number of frames to keep in memory)
+     * Default: 30 frames (~1 second at 30fps)
+     */
+    public void setStreamCacheSize(int size) {
+        this.streamCacheSize = size > 0 ? size : 30;
+    }
+    
+    /**
+     * Set how many frames to prefetch ahead of playback position when streaming
+     * Default: 15 frames (~0.5 seconds at 30fps)
+     */
+    public void setStreamPrefetchAhead(int frames) {
+        this.streamPrefetchAhead = frames > 0 ? frames : 15;
     }
     
     public void setPaused(boolean paused) {

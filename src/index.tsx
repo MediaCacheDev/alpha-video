@@ -42,6 +42,28 @@ export interface WebMAlphaViewProps extends ViewProps {
    * If not provided, files are cached using a hash of the URL.
    */
   cacheKey?: string;
+  
+  /**
+   * Enable streaming mode for low RAM usage.
+   * When true: decode on-demand with sliding window cache (good for long videos like YouTube)
+   * When false (default): preload all frames to RAM (good for short loops like glow effects)
+   */
+  stream?: boolean;
+  
+  /**
+   * Number of frames to keep in cache when streaming.
+   * Default: 30 frames (~1 second at 30fps)
+   * Only used when stream=true
+   */
+  streamCacheSize?: number;
+  
+  /**
+   * Number of frames to prefetch ahead of playback position when streaming.
+   * Default: 15 frames (~0.5 seconds at 30fps)
+   * Only used when stream=true
+   */
+  streamPrefetchAhead?: number;
+  
   /** Container style */
   style?: StyleProp<ViewStyle>;
   /** Callback when video loads */
@@ -248,6 +270,9 @@ const NativePlayer = forwardRef<WebMAlphaViewRef, WebMAlphaViewProps>(
         paused={props.paused}
         playbackSpeed={props.playbackSpeed}
         cacheKey={props.cacheKey}
+        stream={props.stream}
+        streamCacheSize={props.streamCacheSize}
+        streamPrefetchAhead={props.streamPrefetchAhead}
         style={props.style}
         onLoad={handleNativeLoad}
         onError={handleNativeError}
