@@ -8,6 +8,42 @@
 #import <React/RCTUIManager.h>
 #import "WebMAlphaPlayerBridge.h"
 
+#pragma mark - Global Decode Queue
+
+// Global decode queue - serializes non-stream decoding across all player instances
+// This prevents CPU saturation and crashes when many players are created simultaneously
+static dispatch_queue_t _globalDecodeQueue = nil;
+static NSInteger _globalDecodeQueueRefCount = 0;
+static dispatch_semaphore_t _globalDecodeQueueLock = nil;
+
+static dispatch_queue_t getGlobalDecodeQueue(void) {
+    static dispatch_once_t onceToken;
+    dispatch_once(&onceToken, ^{
+        _globalDecodeQueueLock = dispatch_semaphore_create(1);
+    });
+    
+    dispatch_semaphore_wait(_globalDecodeQueueLock, DISPATCH_TIME_FOREVER);
+    if (!_globalDecodeQueue) {
+        _globalDecodeQueue = dispatch_queue_create("com.webmalpha.globalDecode", DISPATCH_QUEUE_SERIAL);
+        NSLog(@"🔧 Created global decode queue");
+    }
+    _globalDecodeQueueRefCount++;
+    dispatch_semaphore_signal(_globalDecodeQueueLock);
+    
+    return _globalDecodeQueue;
+}
+
+static void releaseGlobalDecodeQueue(void) {
+    dispatch_semaphore_wait(_globalDecodeQueueLock, DISPATCH_TIME_FOREVER);
+    _globalDecodeQueueRefCount--;
+    if (_globalDecodeQueueRefCount <= 0 && _globalDecodeQueue) {
+        NSLog(@"🗑️ Releasing global decode queue (no more references)");
+        _globalDecodeQueue = nil;
+        _globalDecodeQueueRefCount = 0;
+    }
+    dispatch_semaphore_signal(_globalDecodeQueueLock);
+}
+
 #pragma mark - WebMAlphaWrapper
 
 /**
@@ -30,6 +66,9 @@
 @property (nonatomic, assign) BOOL stream;
 @property (nonatomic, assign) int streamCacheSize;
 @property (nonatomic, assign) int streamPrefetchAhead;
+
+// Global decode queue for non-stream mode
+@property (nonatomic, assign) BOOL useDecodeQueue;
 
 // Event callbacks
 @property (nonatomic, copy) RCTDirectEventBlock onLoad;
@@ -59,6 +98,7 @@
     _stream = NO;
     _streamCacheSize = 30;
     _streamPrefetchAhead = 15;
+    _useDecodeQueue = YES;  // Default to using global queue for non-stream mode
     
     _metalView = [[WebMAlphaMetalPlayerView alloc] initWithFrame:self.bounds config:config];
     _metalView.playerDelegate = self;
@@ -146,17 +186,48 @@
     // Apply streaming config before loading
     [self updatePlayerConfig];
     
-    NSLog(@"🎬 RNWebMAlphaWrapper loading: %@ (stream=%d)", sourceUri, _stream);
+    NSLog(@"🎬 RNWebMAlphaWrapper loading: %@ (stream=%d, useDecodeQueue=%d)", sourceUri, _stream, _useDecodeQueue);
     
     if ([sourceUri hasPrefix:@"http://"] || [sourceUri hasPrefix:@"https://"]) {
         [self downloadAndLoadURL:sourceUri];
     } else if ([sourceUri hasPrefix:@"file://"]) {
         NSString *path = [sourceUri stringByReplacingOccurrencesOfString:@"file://" withString:@""];
-        [self.metalView loadFromPath:path];
+        [self loadFromPathWithQueue:path];
     } else if ([sourceUri hasPrefix:@"asset://"] || [sourceUri hasPrefix:@"asset:/"]) {
         [self loadFromAsset:sourceUri];
     } else {
-        [self.metalView loadFromPath:sourceUri];
+        [self loadFromPathWithQueue:sourceUri];
+    }
+}
+
+/**
+ * Load from path, optionally using global decode queue for non-stream mode
+ */
+- (void)loadFromPathWithQueue:(NSString *)path {
+    // Streaming mode: load directly (streaming is already lightweight)
+    // Non-stream + useDecodeQueue: use global queue to serialize decoding
+    // Non-stream + !useDecodeQueue: load directly
+    BOOL shouldUseQueue = !_stream && _useDecodeQueue;
+    
+    if (shouldUseQueue) {
+        NSLog(@"📋 Using global decode queue for: %@", path);
+        __weak WebMAlphaWrapper *weakSelf = self;
+        dispatch_queue_t queue = getGlobalDecodeQueue();
+        dispatch_async(queue, ^{
+            WebMAlphaWrapper *strongSelf = weakSelf;
+            if (!strongSelf) {
+                releaseGlobalDecodeQueue();
+                return;
+            }
+            
+            // Load on the queue (this blocks until decodeAllFrames completes)
+            [strongSelf.metalView loadFromPath:path];
+            
+            // Release queue reference when done
+            releaseGlobalDecodeQueue();
+        });
+    } else {
+        [self.metalView loadFromPath:path];
     }
 }
 
@@ -229,10 +300,9 @@
             NSLog(@"💾 Saved to cache: %@", cachedFile.path);
         }
         
-        WebMAlphaMetalPlayerView *metalView = strongSelf.metalView;
         NSString *filePath = cachedFile.path;
         dispatch_async(dispatch_get_main_queue(), ^{
-            [metalView loadFromPath:filePath];
+            [strongSelf loadFromPathWithQueue:filePath];
         });
     }];
     [task resume];
@@ -249,13 +319,13 @@
     
     NSString *bundlePath = [[NSBundle mainBundle] pathForResource:path ofType:nil];
     if (bundlePath) {
-        [self.metalView loadFromPath:bundlePath];
+        [self loadFromPathWithQueue:bundlePath];
     } else {
         NSString *name = [path stringByDeletingPathExtension];
         NSString *ext = [path pathExtension];
         bundlePath = [[NSBundle mainBundle] pathForResource:name ofType:ext.length > 0 ? ext : @"webm"];
         if (bundlePath) {
-            [self.metalView loadFromPath:bundlePath];
+            [self loadFromPathWithQueue:bundlePath];
         } else {
             NSLog(@"❌ Asset not found: %@", path);
             if (self.onError) {
@@ -349,6 +419,9 @@ RCT_EXPORT_VIEW_PROPERTY(cacheKey, NSString)
 RCT_EXPORT_VIEW_PROPERTY(stream, BOOL)
 RCT_EXPORT_VIEW_PROPERTY(streamCacheSize, int)
 RCT_EXPORT_VIEW_PROPERTY(streamPrefetchAhead, int)
+
+// Global decode queue for non-stream mode
+RCT_EXPORT_VIEW_PROPERTY(useDecodeQueue, BOOL)
 
 // Events
 RCT_EXPORT_VIEW_PROPERTY(onLoad, RCTDirectEventBlock)

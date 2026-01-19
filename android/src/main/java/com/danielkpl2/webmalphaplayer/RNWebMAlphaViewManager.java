@@ -361,6 +361,18 @@ public class RNWebMAlphaViewManager extends SimpleViewManager<WebMAlphaTextureVi
         view.setStreamPrefetchAhead(frames);
     }
     
+    /**
+     * Enable/disable global decode queue for non-stream mode.
+     * When true (default): decoding is serialized across all players, preventing CPU saturation
+     * When false: each player decodes independently (faster for single player, can freeze with many)
+     * Has no effect in streaming mode.
+     */
+    @ReactProp(name = "useDecodeQueue", defaultBoolean = true)
+    public void setUseDecodeQueue(WebMAlphaTextureView view, boolean use) {
+        view.setUseDecodeQueue(use);
+        Log.d(TAG, "📋 Set useDecodeQueue: " + use);
+    }
+    
     @Nullable
     @Override
     public Map<String, Object> getExportedCustomDirectEventTypeConstants() {

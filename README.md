@@ -78,6 +78,7 @@ function MyComponent() {
 | `stream` | `boolean` | `false` | Enable streaming mode (decode frames on-demand instead of pre-loading all) |
 | `streamCacheSize` | `number` | `30` | Number of frames to keep in LRU cache when streaming |
 | `streamPrefetchAhead` | `number` | `15` | Number of frames to decode ahead of playback position |
+| `useDecodeQueue` | `boolean` | `true` | Serialize decoding across all players (prevents CPU saturation with many players) |
 
 ### Ref Methods
 
@@ -207,6 +208,34 @@ For long videos or memory-constrained devices, enable **streaming mode** to deco
 | Single long-running video | Streaming | No benefit to pre-loading if only one player |
 
 **Key insight**: Pre-loaded animations have **zero CPU cost during playback** since all frames are already decoded. This means 20+ pre-loaded animations can play simultaneously with minimal CPU impact (only GPU rendering). Streaming mode has continuous decode overhead per player, which compounds with multiple simultaneous players.
+
+### Global Decode Queue
+
+When spawning many players simultaneously in pre-load mode, the library uses a **global decode queue** to serialize decoding operations. This prevents CPU saturation, UI freezes, and crashes that would otherwise occur when multiple players try to decode all their frames at once.
+
+```tsx
+// Default behavior - uses global queue (safe for many simultaneous players)
+<WebMAlphaView source={{ uri: 'video.webm' }} />
+
+// Opt out of queue (only if you know you have a single player)
+<WebMAlphaView source={{ uri: 'video.webm' }} useDecodeQueue={false} />
+```
+
+#### How It Works
+
+1. **Serialized Decoding**: When `useDecodeQueue={true}` (default), all non-streaming players share a single decode queue
+2. **One-at-a-Time**: Only one player decodes frames at a time, preventing CPU contention
+3. **Automatic Cleanup**: The queue is created on first use and released when all players are done
+
+#### When to Disable
+
+| Scenario | `useDecodeQueue` | Why |
+|----------|------------------|-----|
+| Many players spawned at once | `true` (default) | Prevents freezing and crashes |
+| Single player, fastest load time | `false` | No queue overhead |
+| Streaming mode | N/A | Queue is automatically bypassed |
+
+**Note**: The global decode queue only affects non-streaming (pre-load) mode. Streaming mode already has lightweight on-demand decoding and doesn't need serialization.
 
 #### Streaming Configuration
 

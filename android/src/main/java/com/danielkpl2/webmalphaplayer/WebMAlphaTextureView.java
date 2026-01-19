@@ -36,6 +36,12 @@ public class WebMAlphaTextureView extends TextureView implements
     
     private static final String TAG = "WebMAlphaTexView";
     
+    // Global decode queue - serializes non-stream decoding across all player instances
+    // This prevents CPU saturation and crashes when many players are created simultaneously
+    private static ExecutorService globalDecodeQueue;
+    private static final Object globalDecodeQueueLock = new Object();
+    private static int globalDecodeQueueRefCount = 0;
+    
     // C++ player handle - volatile for thread visibility
     private volatile long playerId = 0;
     private volatile boolean isReleased = false;
@@ -82,6 +88,11 @@ public class WebMAlphaTextureView extends TextureView implements
     private boolean stream = false;
     private int streamCacheSize = 30;      // Frames to keep in cache when streaming
     private int streamPrefetchAhead = 15;  // Frames to decode ahead of playback
+    
+    // Use global decode queue for non-stream mode to prevent CPU saturation
+    // When true (default for non-stream): decoding is serialized across all players
+    // When false: each player decodes independently (can cause freezes with many players)
+    private boolean useDecodeQueue = true;
 
     // Render thread - handles all GL operations
     private ExecutorService renderThread;
@@ -211,6 +222,16 @@ public class WebMAlphaTextureView extends TextureView implements
      */
     public void setStreamPrefetchAhead(int frames) {
         this.streamPrefetchAhead = frames > 0 ? frames : 15;
+    }
+    
+    /**
+     * Enable/disable global decode queue for non-stream mode.
+     * When true (default): decoding is serialized across all players, preventing CPU saturation
+     * When false: each player decodes independently (faster for single player, can freeze with many)
+     * Has no effect in streaming mode.
+     */
+    public void setUseDecodeQueue(boolean use) {
+        this.useDecodeQueue = use;
     }
     
     public void setPaused(boolean paused) {
@@ -955,6 +976,41 @@ public class WebMAlphaTextureView extends TextureView implements
         boolean run();
     }
     
+    /**
+     * Get or create the global decode queue.
+     * This queue serializes non-stream decoding across all player instances.
+     */
+    private static ExecutorService getGlobalDecodeQueue() {
+        synchronized (globalDecodeQueueLock) {
+            if (globalDecodeQueue == null || globalDecodeQueue.isShutdown()) {
+                globalDecodeQueue = Executors.newSingleThreadExecutor(r -> {
+                    Thread t = new Thread(r, "WebMGlobalDecode");
+                    t.setPriority(Thread.NORM_PRIORITY);
+                    return t;
+                });
+                Log.i(TAG, "🔧 Created global decode queue");
+            }
+            globalDecodeQueueRefCount++;
+            return globalDecodeQueue;
+        }
+    }
+    
+    /**
+     * Release reference to global decode queue.
+     * Queue is shut down when all references are released.
+     */
+    private static void releaseGlobalDecodeQueue() {
+        synchronized (globalDecodeQueueLock) {
+            globalDecodeQueueRefCount--;
+            if (globalDecodeQueueRefCount <= 0 && globalDecodeQueue != null) {
+                Log.i(TAG, "🗑️ Shutting down global decode queue (no more references)");
+                globalDecodeQueue.shutdown();
+                globalDecodeQueue = null;
+                globalDecodeQueueRefCount = 0;
+            }
+        }
+    }
+    
     private void enqueueNativeLoad(NativeLoadCommand command, String label) {
         synchronized (nativeLoadLock) {
             if (isReleased || playerId == 0) {
@@ -962,25 +1018,46 @@ public class WebMAlphaTextureView extends TextureView implements
                 return;
             }
             
-            if (nativeLoadExecutor == null || nativeLoadExecutor.isShutdown()) {
-                nativeLoadExecutor = createLoadExecutor();
+            // Decide which executor to use:
+            // - Streaming mode: use per-instance executor (streaming is already lightweight)
+            // - Non-stream + useDecodeQueue: use global queue to serialize decoding
+            // - Non-stream + !useDecodeQueue: use per-instance executor
+            ExecutorService executor;
+            boolean usingGlobalQueue = !stream && useDecodeQueue;
+            
+            if (usingGlobalQueue) {
+                executor = getGlobalDecodeQueue();
+                Log.d(TAG, "📋 Using global decode queue for " + label);
+            } else {
+                if (nativeLoadExecutor == null || nativeLoadExecutor.isShutdown()) {
+                    nativeLoadExecutor = createLoadExecutor();
+                }
+                executor = nativeLoadExecutor;
             }
             
             cancelNativeLoadLocked();
             final long pid = playerId;
-            currentLoadTask = nativeLoadExecutor.submit(() -> {
-                if (isReleased || playerId != pid) {
-                    Log.w(TAG, "Load aborted - player released or changed");
-                    return;
-                }
-                boolean success = command.run();
-                if (!success && !isReleased) {
-                    Log.e(TAG, "Failed to load video " + label);
-                    post(() -> {
-                        if (callback != null && !isReleased) {
-                            callback.onError("Failed to load video " + label);
-                        }
-                    });
+            final boolean usedGlobalQueue = usingGlobalQueue;
+            currentLoadTask = executor.submit(() -> {
+                try {
+                    if (isReleased || playerId != pid) {
+                        Log.w(TAG, "Load aborted - player released or changed");
+                        return;
+                    }
+                    boolean success = command.run();
+                    if (!success && !isReleased) {
+                        Log.e(TAG, "Failed to load video " + label);
+                        post(() -> {
+                            if (callback != null && !isReleased) {
+                                callback.onError("Failed to load video " + label);
+                            }
+                        });
+                    }
+                } finally {
+                    // Release global queue reference when done
+                    if (usedGlobalQueue) {
+                        releaseGlobalDecodeQueue();
+                    }
                 }
             });
         }

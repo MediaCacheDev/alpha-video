@@ -36,4 +36,4 @@ android/.cxx/
 local.properties
 
 # Prebuilt binaries (should be committed for distribution)
-# prebuilt/
+prebuilt/

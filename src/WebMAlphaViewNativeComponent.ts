@@ -34,6 +34,14 @@ export interface NativeProps extends ViewProps {
    */
   streamPrefetchAhead?: number;
   
+  /**
+   * Enable global decode queue for non-stream mode.
+   * When true (default): decoding is serialized across all players, preventing CPU saturation
+   * When false: each player decodes independently (can freeze with many)
+   * Has no effect in streaming mode.
+   */
+  useDecodeQueue?: boolean;
+  
   onLoad?: (event: { nativeEvent: { totalFrames: number; width: number; height: number } }) => void;
   onError?: (event: { nativeEvent: { error: string } }) => void;
   onEnd?: (event: { nativeEvent: {} }) => void;
