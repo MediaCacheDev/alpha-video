@@ -91,11 +91,26 @@ Java_com_danielkpl2_webmalphaplayer_WebMAlphaPlayerNative_nativeCreate(
     jboolean preloadAllFrames,
     jboolean loopPlayback,
     jdouble playbackSpeed,
-    jboolean stream,
+    jstring modeStr,
     jint streamCacheSize,
     jint streamPrefetchAhead
 ) {
     auto player = std::make_shared<webm::WebMAlphaPlayer>();
+    
+    // Parse mode string
+    webm::PlaybackMode mode = webm::PlaybackMode::Preload;
+    if (modeStr != nullptr) {
+        const char* modeChars = env->GetStringUTFChars(modeStr, nullptr);
+        if (modeChars) {
+            std::string modeString(modeChars);
+            if (modeString == "stream") {
+                mode = webm::PlaybackMode::Stream;
+            } else if (modeString == "streamAndPreload") {
+                mode = webm::PlaybackMode::StreamAndPreload;
+            }
+            env->ReleaseStringUTFChars(modeStr, modeChars);
+        }
+    }
     
     webm::PlayerConfig config;
     config.decodeThreads = decodeThreads;
@@ -103,7 +118,8 @@ Java_com_danielkpl2_webmalphaplayer_WebMAlphaPlayerNative_nativeCreate(
     config.preloadAllFrames = preloadAllFrames;
     config.loopPlayback = loopPlayback;
     config.playbackSpeed = playbackSpeed;
-    config.stream = stream;
+    config.mode = mode;
+    config.stream = (mode == webm::PlaybackMode::Stream);  // Legacy compatibility
     config.streamCacheSize = streamCacheSize > 0 ? streamCacheSize : 30;
     config.streamPrefetchAhead = streamPrefetchAhead > 0 ? streamPrefetchAhead : 15;
     player->setConfig(config);

@@ -75,7 +75,7 @@ function MyComponent() {
 | `style` | `ViewStyle` | - | Container style |
 | `onLoad` | `function` | - | Callback when video loads |
 | `onError` | `function` | - | Callback when error occurs |
-| `stream` | `boolean` | `false` | Enable streaming mode (decode frames on-demand instead of pre-loading all) |
+| `mode` | `'preload' \| 'stream' \| 'streamAndPreload'` | `'preload'` | Playback mode (see below) |
 | `streamCacheSize` | `number` | `30` | Number of frames to keep in LRU cache when streaming |
 | `streamPrefetchAhead` | `number` | `15` | Number of frames to decode ahead of playback position |
 | `useDecodeQueue` | `boolean` | `true` | Serialize decoding across all players (prevents CPU saturation with many players) |
@@ -168,50 +168,44 @@ playerRef.current?.seekToFrame(30);
 - **Pre-decoding**: All frames loaded on startup for smooth playback
 - **Memory Pool**: Reusable frame buffers
 
-### Streaming Mode
+### Playback Modes
 
-For long videos or memory-constrained devices, enable **streaming mode** to decode frames on-demand instead of pre-loading all frames into memory.
+The player supports three playback modes via the `mode` prop:
 
 ```tsx
-<WebMAlphaView
-  source={{ uri: 'https://example.com/long-video.webm' }}
-  stream={true}
-  streamCacheSize={30}      // Keep 30 frames in cache
-  streamPrefetchAhead={15}  // Decode 15 frames ahead
-  autoPlay
-  loop
-/>
+// Preload mode (default) - decode all frames upfront, then play
+<WebMAlphaView source={{ uri: 'video.webm' }} mode="preload" />
+
+// Stream mode - decode on-demand with sliding window cache
+<WebMAlphaView source={{ uri: 'long-video.webm' }} mode="stream" />
+
+// Hybrid mode - start playing immediately, cache all frames for smooth looping
+<WebMAlphaView source={{ uri: 'video.webm' }} mode="streamAndPreload" />
 ```
 
-#### How Streaming Works
+#### Mode Comparison
 
-1. **On-Demand Decoding**: Frames are decoded sequentially as needed, rather than all at once on load
-2. **LRU Cache**: Recently decoded frames are kept in an LRU cache for smooth playback and looping
-3. **Background Prefetch**: A background thread decodes frames ahead of the current playback position
-4. **Loop Detection**: When playback loops back to the start, the decoder automatically seeks and continues prefetching
-
-#### Pre-load vs Streaming: Trade-offs
-
-| Mode | CPU Cost | Memory Cost | Best For |
-|------|----------|-------------|----------|
-| **Pre-load (default)** | High upfront, zero during playback | Higher (all frames in RAM) | Multiple simultaneous animations |
-| **Streaming** | Continuous decode overhead | Lower (only cached frames) | Long videos, memory-constrained devices |
+| Mode | Startup | Memory | Looping | Best For |
+|------|---------|--------|---------|----------|
+| `preload` | Wait for full decode | High (all frames) | Instant | Short loops, many simultaneous players |
+| `stream` | Immediate | Low (cache only) | Re-decode | Long videos, memory-constrained |
+| `streamAndPreload` | Immediate | High (after 1st pass) | Instant | Fast start + smooth loops |
 
 #### When to Use Each Mode
 
-| Scenario | Recommended | Why |
-|----------|-------------|-----|
-| Many simultaneous animations | Pre-load | Zero CPU during playback scales better horizontally |
-| Short/medium animations (< 10s) | Pre-load | One-time decode cost, smooth looping guaranteed |
-| Long videos (> 30s) | Streaming | Memory savings outweigh decode overhead |
-| Memory-constrained devices | Streaming | Keeps RAM usage bounded |
-| Single long-running video | Streaming | No benefit to pre-loading if only one player |
+| Scenario | Mode | Why |
+|----------|------|-----|
+| Many simultaneous animations | `preload` | Zero CPU during playback scales better |
+| Short/medium animations (< 10s) | `preload` | One-time decode, smooth looping guaranteed |
+| Long videos (> 30s) | `stream` | Memory savings outweigh decode overhead |
+| Memory-constrained devices | `stream` | Keeps RAM usage bounded |
+| Fast start + smooth loops | `streamAndPreload` | Best of both worlds |
 
-**Key insight**: Pre-loaded animations have **zero CPU cost during playback** since all frames are already decoded. This means 20+ pre-loaded animations can play simultaneously with minimal CPU impact (only GPU rendering). Streaming mode has continuous decode overhead per player, which compounds with multiple simultaneous players.
+**Key insight**: `preload` mode has **zero CPU cost during playback** since all frames are already decoded. This means 20+ preloaded animations can play simultaneously with minimal CPU impact (only GPU rendering).
 
 ### Global Decode Queue
 
-When spawning many players simultaneously in pre-load mode, the library uses a **global decode queue** to serialize decoding operations. This prevents CPU saturation, UI freezes, and crashes that would otherwise occur when multiple players try to decode all their frames at once.
+When spawning many players simultaneously in `preload` or `streamAndPreload` mode, the library uses a **global decode queue** to serialize decoding operations. This prevents CPU saturation, UI freezes, and crashes.
 
 ```tsx
 // Default behavior - uses global queue (safe for many simultaneous players)
@@ -233,15 +227,15 @@ When spawning many players simultaneously in pre-load mode, the library uses a *
 |----------|------------------|-----|
 | Many players spawned at once | `true` (default) | Prevents freezing and crashes |
 | Single player, fastest load time | `false` | No queue overhead |
-| Streaming mode | N/A | Queue is automatically bypassed |
+| `mode="stream"` | N/A | Queue is automatically bypassed |
 
-**Note**: The global decode queue only affects non-streaming (pre-load) mode. Streaming mode already has lightweight on-demand decoding and doesn't need serialization.
+**Note**: The global decode queue only affects `preload` and `streamAndPreload` modes. `stream` mode already has lightweight on-demand decoding and doesn't need serialization.
 
 #### Streaming Configuration
 
 | Prop | Default | Description |
 |------|---------|-------------|
-| `stream` | `false` | Enable streaming mode |
+| `mode` | `'preload'` | Playback mode: `'preload'`, `'stream'`, or `'streamAndPreload'` |
 | `streamCacheSize` | `30` | Number of frames to keep in LRU cache. Larger = smoother loops but more memory |
 | `streamPrefetchAhead` | `15` | Frames to decode ahead. Larger = smoother playback but more CPU usage |
 

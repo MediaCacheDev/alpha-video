@@ -333,14 +333,24 @@ public class RNWebMAlphaViewManager extends SimpleViewManager<WebMAlphaTextureVi
     }
     
     /**
-     * Enable streaming mode for low RAM usage.
-     * When true: decode on-demand with sliding window cache (good for long videos)
-     * When false (default): preload all frames (good for short loops)
+     * Set the playback mode.
+     * - "preload" (default): decode all frames upfront, then play
+     * - "stream": decode on-demand with sliding window cache
+     * - "streamAndPreload": start playing immediately, cache all frames for smooth looping
+     */
+    @ReactProp(name = "mode")
+    public void setMode(WebMAlphaTextureView view, @Nullable String mode) {
+        view.setMode(mode != null ? mode : "preload");
+        Log.d(TAG, "📺 Set mode: " + mode);
+    }
+    
+    /**
+     * @deprecated Use mode prop instead
      */
     @ReactProp(name = "stream", defaultBoolean = false)
     public void setStream(WebMAlphaTextureView view, boolean stream) {
         view.setStream(stream);
-        Log.d(TAG, "📺 Set stream mode: " + stream);
+        Log.d(TAG, "📺 Set stream mode (deprecated): " + stream);
     }
     
     /**
@@ -362,10 +372,10 @@ public class RNWebMAlphaViewManager extends SimpleViewManager<WebMAlphaTextureVi
     }
     
     /**
-     * Enable/disable global decode queue for non-stream mode.
+     * Enable/disable global decode queue for preload/streamAndPreload modes.
      * When true (default): decoding is serialized across all players, preventing CPU saturation
-     * When false: each player decodes independently (faster for single player, can freeze with many)
-     * Has no effect in streaming mode.
+     * When false: each player decodes independently (can freeze with many)
+     * Has no effect when mode='stream'.
      */
     @ReactProp(name = "useDecodeQueue", defaultBoolean = true)
     public void setUseDecodeQueue(WebMAlphaTextureView view, boolean use) {

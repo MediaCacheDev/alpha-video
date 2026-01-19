@@ -169,20 +169,34 @@ struct DecoderStats {
 };
 
 /**
+ * Playback mode for the player
+ */
+enum class PlaybackMode {
+    Preload,          // Decode all frames upfront before playback starts
+    Stream,           // Decode on-demand with sliding window cache (frames evicted)
+    StreamAndPreload  // Start playing immediately, cache all frames for smooth looping
+};
+
+/**
  * Configuration for the player
  */
 struct PlayerConfig {
     int decodeThreads = 4;          // FFmpeg decoder threads
     bool useHardwareAccel = false;  // Try hardware decode (rarely works for VP9+alpha)
     int cacheSize = 250;            // Max frames in cache (should be >= totalFrames when preloading)
-    bool preloadAllFrames = true;   // Decode all frames upfront (ignored if stream=true)
+    bool preloadAllFrames = true;   // Decode all frames upfront (ignored if mode != Preload)
     bool loopPlayback = true;       // Loop at end
     double playbackSpeed = 1.0;     // Playback speed multiplier
     
-    // Streaming mode - decode on-demand with sliding window cache
-    // When true: low RAM usage, suitable for long videos
-    // When false (default): preload all frames, best for short loops
+    // Playback mode:
+    // - Preload (default): decode all frames upfront, then play
+    // - Stream: decode on-demand with sliding window cache (frames evicted on loop)
+    // - StreamAndPreload: start playing immediately, cache all frames for smooth looping
+    PlaybackMode mode = PlaybackMode::Preload;
+    
+    // Legacy: kept for backwards compatibility, use mode instead
     bool stream = false;
+    
     int streamCacheSize = 30;       // Frames to keep in cache when streaming (default: ~1 second at 30fps)
     int streamPrefetchAhead = 15;   // Frames to decode ahead of playback position
 };
@@ -274,6 +288,7 @@ private:
     std::atomic<bool> shouldStop_{false};
     std::atomic<int> prefetchTarget_{-1};  // Target frame for prefetch thread
     std::atomic<int> streamDecodePos_{0};  // Current sequential decode position for streaming
+    std::atomic<bool> firstPassComplete_{false};  // For streamAndPreload: all frames cached after first pass
     
     // Caching
     std::unique_ptr<FrameCache> frameCache_;

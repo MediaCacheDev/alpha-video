@@ -100,6 +100,7 @@
     config.preloadAllFrames = YES;
     config.loopPlayback = YES;
     config.playbackSpeed = 1.0;
+    config.mode = @"preload";
     config.stream = NO;
     config.streamCacheSize = 30;
     config.streamPrefetchAhead = 15;
@@ -113,7 +114,19 @@
     cfg.preloadAllFrames = self.preloadAllFrames;
     cfg.loopPlayback = self.loopPlayback;
     cfg.playbackSpeed = self.playbackSpeed;
-    cfg.stream = self.stream;
+    
+    // Parse mode string to enum
+    if ([self.mode isEqualToString:@"stream"]) {
+        cfg.mode = webm::PlaybackMode::Stream;
+        cfg.stream = true;
+    } else if ([self.mode isEqualToString:@"streamAndPreload"]) {
+        cfg.mode = webm::PlaybackMode::StreamAndPreload;
+        cfg.stream = false;  // Not pure streaming
+    } else {
+        cfg.mode = webm::PlaybackMode::Preload;
+        cfg.stream = false;
+    }
+    
     cfg.streamCacheSize = self.streamCacheSize > 0 ? self.streamCacheSize : 30;
     cfg.streamPrefetchAhead = self.streamPrefetchAhead > 0 ? self.streamPrefetchAhead : 15;
     return cfg;

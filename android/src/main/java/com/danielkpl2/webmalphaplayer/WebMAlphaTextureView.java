@@ -82,15 +82,20 @@ public class WebMAlphaTextureView extends TextureView implements
     private int decodeThreads = 2;
     private int cacheSize = 90;
     
-    // Streaming mode - decode on-demand with sliding window cache
-    // When true: low RAM usage, suitable for long videos
-    // When false (default): preload all frames, best for short loops
-    private boolean stream = false;
+    // Playback mode:
+    // - "preload" (default): decode all frames upfront, then play
+    // - "stream": decode on-demand with sliding window cache
+    // - "streamAndPreload": start playing immediately, cache all frames for smooth looping
+    public static final String MODE_PRELOAD = "preload";
+    public static final String MODE_STREAM = "stream";
+    public static final String MODE_STREAM_AND_PRELOAD = "streamAndPreload";
+    
+    private String mode = MODE_PRELOAD;
     private int streamCacheSize = 30;      // Frames to keep in cache when streaming
     private int streamPrefetchAhead = 15;  // Frames to decode ahead of playback
     
-    // Use global decode queue for non-stream mode to prevent CPU saturation
-    // When true (default for non-stream): decoding is serialized across all players
+    // Use global decode queue for preload/streamAndPreload modes to prevent CPU saturation
+    // When true (default): decoding is serialized across all players
     // When false: each player decodes independently (can cause freezes with many players)
     private boolean useDecodeQueue = true;
 
@@ -157,7 +162,7 @@ public class WebMAlphaTextureView extends TextureView implements
         // Create C++ player
         playerId = WebMAlphaPlayerNative.nativeCreate(
             decodeThreads, cacheSize, true, loop, playbackSpeed,
-            stream, streamCacheSize, streamPrefetchAhead
+            mode, streamCacheSize, streamPrefetchAhead
         );
         WebMAlphaPlayerNative.nativeSetListener(playerId, this);
         isReleased = false;
@@ -199,13 +204,25 @@ public class WebMAlphaTextureView extends TextureView implements
     }
     
     /**
-     * Enable streaming mode for low RAM usage.
-     * When true: decode on-demand with sliding window cache (good for long videos)
-     * When false (default): preload all frames (good for short loops)
+     * Set the playback mode.
+     * - "preload" (default): decode all frames upfront, then play
+     * - "stream": decode on-demand with sliding window cache
+     * - "streamAndPreload": start playing immediately, cache all frames for smooth looping
      * Must be called before player is initialized (before surface is available)
      */
+    public void setMode(String mode) {
+        if (MODE_STREAM.equals(mode) || MODE_STREAM_AND_PRELOAD.equals(mode)) {
+            this.mode = mode;
+        } else {
+            this.mode = MODE_PRELOAD; // Default
+        }
+    }
+    
+    /**
+     * @deprecated Use setMode() instead
+     */
     public void setStream(boolean stream) {
-        this.stream = stream;
+        this.mode = stream ? MODE_STREAM : MODE_PRELOAD;
     }
     
     /**
@@ -225,10 +242,10 @@ public class WebMAlphaTextureView extends TextureView implements
     }
     
     /**
-     * Enable/disable global decode queue for non-stream mode.
+     * Enable/disable global decode queue for preload/streamAndPreload modes.
      * When true (default): decoding is serialized across all players, preventing CPU saturation
-     * When false: each player decodes independently (faster for single player, can freeze with many)
-     * Has no effect in streaming mode.
+     * When false: each player decodes independently (can freeze with many)
+     * Has no effect when mode='stream'.
      */
     public void setUseDecodeQueue(boolean use) {
         this.useDecodeQueue = use;
@@ -1019,11 +1036,11 @@ public class WebMAlphaTextureView extends TextureView implements
             }
             
             // Decide which executor to use:
-            // - Streaming mode: use per-instance executor (streaming is already lightweight)
-            // - Non-stream + useDecodeQueue: use global queue to serialize decoding
-            // - Non-stream + !useDecodeQueue: use per-instance executor
+            // - Stream mode: use per-instance executor (streaming is already lightweight)
+            // - Preload/StreamAndPreload + useDecodeQueue: use global queue to serialize decoding
+            // - Preload/StreamAndPreload + !useDecodeQueue: use per-instance executor
             ExecutorService executor;
-            boolean usingGlobalQueue = !stream && useDecodeQueue;
+            boolean usingGlobalQueue = !MODE_STREAM.equals(mode) && useDecodeQueue;
             
             if (usingGlobalQueue) {
                 executor = getGlobalDecodeQueue();

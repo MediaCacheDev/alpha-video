@@ -2,6 +2,22 @@ import type { ViewProps } from 'react-native';
 import type { HostComponent } from 'react-native';
 import { requireNativeComponent, Platform } from 'react-native';
 
+/**
+ * Playback mode for the WebM player.
+ * 
+ * - `'preload'` (default): Decode all frames upfront before playback starts.
+ *   Best for short loops. Zero CPU during playback, instant looping.
+ * 
+ * - `'stream'`: Decode frames on-demand with a sliding window cache.
+ *   Best for long videos or memory-constrained devices. Frames are evicted
+ *   from cache, so looping requires re-decoding.
+ * 
+ * - `'streamAndPreload'`: Start playing immediately while decoding in background.
+ *   After first pass completes, all frames are cached for instant looping.
+ *   Best of both worlds: fast start + smooth loops.
+ */
+export type PlaybackMode = 'preload' | 'stream' | 'streamAndPreload';
+
 export interface NativeProps extends ViewProps {
   source?: {
     uri: string;
@@ -14,23 +30,39 @@ export interface NativeProps extends ViewProps {
   cacheKey?: string;
   
   /**
-   * Enable streaming mode for low RAM usage.
-   * When true: decode on-demand with sliding window cache (good for long videos)
-   * When false (default): preload all frames (good for short loops)
+   * Playback mode for the player.
+   * 
+   * - `'preload'` (default): Decode all frames upfront before playback starts.
+   *   Best for short loops. Zero CPU during playback, instant looping.
+   * 
+   * - `'stream'`: Decode frames on-demand with a sliding window cache.
+   *   Best for long videos or memory-constrained devices. Frames are evicted
+   *   from cache, so looping requires re-decoding.
+   * 
+   * - `'streamAndPreload'`: Start playing immediately while decoding in background.
+   *   After first pass completes, all frames are cached for instant looping.
+   *   Best of both worlds: fast start + smooth loops.
+   */
+  mode?: PlaybackMode;
+  
+  /**
+   * @deprecated Use `mode` instead. Will be removed in a future version.
+   * `stream={true}` is equivalent to `mode="stream"`.
+   * `stream={false}` is equivalent to `mode="preload"`.
    */
   stream?: boolean;
   
   /**
    * Number of frames to keep in cache when streaming.
    * Default: 30 frames (~1 second at 30fps)
-   * Only used when stream=true
+   * Only used when mode='stream'
    */
   streamCacheSize?: number;
   
   /**
    * Number of frames to prefetch ahead of playback position when streaming.
    * Default: 15 frames (~0.5 seconds at 30fps)
-   * Only used when stream=true
+   * Only used when mode='stream' or mode='streamAndPreload'
    */
   streamPrefetchAhead?: number;
   
@@ -38,7 +70,7 @@ export interface NativeProps extends ViewProps {
    * Enable global decode queue for non-stream mode.
    * When true (default): decoding is serialized across all players, preventing CPU saturation
    * When false: each player decodes independently (can freeze with many)
-   * Has no effect in streaming mode.
+   * Has no effect when mode='stream'.
    */
   useDecodeQueue?: boolean;
   

@@ -80,9 +80,13 @@ NS_ASSUME_NONNULL_BEGIN
 @property (nonatomic) BOOL loopPlayback;      // Default: YES
 @property (nonatomic) double playbackSpeed;   // Default: 1.0
 
-// Streaming mode - decode on-demand with sliding window cache
-// When YES: low RAM usage, suitable for long videos
-// When NO (default): preload all frames, best for short loops
+// Playback mode: "preload", "stream", or "streamAndPreload"
+// - preload (default): decode all frames upfront, then play
+// - stream: decode on-demand with sliding window cache
+// - streamAndPreload: start playing immediately, cache all frames for smooth looping
+@property (nonatomic, copy) NSString *mode;   // Default: "preload"
+
+// Legacy stream property (deprecated, use mode instead)
 @property (nonatomic) BOOL stream;            // Default: NO
 @property (nonatomic) int streamCacheSize;    // Default: 30 (frames to keep in cache when streaming)
 @property (nonatomic) int streamPrefetchAhead; // Default: 15 (frames to decode ahead)

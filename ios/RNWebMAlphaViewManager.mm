@@ -62,12 +62,15 @@ static void releaseGlobalDecodeQueue(void) {
 @property (nonatomic, assign) double playbackSpeed;
 @property (nonatomic, copy) NSString *cacheKey;
 
-// Streaming mode props
-@property (nonatomic, assign) BOOL stream;
+// Playback mode: "preload", "stream", or "streamAndPreload"
+@property (nonatomic, copy) NSString *mode;
 @property (nonatomic, assign) int streamCacheSize;
 @property (nonatomic, assign) int streamPrefetchAhead;
 
-// Global decode queue for non-stream mode
+// Legacy stream prop (deprecated, use mode instead)
+@property (nonatomic, assign) BOOL stream;
+
+// Global decode queue for preload/streamAndPreload modes
 @property (nonatomic, assign) BOOL useDecodeQueue;
 
 // Event callbacks
@@ -95,10 +98,11 @@ static void releaseGlobalDecodeQueue(void) {
     _loop = YES;
     _paused = NO;
     _playbackSpeed = 1.0;
+    _mode = @"preload";
     _stream = NO;
     _streamCacheSize = 30;
     _streamPrefetchAhead = 15;
-    _useDecodeQueue = YES;  // Default to using global queue for non-stream mode
+    _useDecodeQueue = YES;  // Default to using global queue for preload/streamAndPreload modes
     
     _metalView = [[WebMAlphaMetalPlayerView alloc] initWithFrame:self.bounds config:config];
     _metalView.playerDelegate = self;
@@ -150,8 +154,21 @@ static void releaseGlobalDecodeQueue(void) {
     self.metalView.playbackSpeed = playbackSpeed;
 }
 
+- (void)setMode:(NSString *)mode {
+    if ([mode isEqualToString:@"stream"] || [mode isEqualToString:@"streamAndPreload"]) {
+        _mode = mode;
+    } else {
+        _mode = @"preload";
+    }
+    // Update legacy stream flag for compatibility
+    _stream = [_mode isEqualToString:@"stream"];
+    [self updatePlayerConfig];
+}
+
+// Deprecated: use setMode instead
 - (void)setStream:(BOOL)stream {
     _stream = stream;
+    _mode = stream ? @"stream" : @"preload";
     [self updatePlayerConfig];
 }
 
@@ -167,14 +184,13 @@ static void releaseGlobalDecodeQueue(void) {
 
 - (void)updatePlayerConfig {
     WebMPlayerConfig *config = [self.metalView.player getConfig];
-    config.stream = _stream;
+    config.mode = _mode;
+    config.stream = [_mode isEqualToString:@"stream"];
     config.streamCacheSize = _streamCacheSize;
     config.streamPrefetchAhead = _streamPrefetchAhead;
     [self.metalView.player setConfig:config];
     
-    if (_stream) {
-        NSLog(@"📺 iOS streaming mode: cacheSize=%d, prefetchAhead=%d", _streamCacheSize, _streamPrefetchAhead);
-    }
+    NSLog(@"📺 iOS mode: %@, cacheSize=%d, prefetchAhead=%d", _mode, _streamCacheSize, _streamPrefetchAhead);
 }
 
 #pragma mark - Source Loading
@@ -186,7 +202,7 @@ static void releaseGlobalDecodeQueue(void) {
     // Apply streaming config before loading
     [self updatePlayerConfig];
     
-    NSLog(@"🎬 RNWebMAlphaWrapper loading: %@ (stream=%d, useDecodeQueue=%d)", sourceUri, _stream, _useDecodeQueue);
+    NSLog(@"🎬 RNWebMAlphaWrapper loading: %@ (mode=%@, useDecodeQueue=%d)", sourceUri, _mode, _useDecodeQueue);
     
     if ([sourceUri hasPrefix:@"http://"] || [sourceUri hasPrefix:@"https://"]) {
         [self downloadAndLoadURL:sourceUri];
@@ -201,13 +217,13 @@ static void releaseGlobalDecodeQueue(void) {
 }
 
 /**
- * Load from path, optionally using global decode queue for non-stream mode
+ * Load from path, optionally using global decode queue for preload/streamAndPreload modes
  */
 - (void)loadFromPathWithQueue:(NSString *)path {
-    // Streaming mode: load directly (streaming is already lightweight)
-    // Non-stream + useDecodeQueue: use global queue to serialize decoding
-    // Non-stream + !useDecodeQueue: load directly
-    BOOL shouldUseQueue = !_stream && _useDecodeQueue;
+    // Stream mode: load directly (streaming is already lightweight)
+    // Preload/StreamAndPreload + useDecodeQueue: use global queue to serialize decoding
+    // Preload/StreamAndPreload + !useDecodeQueue: load directly
+    BOOL shouldUseQueue = ![_mode isEqualToString:@"stream"] && _useDecodeQueue;
     
     if (shouldUseQueue) {
         NSLog(@"📋 Using global decode queue for: %@", path);
@@ -415,12 +431,17 @@ RCT_EXPORT_VIEW_PROPERTY(paused, BOOL)
 RCT_EXPORT_VIEW_PROPERTY(playbackSpeed, double)
 RCT_EXPORT_VIEW_PROPERTY(cacheKey, NSString)
 
-// Streaming mode props
+// Playback mode: "preload", "stream", or "streamAndPreload"
+RCT_EXPORT_VIEW_PROPERTY(mode, NSString)
+
+// Legacy stream prop (deprecated, use mode instead)
 RCT_EXPORT_VIEW_PROPERTY(stream, BOOL)
+
+// Streaming configuration
 RCT_EXPORT_VIEW_PROPERTY(streamCacheSize, int)
 RCT_EXPORT_VIEW_PROPERTY(streamPrefetchAhead, int)
 
-// Global decode queue for non-stream mode
+// Global decode queue for preload/streamAndPreload modes
 RCT_EXPORT_VIEW_PROPERTY(useDecodeQueue, BOOL)
 
 // Events
