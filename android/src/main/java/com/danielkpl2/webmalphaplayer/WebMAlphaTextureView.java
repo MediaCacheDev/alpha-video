@@ -107,6 +107,7 @@ public class WebMAlphaTextureView extends TextureView implements
     private ExecutorService nativeLoadExecutor;
     private final Object nativeLoadLock = new Object();
     private Future<?> currentLoadTask;
+    private volatile Future<?> softReleaseTask;  // Track soft release for synchronization
     
     // Store pending source for re-load after reattach
     private String pendingSourcePath = null;
@@ -367,6 +368,9 @@ public class WebMAlphaTextureView extends TextureView implements
             // Load any pending source now that player is ready
             if (pendingSourcePath != null) {
                 Log.i(TAG, "🔄 Loading deferred source: " + pendingSourcePath);
+                // Wait for any pending soft release to complete before reloading
+                // This prevents race condition when view is detached and reattached quickly
+                waitForSoftRelease();
                 if (pendingSourceIsUrl) {
                     enqueueNativeLoad(() -> WebMAlphaPlayerNative.nativeLoadFromUrl(playerId, pendingSourcePath),
                         "from url (deferred)");
@@ -949,13 +953,32 @@ public class WebMAlphaTextureView extends TextureView implements
                 if (nativeLoadExecutor == null || nativeLoadExecutor.isShutdown()) {
                     nativeLoadExecutor = createLoadExecutor();
                 }
-                nativeLoadExecutor.submit(() -> {
+                // Track this task so we can wait for it before reloading
+                softReleaseTask = nativeLoadExecutor.submit(() -> {
                     WebMAlphaPlayerNative.nativeStop(pid);
                     WebMAlphaPlayerNative.nativeUnload(pid);
                     Log.i(TAG, "📦 Soft release cleanup complete for player " + pid);
                 });
             }
         }
+    }
+    
+    /**
+     * Wait for any pending soft release to complete.
+     * Must be called before reloading after a detach/reattach cycle.
+     */
+    private void waitForSoftRelease() {
+        Future<?> task = softReleaseTask;
+        if (task != null && !task.isDone()) {
+            try {
+                Log.d(TAG, "⏳ Waiting for soft release to complete...");
+                task.get(1000, java.util.concurrent.TimeUnit.MILLISECONDS);
+                Log.d(TAG, "✅ Soft release completed");
+            } catch (Exception e) {
+                Log.w(TAG, "⚠️ Soft release wait interrupted or timed out: " + e.getMessage());
+            }
+        }
+        softReleaseTask = null;
     }
     
     @Override

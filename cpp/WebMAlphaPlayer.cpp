@@ -555,20 +555,10 @@ bool WebMAlphaPlayer::loadFromFile(const std::string& path) {
         // Start background sequential decode thread - will decode ALL frames
         prefetchThread_ = std::make_unique<std::thread>(&WebMAlphaPlayer::prefetchLoop, this);
         
-        // Wait briefly for initial frames to be decoded (same as stream mode)
-        auto startWait = std::chrono::high_resolution_clock::now();
-        int minFrames = std::min(5, totalFrames_);
-        while (streamDecodePos_.load() < minFrames && !shouldStop_) {
-            std::this_thread::sleep_for(std::chrono::milliseconds(5));
-            auto elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(
-                std::chrono::high_resolution_clock::now() - startWait);
-            if (elapsed.count() > 500) {
-                LOGI("📺 Initial decode timeout after 500ms, continuing with %d frames", 
-                     streamDecodePos_.load());
-                break;
-            }
-        }
-        LOGI("📺 StreamAndPreload initial decode ready: %d frames", streamDecodePos_.load());
+        // DON'T wait for initial frames here - return immediately to avoid blocking
+        // the global decode queue when multiple players are spawned simultaneously.
+        // The playback loop will handle frame-not-ready gracefully by waiting/retrying.
+        LOGI("📺 StreamAndPreload started (non-blocking), decode thread running in background");
     } else {
         // Preload mode (default): decode all frames upfront before playback
         decodeAllFrames();
@@ -697,6 +687,9 @@ bool WebMAlphaPlayer::loadFromUrl(const std::string& url) {
 }
 
 void WebMAlphaPlayer::unload() {
+    // Protect against concurrent unload calls (e.g., during view detach/reattach)
+    std::lock_guard<std::mutex> unloadLock(unloadMutex_);
+    
     stop();
     
     // Signal prefetch thread to stop
@@ -717,20 +710,26 @@ void WebMAlphaPlayer::unload() {
         }
     }
     
-    // Wait for threads to finish
-    if (decodeThread_ && decodeThread_->joinable()) {
-        decodeThread_->join();
+    // Wait for threads to finish - must check both pointer and joinable state
+    // to avoid crash when unload is called multiple times
+    if (decodeThread_) {
+        if (decodeThread_->joinable()) {
+            decodeThread_->join();
+        }
+        decodeThread_.reset();
     }
-    if (playbackThread_ && playbackThread_->joinable()) {
-        playbackThread_->join();
+    if (playbackThread_) {
+        if (playbackThread_->joinable()) {
+            playbackThread_->join();
+        }
+        playbackThread_.reset();
     }
-    if (prefetchThread_ && prefetchThread_->joinable()) {
-        prefetchThread_->join();
+    if (prefetchThread_) {
+        if (prefetchThread_->joinable()) {
+            prefetchThread_->join();
+        }
+        prefetchThread_.reset();
     }
-    
-    decodeThread_.reset();
-    playbackThread_.reset();
-    prefetchThread_.reset();
     prefetchTarget_ = -1;
     
     closeCodecs();

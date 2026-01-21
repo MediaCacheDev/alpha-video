@@ -283,6 +283,7 @@ private:
     std::unique_ptr<std::thread> playbackThread_;
     std::unique_ptr<std::thread> prefetchThread_;  // Background prefetch for streaming mode
     std::timed_mutex decodeMutex_;  // timed_mutex allows try_lock_for() for non-blocking unload
+    std::mutex unloadMutex_;  // Protects unload() from concurrent calls
     std::condition_variable decodeCV_;
     std::condition_variable_any prefetchCV_;  // Signal prefetch thread
     std::atomic<bool> shouldStop_{false};
