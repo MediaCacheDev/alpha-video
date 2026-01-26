@@ -106,9 +106,14 @@ public:
     std::shared_ptr<YUVAFrame> get(const std::string& key);
     void clear();
     size_t size() const;
+    size_t maxSize() const;
     bool contains(const std::string& key) const;
+    bool isFull() const;
     void evict(const std::string& key);  // Remove specific frame from cache
     void setMaxSize(size_t maxFrames);   // Dynamically adjust cache size
+    // Evict the frame furthest behind playbackPos in circular buffer (modulo totalFrames)
+    // Returns true if a frame was evicted
+    bool evictFurthestBehind(int playbackPos, int totalFrames, const std::string& keyPrefix);
     
 private:
     size_t maxSize_;

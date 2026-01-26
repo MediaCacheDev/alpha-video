@@ -24,6 +24,11 @@ export interface WebMSource {
 /**
  * Props for the WebMAlphaView component
  */
+/**
+ * Playback mode for the WebM player.
+ */
+export type PlaybackMode = 'preload' | 'stream' | 'streamAndPreload';
+
 export interface WebMAlphaViewProps extends ViewProps {
   /** Video source URL or path */
   source: WebMSource;
@@ -44,6 +49,15 @@ export interface WebMAlphaViewProps extends ViewProps {
   cacheKey?: string;
   
   /**
+   * Playback mode for the player.
+   * - 'preload' (default): Decode all frames upfront before playback starts.
+   * - 'stream': Decode frames on-demand with a sliding window cache.
+   * - 'streamAndPreload': Start playing immediately while decoding in background.
+   */
+  mode?: PlaybackMode;
+  
+  /**
+   * @deprecated Use `mode` instead.
    * Enable streaming mode for low RAM usage.
    * When true: decode on-demand with sliding window cache (good for long videos like YouTube)
    * When false (default): preload all frames to RAM (good for short loops like glow effects)
@@ -53,16 +67,24 @@ export interface WebMAlphaViewProps extends ViewProps {
   /**
    * Number of frames to keep in cache when streaming.
    * Default: 30 frames (~1 second at 30fps)
-   * Only used when stream=true
+   * Only used when mode='stream'
    */
   streamCacheSize?: number;
   
   /**
    * Number of frames to prefetch ahead of playback position when streaming.
    * Default: 15 frames (~0.5 seconds at 30fps)
-   * Only used when stream=true
+   * Only used when mode='stream'
    */
   streamPrefetchAhead?: number;
+  
+  /**
+   * Enable global decode queue for non-stream mode.
+   * When true (default): decoding is serialized across all players, preventing CPU saturation
+   * When false: each player decodes independently (can freeze with many)
+   * Has no effect when mode='stream'.
+   */
+  useDecodeQueue?: boolean;
   
   /** Container style */
   style?: StyleProp<ViewStyle>;
@@ -270,9 +292,11 @@ const NativePlayer = forwardRef<WebMAlphaViewRef, WebMAlphaViewProps>(
         paused={props.paused}
         playbackSpeed={props.playbackSpeed}
         cacheKey={props.cacheKey}
+        mode={props.mode}
         stream={props.stream}
         streamCacheSize={props.streamCacheSize}
         streamPrefetchAhead={props.streamPrefetchAhead}
+        useDecodeQueue={props.useDecodeQueue}
         style={props.style}
         onLoad={handleNativeLoad}
         onError={handleNativeError}

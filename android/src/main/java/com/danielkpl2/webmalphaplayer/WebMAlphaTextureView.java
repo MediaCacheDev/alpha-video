@@ -161,8 +161,12 @@ public class WebMAlphaTextureView extends TextureView implements
         }
         
         // Create C++ player
+        // preloadAllFrames should be false for stream mode, true for preload/streamAndPreload
+        boolean preloadAllFrames = !MODE_STREAM.equals(mode);
+        Log.i(TAG, "🎛️ Creating player with mode=" + mode + ", preloadAllFrames=" + preloadAllFrames + 
+              ", streamCacheSize=" + streamCacheSize);
         playerId = WebMAlphaPlayerNative.nativeCreate(
-            decodeThreads, cacheSize, true, loop, playbackSpeed,
+            decodeThreads, cacheSize, preloadAllFrames, loop, playbackSpeed,
             mode, streamCacheSize, streamPrefetchAhead
         );
         WebMAlphaPlayerNative.nativeSetListener(playerId, this);
@@ -212,11 +216,13 @@ public class WebMAlphaTextureView extends TextureView implements
      * Must be called before player is initialized (before surface is available)
      */
     public void setMode(String mode) {
+        String oldMode = this.mode;
         if (MODE_STREAM.equals(mode) || MODE_STREAM_AND_PRELOAD.equals(mode)) {
             this.mode = mode;
         } else {
             this.mode = MODE_PRELOAD; // Default
         }
+        Log.i(TAG, "🎛️ setMode called: " + oldMode + " -> " + this.mode + " (playerId=" + playerId + ")");
     }
     
     /**
@@ -264,9 +270,19 @@ public class WebMAlphaTextureView extends TextureView implements
         pendingSourcePath = path;
         pendingSourceIsUrl = false;
         
-        // If player isn't initialized yet, just store the path - it will be loaded in onAttachedToWindow
+        // If surface isn't available yet, just store the path - it will be loaded when surface is ready
+        if (!surfaceAvailable.get()) {
+            Log.i(TAG, "📋 Storing source for deferred load (no surface): " + path);
+            return;
+        }
+        
+        // Initialize player if needed - by now all React props should be set
+        if (playerId == 0 && !isReleased) {
+            initializePlayer();
+        }
+        
         if (isReleased || playerId == 0) {
-            Log.i(TAG, "📋 Storing source for deferred load: " + path);
+            Log.w(TAG, "Cannot load - player not initialized");
             return;
         }
         
@@ -290,9 +306,19 @@ public class WebMAlphaTextureView extends TextureView implements
         pendingSourcePath = url;
         pendingSourceIsUrl = true;
         
-        // If player isn't initialized yet, just store the URL - it will be loaded in onAttachedToWindow
+        // If surface isn't available yet, just store the URL - it will be loaded when surface is ready
+        if (!surfaceAvailable.get()) {
+            Log.i(TAG, "📋 Storing URL for deferred load (no surface): " + url);
+            return;
+        }
+        
+        // Initialize player if needed - by now all React props should be set
+        if (playerId == 0 && !isReleased) {
+            initializePlayer();
+        }
+        
         if (isReleased || playerId == 0) {
-            Log.i(TAG, "📋 Storing URL for deferred load: " + url);
+            Log.w(TAG, "Cannot load URL - player not initialized");
             return;
         }
         
@@ -357,17 +383,27 @@ public class WebMAlphaTextureView extends TextureView implements
         this.surfaceHeight = height;
         surfaceAvailable.set(true);
         
-        // Initialize player lazily when surface is ready
-        // This prevents resource flooding when many views are created but not visible
-        initializePlayer();
+        // DON'T initialize player here - wait until we load a source
+        // This ensures all React props (including mode) are set before player creation
+        
+        // Create render thread if needed (for EGL init)
+        if (renderThread == null || renderThread.isShutdown()) {
+            renderThread = Executors.newSingleThreadExecutor(r -> {
+                Thread t = new Thread(r, "WebMGLRender");
+                t.setPriority(Thread.MAX_PRIORITY);
+                return t;
+            });
+        }
         
         // Initialize EGL on render thread
         renderThread.execute(() -> {
             initEGL();
             
-            // Load any pending source now that player is ready
+            // Load any pending source now that EGL is ready
             if (pendingSourcePath != null) {
                 Log.i(TAG, "🔄 Loading deferred source: " + pendingSourcePath);
+                // Initialize player now - all props should be set by this point
+                initializePlayer();
                 // Wait for any pending soft release to complete before reloading
                 // This prevents race condition when view is detached and reattached quickly
                 waitForSoftRelease();

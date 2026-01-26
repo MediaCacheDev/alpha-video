@@ -256,6 +256,19 @@
     config.stream = cfg.stream;
     config.streamCacheSize = cfg.streamCacheSize;
     config.streamPrefetchAhead = cfg.streamPrefetchAhead;
+    
+    // Convert mode enum back to string
+    switch (cfg.mode) {
+        case webm::PlaybackMode::Stream:
+            config.mode = @"stream";
+            break;
+        case webm::PlaybackMode::StreamAndPreload:
+            config.mode = @"streamAndPreload";
+            break;
+        default:
+            config.mode = @"preload";
+            break;
+    }
     return config;
 }
 

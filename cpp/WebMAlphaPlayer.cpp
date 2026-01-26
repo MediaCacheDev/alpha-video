@@ -329,8 +329,8 @@ void FrameCache::put(const std::string& key, std::shared_ptr<YUVAFrame> frame) {
     } else {
         // New key - insert
         if (cache_.size() >= maxSize_) {
-            LOGI("⚠️ Cache full (%zu >= %zu), evicting oldest before adding %s", 
-                 cache_.size(), maxSize_, key.c_str());
+            // In stream mode, the prefetch loop should have already called evictFurthestBehind
+            // But for preload mode or edge cases, use simple LRU eviction
             evictOldest();
         }
         cache_[key] = frame;
@@ -410,6 +410,58 @@ void FrameCache::evictOldest() {
     lruList_.pop_back();
     lruMap_.erase(oldestKey);
     cache_.erase(oldestKey);
+}
+
+size_t FrameCache::maxSize() const {
+    return maxSize_;
+}
+
+bool FrameCache::isFull() const {
+    std::lock_guard<std::mutex> lock(mutex_);
+    return cache_.size() >= maxSize_;
+}
+
+bool FrameCache::evictFurthestBehind(int playbackPos, int totalFrames, const std::string& keyPrefix) {
+    std::lock_guard<std::mutex> lock(mutex_);
+    
+    if (cache_.empty() || totalFrames <= 0) return false;
+    
+    // Find the frame that is furthest behind playbackPos in circular sense
+    std::string furthestKey;
+    int furthestDist = 0;  // Most negative distance = furthest behind
+    
+    for (const auto& pair : cache_) {
+        // Extract frame number from key (format: "frame_123")
+        size_t underscorePos = pair.first.find('_');
+        if (underscorePos == std::string::npos) continue;
+        
+        int frameNum = std::stoi(pair.first.substr(underscorePos + 1));
+        
+        // Calculate circular distance: positive = ahead, negative = behind
+        int dist = frameNum - playbackPos;
+        // Normalize to [-totalFrames/2, totalFrames/2] for wraparound
+        if (dist > totalFrames / 2) dist -= totalFrames;
+        if (dist < -totalFrames / 2) dist += totalFrames;
+        
+        // Track the frame with the most negative distance (furthest behind)
+        if (furthestKey.empty() || dist < furthestDist) {
+            furthestDist = dist;
+            furthestKey = pair.first;
+        }
+    }
+    
+    if (!furthestKey.empty() && furthestDist < 0) {  // Evict if behind playback
+        // Remove from LRU tracking
+        auto lruIt = lruMap_.find(furthestKey);
+        if (lruIt != lruMap_.end()) {
+            lruList_.erase(lruIt->second);
+            lruMap_.erase(lruIt);
+        }
+        cache_.erase(furthestKey);
+        return true;
+    }
+    
+    return false;
 }
 
 //==============================================================================
@@ -1369,7 +1421,7 @@ void WebMAlphaPlayer::playbackLoop() {
                 }
             } else if (config_.mode == PlaybackMode::Stream || config_.mode == PlaybackMode::StreamAndPreload) {
                 // In streaming modes, frame not ready yet - don't advance, wait for prefetch
-                LOGI("🎬 Frame %d not ready, waiting for prefetch", frameIdx);
+                LOGI("🎬 Frame %d not ready, waiting for prefetch (decode at %d)", frameIdx, streamDecodePos_.load());
                 std::this_thread::sleep_for(std::chrono::milliseconds(5));
                 continue;  // Try again without advancing frame
             }
@@ -1445,26 +1497,30 @@ void WebMAlphaPlayer::streamingPrefetch(int currentFrame) {
 }
 
 void WebMAlphaPlayer::evictOldFrames(int currentFrame) {
-    if (!frameCache_ || !loaded_) return;
+    if (!frameCache_ || !loaded_ || totalFrames_ <= 0) return;
     
     // In StreamAndPreload (hybrid) mode, never evict frames - we want to keep all of them
     if (config_.mode == PlaybackMode::StreamAndPreload) {
         return;
     }
     
-    // Keep a small buffer behind current position (2 frames for safety)
-    int evictBefore = currentFrame - 2;
-    
-    // In looping mode, don't evict frames near the end when we're at the start
-    if (config_.loopPlayback && currentFrame < config_.streamPrefetchAhead) {
-        // We might need frames from the end for smooth looping
-        return;
-    }
-    
-    // Evict frames that are too far behind
-    for (int i = 0; i < evictBefore && !shouldStop_; i++) {
+    // Check each cached frame and evict if behind playback
+    // This keeps exactly prefetchAhead frames in cache (current + ahead)
+    for (int i = 0; i < totalFrames_ && !shouldStop_; i++) {
         std::string key = makeFrameKey(i);
-        if (frameCache_->contains(key)) {
+        if (!frameCache_->contains(key)) continue;
+        
+        // Calculate circular distance from currentFrame to frame i
+        // Positive = ahead of playback, negative = behind playback
+        int dist = i - currentFrame;
+        if (config_.loopPlayback) {
+            // Normalize to [-totalFrames/2, totalFrames/2] for proper wraparound
+            if (dist > totalFrames_ / 2) dist -= totalFrames_;
+            if (dist < -totalFrames_ / 2) dist += totalFrames_;
+        }
+        
+        // Evict frames that are behind playback (already played)
+        if (dist < 0) {
             frameCache_->evict(key);
         }
     }
@@ -1505,55 +1561,41 @@ void WebMAlphaPlayer::prefetchLoop() {
             continue;
         }
         
-        // Detect if playback has looped back (playback is behind our decode position by a lot)
-        // This happens when playback resets to 0 but we're still at frame 120+
-        // In hybrid mode, we don't need to seek back - frames are already cached
-        if (!isHybridMode && config_.loopPlayback && playbackPos < frameIndex - prefetchAhead && frameIndex > prefetchAhead) {
-            // Playback has looped - we need to seek back to decode from playbackPos
-            LOGI("📺 Detected playback loop: playback=%d, decode=%d, seeking to %d", 
-                 playbackPos, frameIndex, playbackPos);
+        // In stream mode (not hybrid), check if we're far enough ahead and should PAUSE
+        // Use circular arithmetic to handle wraparound at loop boundaries
+        if (!isHybridMode) {
+            // Calculate how far ahead decode is from playback (circular)
+            int aheadBy = frameIndex - playbackPos;
+            if (config_.loopPlayback && totalFrames_ > 0) {
+                // Normalize to [0, totalFrames) range for circular comparison
+                if (aheadBy < 0) aheadBy += totalFrames_;
+                if (aheadBy > totalFrames_ / 2) {
+                    // We're actually behind (wrapped around), not ahead
+                    aheadBy = aheadBy - totalFrames_;
+                }
+            }
             
-            int64_t timestamp = static_cast<int64_t>(playbackPos / frameRate_ / timeBase_);
-            av_seek_frame(formatCtx_, colorStreamIndex_, timestamp, AVSEEK_FLAG_BACKWARD);
-            avcodec_flush_buffers(colorCodecCtx_);
-            if (alphaCodecCtx_) {
-                avcodec_flush_buffers(alphaCodecCtx_);
-            }
-            frameIndex = playbackPos;
-            streamDecodePos_ = playbackPos;
-        }
-        
-        // Calculate how far ahead we should decode
-        // In hybrid mode, always decode to the end (all frames)
-        int targetDecodePos;
-        if (isHybridMode) {
-            targetDecodePos = totalFrames_;  // Decode ALL frames
-        } else {
-            targetDecodePos = playbackPos + prefetchAhead;
-            if (targetDecodePos >= totalFrames_ && config_.loopPlayback) {
-                targetDecodePos = totalFrames_;  // Decode to end, then wrap
+            // If we're sufficiently ahead, PAUSE and wait for playback to catch up
+            if (aheadBy >= prefetchAhead) {
+                std::this_thread::sleep_for(std::chrono::milliseconds(10));
+                continue;
             }
         }
         
-        // If we're already ahead enough (stream mode only), wait
-        if (!isHybridMode && frameIndex >= targetDecodePos && frameIndex < totalFrames_) {
-            std::this_thread::sleep_for(std::chrono::milliseconds(5));
+        // In hybrid mode, decode to the end
+        if (isHybridMode && frameIndex >= totalFrames_) {
+            if (!firstPassComplete_) {
+                firstPassComplete_ = true;
+                LOGI("📺 StreamAndPreload: First pass complete! All %d frames cached", totalFrames_);
+                emitEvent("preload_complete", std::to_string(totalFrames_) + " frames");
+            }
+            std::this_thread::sleep_for(std::chrono::milliseconds(50));
             continue;
         }
         
-        // Handle reaching end of file
+        // Handle reaching end of file (stream mode only - hybrid handled above)
         if (frameIndex >= totalFrames_) {
-            if (isHybridMode) {
-                // Hybrid mode: all frames decoded, mark first pass complete
-                if (!firstPassComplete_) {
-                    firstPassComplete_ = true;
-                    LOGI("📺 StreamAndPreload: First pass complete! All %d frames cached", totalFrames_);
-                    emitEvent("preload_complete", std::to_string(totalFrames_) + " frames");
-                }
-                // Don't seek back - frames are cached, just wait
-                std::this_thread::sleep_for(std::chrono::milliseconds(50));
-                continue;
-            } else if (config_.loopPlayback) {
+            if (config_.loopPlayback) {
                 // Stream mode: Seek back to start for looping
                 av_seek_frame(formatCtx_, colorStreamIndex_, 0, AVSEEK_FLAG_BACKWARD);
                 avcodec_flush_buffers(colorCodecCtx_);
@@ -1562,7 +1604,7 @@ void WebMAlphaPlayer::prefetchLoop() {
                 }
                 frameIndex = 0;
                 streamDecodePos_ = 0;
-                LOGI("📺 EOF Loop: reset decode position to 0");
+                LOGI("📺 Prefetch reached EOF, looping back to frame 0 (cache preserved for playback)");
             } else {
                 // Not looping, wait for playback to end
                 std::this_thread::sleep_for(std::chrono::milliseconds(16));
@@ -1582,7 +1624,7 @@ void WebMAlphaPlayer::prefetchLoop() {
                 }
                 frameIndex = 0;
                 streamDecodePos_ = 0;
-                LOGI("📺 EOF: reset decode position to 0");
+                LOGI("📺 av_read_frame EOF, looping back to frame 0 (cache preserved)");
             }
             continue;
         }
@@ -1604,6 +1646,8 @@ void WebMAlphaPlayer::prefetchLoop() {
                             yuvFrame->timeBase = timeBase_;
                             yuvFrame->copyFromAVFrame(colorFrame, nullptr);
                             
+                            // Put frame in cache - eviction is handled by playback thread
+                            // via evictOldFrames() after consuming each frame
                             frameCache_->put(key, yuvFrame);
                             stats_.framesDecoded++;
                             stats_.framesCached++;

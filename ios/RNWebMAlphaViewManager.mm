@@ -126,7 +126,12 @@ static void releaseGlobalDecodeQueue(void) {
     NSString *uri = source[@"uri"];
     if (![uri isEqualToString:self.currentSourceUri]) {
         self.currentSourceUri = uri;
-        [self loadSource];
+        // Defer loading to next run loop to allow all React props to be set first
+        // This ensures mode, streamCacheSize, etc. are applied before loading
+        __weak WebMAlphaWrapper *weakSelf = self;
+        dispatch_async(dispatch_get_main_queue(), ^{
+            [weakSelf loadSource];
+        });
     }
 }
 
