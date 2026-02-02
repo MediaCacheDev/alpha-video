@@ -812,4 +812,762 @@ Java_com_danielkpl2_webmalphaplayer_WebMAlphaPlayerNative_nativeGetFFmpegVersion
     return env->NewStringUTF(version.c_str());
 }
 
+//==============================================================================
+// Dual-Stream Demuxer for MediaCodec Hardware Decoding
+// Extracts raw VP9 packets from dual-stream WebM files
+//==============================================================================
+
+// Include FFmpeg headers for demuxer
+extern "C" {
+#include <libavformat/avformat.h>
+#include <libavcodec/avcodec.h>
+}
+
+namespace {
+
+/**
+ * Demuxer context for dual-stream WebM files.
+ * Extracts VP9 packets without decoding - MediaCodec will decode them.
+ */
+struct DualStreamDemuxer {
+    AVFormatContext* formatCtx = nullptr;
+    int colorStreamIndex = -1;
+    int alphaStreamIndex = -1;
+    int width = 0;
+    int height = 0;
+    int totalFrames = 0;
+    double frameRate = 30.0;
+    double timeBase = 0.0;
+    
+    // Track frame indices for each stream
+    int colorFrameIndex = 0;
+    int alphaFrameIndex = 0;
+    
+    ~DualStreamDemuxer() {
+        if (formatCtx) {
+            avformat_close_input(&formatCtx);
+        }
+    }
+};
+
+std::unordered_map<jlong, std::unique_ptr<DualStreamDemuxer>> demuxers;
+std::mutex demuxersMutex;
+jlong nextDemuxerId = 1;
+
+} // anonymous namespace
+
+JNIEXPORT jlong JNICALL
+Java_com_danielkpl2_webmalphaplayer_DualStreamMediaCodecPlayer_nativeCreateDemuxer(
+    JNIEnv* env,
+    jclass clazz,
+    jstring filePath
+) {
+    const char* path = env->GetStringUTFChars(filePath, nullptr);
+    std::string pathStr(path);
+    env->ReleaseStringUTFChars(filePath, path);
+    
+    auto demuxer = std::make_unique<DualStreamDemuxer>();
+    
+    // Open file
+    int ret = avformat_open_input(&demuxer->formatCtx, pathStr.c_str(), nullptr, nullptr);
+    if (ret < 0) {
+        char err[AV_ERROR_MAX_STRING_SIZE];
+        av_strerror(ret, err, sizeof(err));
+        LOGE("Failed to open file %s: %s", pathStr.c_str(), err);
+        return 0;
+    }
+    
+    // Find stream info
+    ret = avformat_find_stream_info(demuxer->formatCtx, nullptr);
+    if (ret < 0) {
+        LOGE("Failed to find stream info");
+        return 0;
+    }
+    
+    // Find video streams (expecting 2 for dual-stream alpha)
+    for (unsigned i = 0; i < demuxer->formatCtx->nb_streams; i++) {
+        AVStream* stream = demuxer->formatCtx->streams[i];
+        if (stream->codecpar->codec_type == AVMEDIA_TYPE_VIDEO &&
+            stream->codecpar->codec_id == AV_CODEC_ID_VP9) {
+            if (demuxer->colorStreamIndex < 0) {
+                demuxer->colorStreamIndex = i;
+                demuxer->width = stream->codecpar->width;
+                demuxer->height = stream->codecpar->height;
+                
+                // Calculate frame rate
+                if (stream->avg_frame_rate.den > 0) {
+                    demuxer->frameRate = av_q2d(stream->avg_frame_rate);
+                } else if (stream->r_frame_rate.den > 0) {
+                    demuxer->frameRate = av_q2d(stream->r_frame_rate);
+                }
+                
+                demuxer->timeBase = av_q2d(stream->time_base);
+                
+                // Estimate total frames
+                if (demuxer->formatCtx->duration > 0) {
+                    double duration = static_cast<double>(demuxer->formatCtx->duration) / AV_TIME_BASE;
+                    demuxer->totalFrames = static_cast<int>(duration * demuxer->frameRate);
+                } else if (stream->nb_frames > 0) {
+                    demuxer->totalFrames = stream->nb_frames;
+                } else {
+                    demuxer->totalFrames = 100; // Default estimate
+                }
+            } else if (demuxer->alphaStreamIndex < 0) {
+                demuxer->alphaStreamIndex = i;
+            }
+        }
+    }
+    
+    if (demuxer->colorStreamIndex < 0) {
+        LOGE("No VP9 video stream found");
+        return 0;
+    }
+    
+    int streamCount = (demuxer->alphaStreamIndex >= 0) ? 2 : 1;
+    LOGI("Demuxer created: %dx%d, %d frames, %.2f fps, %d streams (color=%d, alpha=%d)",
+         demuxer->width, demuxer->height, demuxer->totalFrames, demuxer->frameRate,
+         streamCount, demuxer->colorStreamIndex, demuxer->alphaStreamIndex);
+    
+    std::lock_guard<std::mutex> lock(demuxersMutex);
+    jlong id = nextDemuxerId++;
+    demuxers[id] = std::move(demuxer);
+    
+    return id;
+}
+
+JNIEXPORT void JNICALL
+Java_com_danielkpl2_webmalphaplayer_DualStreamMediaCodecPlayer_nativeDestroyDemuxer(
+    JNIEnv* env,
+    jclass clazz,
+    jlong demuxerId
+) {
+    std::lock_guard<std::mutex> lock(demuxersMutex);
+    demuxers.erase(demuxerId);
+    LOGI("Demuxer %lld destroyed", demuxerId);
+}
+
+JNIEXPORT jintArray JNICALL
+Java_com_danielkpl2_webmalphaplayer_DualStreamMediaCodecPlayer_nativeGetVideoInfo(
+    JNIEnv* env,
+    jclass clazz,
+    jlong demuxerId
+) {
+    std::lock_guard<std::mutex> lock(demuxersMutex);
+    auto it = demuxers.find(demuxerId);
+    if (it == demuxers.end()) return nullptr;
+    
+    auto& demuxer = it->second;
+    int streamCount = (demuxer->alphaStreamIndex >= 0) ? 2 : 1;
+    
+    // Return: [width, height, totalFrames, frameRate*1000, streamCount]
+    jintArray result = env->NewIntArray(5);
+    jint values[] = {
+        demuxer->width,
+        demuxer->height,
+        demuxer->totalFrames,
+        static_cast<int>(demuxer->frameRate * 1000),
+        streamCount
+    };
+    env->SetIntArrayRegion(result, 0, 5, values);
+    
+    return result;
+}
+
+JNIEXPORT jobject JNICALL
+Java_com_danielkpl2_webmalphaplayer_DualStreamMediaCodecPlayer_nativeReadPacket(
+    JNIEnv* env,
+    jclass clazz,
+    jlong demuxerId
+) {
+    DualStreamDemuxer* demuxer = nullptr;
+    {
+        std::lock_guard<std::mutex> lock(demuxersMutex);
+        auto it = demuxers.find(demuxerId);
+        if (it == demuxers.end()) return nullptr;
+        demuxer = it->second.get();
+    }
+    
+    AVPacket* packet = av_packet_alloc();
+    if (!packet) return nullptr;
+    
+    int ret;
+    while ((ret = av_read_frame(demuxer->formatCtx, packet)) >= 0) {
+        int streamIndex = packet->stream_index;
+        
+        // Only process video packets from our streams
+        if (streamIndex == demuxer->colorStreamIndex || 
+            streamIndex == demuxer->alphaStreamIndex) {
+            
+            // Determine which stream (0=color, 1=alpha)
+            int mappedStreamIndex = (streamIndex == demuxer->colorStreamIndex) ? 0 : 1;
+            
+            // Get frame index for this stream
+            int frameIndex;
+            if (mappedStreamIndex == 0) {
+                frameIndex = demuxer->colorFrameIndex++;
+            } else {
+                frameIndex = demuxer->alphaFrameIndex++;
+            }
+            
+            // Check if keyframe
+            bool isKeyFrame = (packet->flags & AV_PKT_FLAG_KEY) != 0;
+            
+            // Calculate presentation time
+            long presentationTimeUs = 0;
+            if (packet->pts != AV_NOPTS_VALUE) {
+                AVStream* stream = demuxer->formatCtx->streams[streamIndex];
+                presentationTimeUs = av_rescale_q(packet->pts, stream->time_base, 
+                                                  AVRational{1, 1000000});
+            }
+            
+            // Create VP9Packet Java object
+            jclass packetClass = env->FindClass("com/danielkpl2/webmalphaplayer/DualStreamMediaCodecPlayer$VP9Packet");
+            if (!packetClass) {
+                LOGE("Failed to find VP9Packet class");
+                av_packet_free(&packet);
+                return nullptr;
+            }
+            
+            jobject packetObj = env->AllocObject(packetClass);
+            if (!packetObj) {
+                LOGE("Failed to allocate VP9Packet");
+                av_packet_free(&packet);
+                return nullptr;
+            }
+            
+            // Copy packet data to Java byte array
+            jbyteArray dataArray = env->NewByteArray(packet->size);
+            env->SetByteArrayRegion(dataArray, 0, packet->size, 
+                                   reinterpret_cast<const jbyte*>(packet->data));
+            
+            // Set fields
+            env->SetObjectField(packetObj, 
+                env->GetFieldID(packetClass, "data", "[B"), dataArray);
+            env->SetIntField(packetObj,
+                env->GetFieldID(packetClass, "streamIndex", "I"), mappedStreamIndex);
+            env->SetIntField(packetObj,
+                env->GetFieldID(packetClass, "frameIndex", "I"), frameIndex);
+            env->SetLongField(packetObj,
+                env->GetFieldID(packetClass, "presentationTimeUs", "J"), presentationTimeUs);
+            env->SetBooleanField(packetObj,
+                env->GetFieldID(packetClass, "isKeyFrame", "Z"), isKeyFrame ? JNI_TRUE : JNI_FALSE);
+            
+            av_packet_unref(packet);
+            av_packet_free(&packet);
+            
+            return packetObj;
+        }
+        
+        av_packet_unref(packet);
+    }
+    
+    // End of file or error
+    av_packet_free(&packet);
+    return nullptr;
+}
+
+JNIEXPORT void JNICALL
+Java_com_danielkpl2_webmalphaplayer_DualStreamMediaCodecPlayer_nativeSeekToStart(
+    JNIEnv* env,
+    jclass clazz,
+    jlong demuxerId
+) {
+    std::lock_guard<std::mutex> lock(demuxersMutex);
+    auto it = demuxers.find(demuxerId);
+    if (it == demuxers.end()) return;
+    
+    auto& demuxer = it->second;
+    
+    // Seek to beginning
+    av_seek_frame(demuxer->formatCtx, demuxer->colorStreamIndex, 0, AVSEEK_FLAG_BACKWARD);
+    
+    // Reset frame indices
+    demuxer->colorFrameIndex = 0;
+    demuxer->alphaFrameIndex = 0;
+    
+    LOGI("Demuxer %lld seeked to start", demuxerId);
+}
+
+JNIEXPORT jboolean JNICALL
+Java_com_danielkpl2_webmalphaplayer_DualStreamMediaCodecPlayer_nativeIsDualStream(
+    JNIEnv* env,
+    jclass clazz,
+    jstring filePath
+) {
+    const char* path = env->GetStringUTFChars(filePath, nullptr);
+    std::string pathStr(path);
+    env->ReleaseStringUTFChars(filePath, path);
+    
+    AVFormatContext* formatCtx = nullptr;
+    int ret = avformat_open_input(&formatCtx, pathStr.c_str(), nullptr, nullptr);
+    if (ret < 0) {
+        return JNI_FALSE;
+    }
+    
+    ret = avformat_find_stream_info(formatCtx, nullptr);
+    if (ret < 0) {
+        avformat_close_input(&formatCtx);
+        return JNI_FALSE;
+    }
+    
+    // Count VP9 video streams
+    int vp9StreamCount = 0;
+    for (unsigned i = 0; i < formatCtx->nb_streams; i++) {
+        AVStream* stream = formatCtx->streams[i];
+        if (stream->codecpar->codec_type == AVMEDIA_TYPE_VIDEO &&
+            stream->codecpar->codec_id == AV_CODEC_ID_VP9) {
+            vp9StreamCount++;
+        }
+    }
+    
+    avformat_close_input(&formatCtx);
+    
+    LOGI("File %s has %d VP9 streams (dual=%s)", 
+         pathStr.c_str(), vp9StreamCount, vp9StreamCount >= 2 ? "yes" : "no");
+    
+    return (vp9StreamCount >= 2) ? JNI_TRUE : JNI_FALSE;
+}
+
+// ============================================================================
+// DualStreamSurfacePlayer JNI bindings (GPU-accelerated Surface-based player)
+// These reuse the same demuxer infrastructure as DualStreamMediaCodecPlayer
+// ============================================================================
+
+JNIEXPORT jlong JNICALL
+Java_com_danielkpl2_webmalphaplayer_DualStreamSurfacePlayer_nativeCreateDemuxer(
+    JNIEnv* env,
+    jclass clazz,
+    jstring filePath
+) {
+    // Reuse same implementation as DualStreamMediaCodecPlayer
+    const char* path = env->GetStringUTFChars(filePath, nullptr);
+    std::string pathStr(path);
+    env->ReleaseStringUTFChars(filePath, path);
+    
+    auto demuxer = std::make_unique<DualStreamDemuxer>();
+    
+    int ret = avformat_open_input(&demuxer->formatCtx, pathStr.c_str(), nullptr, nullptr);
+    if (ret < 0) {
+        char err[AV_ERROR_MAX_STRING_SIZE];
+        av_strerror(ret, err, sizeof(err));
+        LOGE("Failed to open file %s: %s", pathStr.c_str(), err);
+        return 0;
+    }
+    
+    ret = avformat_find_stream_info(demuxer->formatCtx, nullptr);
+    if (ret < 0) {
+        LOGE("Failed to find stream info");
+        return 0;
+    }
+    
+    for (unsigned i = 0; i < demuxer->formatCtx->nb_streams; i++) {
+        AVStream* stream = demuxer->formatCtx->streams[i];
+        if (stream->codecpar->codec_type == AVMEDIA_TYPE_VIDEO &&
+            stream->codecpar->codec_id == AV_CODEC_ID_VP9) {
+            if (demuxer->colorStreamIndex < 0) {
+                demuxer->colorStreamIndex = i;
+                demuxer->width = stream->codecpar->width;
+                demuxer->height = stream->codecpar->height;
+                
+                if (stream->avg_frame_rate.den > 0) {
+                    demuxer->frameRate = av_q2d(stream->avg_frame_rate);
+                } else if (stream->r_frame_rate.den > 0) {
+                    demuxer->frameRate = av_q2d(stream->r_frame_rate);
+                }
+                
+                demuxer->timeBase = av_q2d(stream->time_base);
+                
+                if (demuxer->formatCtx->duration > 0) {
+                    double duration = static_cast<double>(demuxer->formatCtx->duration) / AV_TIME_BASE;
+                    demuxer->totalFrames = static_cast<int>(duration * demuxer->frameRate);
+                } else if (stream->nb_frames > 0) {
+                    demuxer->totalFrames = stream->nb_frames;
+                } else {
+                    demuxer->totalFrames = 100;
+                }
+            } else if (demuxer->alphaStreamIndex < 0) {
+                demuxer->alphaStreamIndex = i;
+            }
+        }
+    }
+    
+    if (demuxer->colorStreamIndex < 0) {
+        LOGE("No VP9 video stream found");
+        return 0;
+    }
+    
+    int streamCount = (demuxer->alphaStreamIndex >= 0) ? 2 : 1;
+    LOGI("[Surface] Demuxer created: %dx%d, %d frames, %.2f fps, %d streams",
+         demuxer->width, demuxer->height, demuxer->totalFrames, demuxer->frameRate, streamCount);
+    
+    std::lock_guard<std::mutex> lock(demuxersMutex);
+    jlong id = nextDemuxerId++;
+    demuxers[id] = std::move(demuxer);
+    
+    return id;
+}
+
+JNIEXPORT void JNICALL
+Java_com_danielkpl2_webmalphaplayer_DualStreamSurfacePlayer_nativeDestroyDemuxer(
+    JNIEnv* env,
+    jclass clazz,
+    jlong demuxerId
+) {
+    std::lock_guard<std::mutex> lock(demuxersMutex);
+    demuxers.erase(demuxerId);
+    LOGI("[Surface] Demuxer %lld destroyed", demuxerId);
+}
+
+JNIEXPORT jintArray JNICALL
+Java_com_danielkpl2_webmalphaplayer_DualStreamSurfacePlayer_nativeGetVideoInfo(
+    JNIEnv* env,
+    jclass clazz,
+    jlong demuxerId
+) {
+    std::lock_guard<std::mutex> lock(demuxersMutex);
+    auto it = demuxers.find(demuxerId);
+    if (it == demuxers.end()) return nullptr;
+    
+    auto& demuxer = it->second;
+    int streamCount = (demuxer->alphaStreamIndex >= 0) ? 2 : 1;
+    
+    // Return: [width, height, totalFrames, frameRate*1000, streamCount]
+    jintArray result = env->NewIntArray(5);
+    jint values[] = {
+        demuxer->width,
+        demuxer->height,
+        demuxer->totalFrames,
+        static_cast<int>(demuxer->frameRate * 1000),
+        streamCount
+    };
+    env->SetIntArrayRegion(result, 0, 5, values);
+    
+    return result;
+}
+
+JNIEXPORT jobjectArray JNICALL
+Java_com_danielkpl2_webmalphaplayer_DualStreamSurfacePlayer_nativeReadPacket(
+    JNIEnv* env,
+    jclass clazz,
+    jlong demuxerId
+) {
+    // Returns Object[] with: [Integer streamIndex, ByteBuffer data, Integer size, Long pts, Integer frameIndex]
+    DualStreamDemuxer* demuxer = nullptr;
+    {
+        std::lock_guard<std::mutex> lock(demuxersMutex);
+        auto it = demuxers.find(demuxerId);
+        if (it == demuxers.end()) return nullptr;
+        demuxer = it->second.get();
+    }
+    
+    AVPacket* packet = av_packet_alloc();
+    if (!packet) return nullptr;
+    
+    int ret;
+    while ((ret = av_read_frame(demuxer->formatCtx, packet)) >= 0) {
+        int streamIndex = packet->stream_index;
+        
+        if (streamIndex == demuxer->colorStreamIndex || 
+            streamIndex == demuxer->alphaStreamIndex) {
+            
+            int mappedStreamIndex = (streamIndex == demuxer->colorStreamIndex) ? 0 : 1;
+            
+            int frameIndex;
+            if (mappedStreamIndex == 0) {
+                frameIndex = demuxer->colorFrameIndex++;
+            } else {
+                frameIndex = demuxer->alphaFrameIndex++;
+            }
+            
+            long presentationTimeUs = 0;
+            if (packet->pts != AV_NOPTS_VALUE) {
+                AVStream* stream = demuxer->formatCtx->streams[streamIndex];
+                presentationTimeUs = av_rescale_q(packet->pts, stream->time_base, 
+                                                  AVRational{1, 1000000});
+            }
+            
+            // Create Object[5] array
+            jclass objectClass = env->FindClass("java/lang/Object");
+            jobjectArray result = env->NewObjectArray(5, objectClass, nullptr);
+            
+            // [0] Integer streamIndex
+            jclass integerClass = env->FindClass("java/lang/Integer");
+            jmethodID intValueOf = env->GetStaticMethodID(integerClass, "valueOf", "(I)Ljava/lang/Integer;");
+            env->SetObjectArrayElement(result, 0, env->CallStaticObjectMethod(integerClass, intValueOf, mappedStreamIndex));
+            
+            // [1] ByteBuffer data (direct buffer)
+            jobject byteBuffer = env->NewDirectByteBuffer(packet->data, packet->size);
+            // Make a copy since packet will be freed
+            jclass byteBufferClass = env->FindClass("java/nio/ByteBuffer");
+            jmethodID allocate = env->GetStaticMethodID(byteBufferClass, "allocate", "(I)Ljava/nio/ByteBuffer;");
+            jobject copyBuffer = env->CallStaticObjectMethod(byteBufferClass, allocate, packet->size);
+            jmethodID putMethod = env->GetMethodID(byteBufferClass, "put", "(Ljava/nio/ByteBuffer;)Ljava/nio/ByteBuffer;");
+            env->CallObjectMethod(copyBuffer, putMethod, byteBuffer);
+            jmethodID rewindMethod = env->GetMethodID(byteBufferClass, "rewind", "()Ljava/nio/Buffer;");
+            env->CallObjectMethod(copyBuffer, rewindMethod);
+            env->SetObjectArrayElement(result, 1, copyBuffer);
+            
+            // [2] Integer size
+            env->SetObjectArrayElement(result, 2, env->CallStaticObjectMethod(integerClass, intValueOf, packet->size));
+            
+            // [3] Long pts
+            jclass longClass = env->FindClass("java/lang/Long");
+            jmethodID longValueOf = env->GetStaticMethodID(longClass, "valueOf", "(J)Ljava/lang/Long;");
+            env->SetObjectArrayElement(result, 3, env->CallStaticObjectMethod(longClass, longValueOf, presentationTimeUs));
+            
+            // [4] Integer frameIndex
+            env->SetObjectArrayElement(result, 4, env->CallStaticObjectMethod(integerClass, intValueOf, frameIndex));
+            
+            av_packet_unref(packet);
+            av_packet_free(&packet);
+            
+            return result;
+        }
+        
+        av_packet_unref(packet);
+    }
+    
+    av_packet_free(&packet);
+    return nullptr;
+}
+
+JNIEXPORT void JNICALL
+Java_com_danielkpl2_webmalphaplayer_DualStreamSurfacePlayer_nativeSeekToStart(
+    JNIEnv* env,
+    jclass clazz,
+    jlong demuxerId
+) {
+    std::lock_guard<std::mutex> lock(demuxersMutex);
+    auto it = demuxers.find(demuxerId);
+    if (it == demuxers.end()) return;
+    
+    auto& demuxer = it->second;
+    av_seek_frame(demuxer->formatCtx, demuxer->colorStreamIndex, 0, AVSEEK_FLAG_BACKWARD);
+    demuxer->colorFrameIndex = 0;
+    demuxer->alphaFrameIndex = 0;
+    
+    LOGI("[Surface] Demuxer %lld seeked to start", demuxerId);
+}
+
+// ============================================================================
+// BufferedDualStreamPlayer JNI bindings (FBO ring buffer player)
+// These reuse the same demuxer infrastructure
+// ============================================================================
+
+JNIEXPORT jlong JNICALL
+Java_com_danielkpl2_webmalphaplayer_BufferedDualStreamPlayer_nativeCreateDemuxer(
+    JNIEnv* env,
+    jclass clazz,
+    jstring filePath
+) {
+    // Same implementation as DualStreamSurfacePlayer
+    const char* path = env->GetStringUTFChars(filePath, nullptr);
+    std::string pathStr(path);
+    env->ReleaseStringUTFChars(filePath, path);
+    
+    auto demuxer = std::make_unique<DualStreamDemuxer>();
+    
+    int ret = avformat_open_input(&demuxer->formatCtx, pathStr.c_str(), nullptr, nullptr);
+    if (ret < 0) {
+        char err[AV_ERROR_MAX_STRING_SIZE];
+        av_strerror(ret, err, sizeof(err));
+        LOGE("[Buffered] Failed to open file %s: %s", pathStr.c_str(), err);
+        return 0;
+    }
+    
+    ret = avformat_find_stream_info(demuxer->formatCtx, nullptr);
+    if (ret < 0) {
+        LOGE("[Buffered] Failed to find stream info");
+        return 0;
+    }
+    
+    for (unsigned i = 0; i < demuxer->formatCtx->nb_streams; i++) {
+        AVStream* stream = demuxer->formatCtx->streams[i];
+        if (stream->codecpar->codec_type == AVMEDIA_TYPE_VIDEO &&
+            stream->codecpar->codec_id == AV_CODEC_ID_VP9) {
+            if (demuxer->colorStreamIndex < 0) {
+                demuxer->colorStreamIndex = i;
+                demuxer->width = stream->codecpar->width;
+                demuxer->height = stream->codecpar->height;
+                
+                if (stream->avg_frame_rate.den > 0) {
+                    demuxer->frameRate = av_q2d(stream->avg_frame_rate);
+                } else if (stream->r_frame_rate.den > 0) {
+                    demuxer->frameRate = av_q2d(stream->r_frame_rate);
+                }
+                
+                demuxer->timeBase = av_q2d(stream->time_base);
+                
+                if (demuxer->formatCtx->duration > 0) {
+                    double duration = static_cast<double>(demuxer->formatCtx->duration) / AV_TIME_BASE;
+                    demuxer->totalFrames = static_cast<int>(duration * demuxer->frameRate);
+                } else if (stream->nb_frames > 0) {
+                    demuxer->totalFrames = stream->nb_frames;
+                } else {
+                    demuxer->totalFrames = 100;
+                }
+            } else if (demuxer->alphaStreamIndex < 0) {
+                demuxer->alphaStreamIndex = i;
+            }
+        }
+    }
+    
+    if (demuxer->colorStreamIndex < 0) {
+        LOGE("[Buffered] No VP9 video stream found");
+        return 0;
+    }
+    
+    int streamCount = (demuxer->alphaStreamIndex >= 0) ? 2 : 1;
+    LOGI("[Buffered] Demuxer created: %dx%d, %d frames, %.2f fps, %d streams",
+         demuxer->width, demuxer->height, demuxer->totalFrames, demuxer->frameRate, streamCount);
+    
+    std::lock_guard<std::mutex> lock(demuxersMutex);
+    jlong id = nextDemuxerId++;
+    demuxers[id] = std::move(demuxer);
+    
+    return id;
+}
+
+JNIEXPORT void JNICALL
+Java_com_danielkpl2_webmalphaplayer_BufferedDualStreamPlayer_nativeDestroyDemuxer(
+    JNIEnv* env,
+    jclass clazz,
+    jlong demuxerId
+) {
+    std::lock_guard<std::mutex> lock(demuxersMutex);
+    demuxers.erase(demuxerId);
+    LOGI("[Buffered] Demuxer %lld destroyed", demuxerId);
+}
+
+JNIEXPORT jintArray JNICALL
+Java_com_danielkpl2_webmalphaplayer_BufferedDualStreamPlayer_nativeGetVideoInfo(
+    JNIEnv* env,
+    jclass clazz,
+    jlong demuxerId
+) {
+    std::lock_guard<std::mutex> lock(demuxersMutex);
+    auto it = demuxers.find(demuxerId);
+    if (it == demuxers.end()) return nullptr;
+    
+    auto& demuxer = it->second;
+    int streamCount = (demuxer->alphaStreamIndex >= 0) ? 2 : 1;
+    
+    // Return: [width, height, totalFrames, frameRate*1000, streamCount]
+    jintArray result = env->NewIntArray(5);
+    jint values[] = {
+        demuxer->width,
+        demuxer->height,
+        demuxer->totalFrames,
+        static_cast<int>(demuxer->frameRate * 1000),
+        streamCount
+    };
+    env->SetIntArrayRegion(result, 0, 5, values);
+    
+    return result;
+}
+
+JNIEXPORT jobjectArray JNICALL
+Java_com_danielkpl2_webmalphaplayer_BufferedDualStreamPlayer_nativeReadPacket(
+    JNIEnv* env,
+    jclass clazz,
+    jlong demuxerId
+) {
+    // Returns Object[] with: [Integer streamIndex, ByteBuffer data, Integer size, Long pts, Integer frameIndex]
+    DualStreamDemuxer* demuxer = nullptr;
+    {
+        std::lock_guard<std::mutex> lock(demuxersMutex);
+        auto it = demuxers.find(demuxerId);
+        if (it == demuxers.end()) return nullptr;
+        demuxer = it->second.get();
+    }
+    
+    AVPacket* packet = av_packet_alloc();
+    if (!packet) return nullptr;
+    
+    int ret;
+    while ((ret = av_read_frame(demuxer->formatCtx, packet)) >= 0) {
+        int streamIndex = packet->stream_index;
+        
+        if (streamIndex == demuxer->colorStreamIndex || 
+            streamIndex == demuxer->alphaStreamIndex) {
+            
+            int mappedStreamIndex = (streamIndex == demuxer->colorStreamIndex) ? 0 : 1;
+            
+            int frameIndex;
+            if (mappedStreamIndex == 0) {
+                frameIndex = demuxer->colorFrameIndex++;
+            } else {
+                frameIndex = demuxer->alphaFrameIndex++;
+            }
+            
+            long presentationTimeUs = 0;
+            if (packet->pts != AV_NOPTS_VALUE) {
+                AVStream* stream = demuxer->formatCtx->streams[streamIndex];
+                presentationTimeUs = av_rescale_q(packet->pts, stream->time_base, 
+                                                  AVRational{1, 1000000});
+            }
+            
+            // Create Object[5] array
+            jclass objectClass = env->FindClass("java/lang/Object");
+            jobjectArray result = env->NewObjectArray(5, objectClass, nullptr);
+            
+            // [0] Integer streamIndex
+            jclass integerClass = env->FindClass("java/lang/Integer");
+            jmethodID intValueOf = env->GetStaticMethodID(integerClass, "valueOf", "(I)Ljava/lang/Integer;");
+            env->SetObjectArrayElement(result, 0, env->CallStaticObjectMethod(integerClass, intValueOf, mappedStreamIndex));
+            
+            // [1] ByteBuffer data (direct buffer)
+            jobject byteBuffer = env->NewDirectByteBuffer(packet->data, packet->size);
+            // Make a copy since packet will be freed
+            jclass byteBufferClass = env->FindClass("java/nio/ByteBuffer");
+            jmethodID allocate = env->GetStaticMethodID(byteBufferClass, "allocate", "(I)Ljava/nio/ByteBuffer;");
+            jobject copyBuffer = env->CallStaticObjectMethod(byteBufferClass, allocate, packet->size);
+            jmethodID putMethod = env->GetMethodID(byteBufferClass, "put", "(Ljava/nio/ByteBuffer;)Ljava/nio/ByteBuffer;");
+            env->CallObjectMethod(copyBuffer, putMethod, byteBuffer);
+            jmethodID rewindMethod = env->GetMethodID(byteBufferClass, "rewind", "()Ljava/nio/Buffer;");
+            env->CallObjectMethod(copyBuffer, rewindMethod);
+            env->SetObjectArrayElement(result, 1, copyBuffer);
+            
+            // [2] Integer size
+            env->SetObjectArrayElement(result, 2, env->CallStaticObjectMethod(integerClass, intValueOf, packet->size));
+            
+            // [3] Long pts
+            jclass longClass = env->FindClass("java/lang/Long");
+            jmethodID longValueOf = env->GetStaticMethodID(longClass, "valueOf", "(J)Ljava/lang/Long;");
+            env->SetObjectArrayElement(result, 3, env->CallStaticObjectMethod(longClass, longValueOf, presentationTimeUs));
+            
+            // [4] Integer frameIndex
+            env->SetObjectArrayElement(result, 4, env->CallStaticObjectMethod(integerClass, intValueOf, frameIndex));
+            
+            av_packet_unref(packet);
+            av_packet_free(&packet);
+            
+            return result;
+        }
+        
+        av_packet_unref(packet);
+    }
+    
+    av_packet_free(&packet);
+    return nullptr;
+}
+
+JNIEXPORT void JNICALL
+Java_com_danielkpl2_webmalphaplayer_BufferedDualStreamPlayer_nativeSeekToStart(
+    JNIEnv* env,
+    jclass clazz,
+    jlong demuxerId
+) {
+    std::lock_guard<std::mutex> lock(demuxersMutex);
+    auto it = demuxers.find(demuxerId);
+    if (it == demuxers.end()) return;
+    
+    auto& demuxer = it->second;
+    av_seek_frame(demuxer->formatCtx, demuxer->colorStreamIndex, 0, AVSEEK_FLAG_BACKWARD);
+    demuxer->colorFrameIndex = 0;
+    demuxer->alphaFrameIndex = 0;
+    
+    LOGI("[Buffered] Demuxer %lld seeked to start", demuxerId);
+}
+
 } // extern "C"

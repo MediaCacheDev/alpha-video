@@ -7,6 +7,7 @@ import android.opengl.EGLConfig;
 import android.opengl.EGLContext;
 import android.opengl.EGLDisplay;
 import android.opengl.EGLSurface;
+import android.opengl.GLES11Ext;
 import android.opengl.GLES20;
 import android.util.AttributeSet;
 import android.util.Log;
@@ -46,6 +47,23 @@ public class WebMAlphaTextureView extends TextureView implements
     private volatile long playerId = 0;
     private volatile boolean isReleased = false;
     
+    // Dual-stream MediaCodec player (used when file has 2 VP9 streams)
+    // OLD: ByteBuffer-based (slow, CPU bottleneck)
+    private DualStreamMediaCodecPlayer dualStreamPlayer;
+    // OLD Surface-based (had SurfaceTexture single-frame limit bug) 
+    private DualStreamSurfacePlayer dualStreamSurfacePlayer;
+    // NEW: Buffered Surface-based (FBO ring buffer - proper fix for frame timing)
+    private BufferedDualStreamPlayer bufferedPlayer;
+    private volatile boolean isDualStreamMode = false;
+    private volatile boolean useSurfacePlayer = true; // Use new Surface-based player by default
+    private volatile boolean useBufferedPlayer = true; // Use buffered FBO ring buffer player
+    
+    // Buffered player frame state
+    private volatile int bufferedColorTextureId = -1;
+    private volatile int bufferedAlphaTextureId = -1;
+    private volatile boolean hasBufferedFrame = false;
+    private int buffered2DProgramId = 0;  // 2D texture compositing shader
+    
     // EGL/OpenGL resources (managed on render thread)
     private EGLDisplay eglDisplay;
     private EGLContext eglContext;
@@ -53,10 +71,17 @@ public class WebMAlphaTextureView extends TextureView implements
     private EGLConfig eglConfig;
     
     // OpenGL resources
-    private int programId;
+    private int programId;  // YUVA shader (ByteBuffer mode)
+    private int oesProgramId;  // OES shader (Surface mode - GPU accelerated)
     private int yTextureId, uTextureId, vTextureId, aTextureId;
     private FloatBuffer vertexBuffer;
+    private FloatBuffer oesVertexBuffer;  // Vertex buffer with transform matrix support
     private int currentWidth, currentHeight;
+    
+    // OES texture transformation matrices (from SurfaceTexture)
+    private final float[] colorTransformMatrix = new float[16];
+    private final float[] alphaTransformMatrix = new float[16];
+    private volatile boolean hasNewOesFrame = false;
     
     // Surface state
     private SurfaceTexture surfaceTexture;
@@ -276,7 +301,247 @@ public class WebMAlphaTextureView extends TextureView implements
             return;
         }
         
-        // Initialize player if needed - by now all React props should be set
+        // Check if this is a dual-stream file (2 VP9 video streams)
+        // Use MediaCodec hardware decoder for dual-stream, software for single-stream
+        boolean isDualStream = DualStreamMediaCodecPlayer.nativeIsDualStream(path);
+        Log.i(TAG, "🔍 File " + path + " isDualStream=" + isDualStream);
+        
+        if (isDualStream && MediaCodecVp9Decoder.isVp9HardwareDecoderAvailable()) {
+            // Use MediaCodec hardware decoder for dual-stream
+            loadDualStreamFile(path);
+        } else {
+            // Use software decoder for single-stream or if no hardware decoder
+            loadSingleStreamFile(path);
+        }
+    }
+    
+    /**
+     * Load a dual-stream WebM file using MediaCodec hardware decoding.
+     * Uses buffered Surface-based rendering with FBO ring buffer for smooth playback.
+     */
+    private void loadDualStreamFile(String path) {
+        Log.i(TAG, "🎬 Loading dual-stream file with MediaCodec (Buffered mode): " + path);
+        
+        isDualStreamMode = true;
+        
+        // Release any existing single-stream player
+        if (playerId != 0) {
+            WebMAlphaPlayerNative.nativeDestroy(playerId);
+            playerId = 0;
+        }
+        
+        // Release any existing players
+        if (bufferedPlayer != null) {
+            bufferedPlayer.unload();
+            bufferedPlayer = null;
+        }
+        if (dualStreamSurfacePlayer != null) {
+            dualStreamSurfacePlayer.unload();
+            dualStreamSurfacePlayer = null;
+        }
+        if (dualStreamPlayer != null) {
+            dualStreamPlayer.release();
+            dualStreamPlayer = null;
+        }
+        
+        // Create Buffered player - must be done on GL thread for textures
+        final String finalPath = path;
+        renderThread.execute(() -> {
+            if (isReleased) return;
+            
+            bufferedPlayer = new BufferedDualStreamPlayer();
+            bufferedPlayer.setLoop(loop);
+            bufferedPlayer.setBufferSize(15); // 15 frame buffer
+            
+            // Provide GL executor that posts tasks to the render thread
+            bufferedPlayer.setGLExecutor(task -> {
+                if (renderThread != null && !renderThread.isShutdown()) {
+                    renderThread.execute(task);
+                }
+            });
+            
+            bufferedPlayer.setEventCallback(new BufferedDualStreamPlayer.EventCallback() {
+                @Override
+                public void onLoaded(int totalFrames, int width, int height, double fps, double duration) {
+                    Log.i(TAG, "🎬 Dual-stream loaded (Buffered): " + totalFrames + " frames, " + 
+                          width + "x" + height + " @ " + String.format("%.1f", fps) + " fps");
+                    post(() -> {
+                        if (callback != null && !isReleased) {
+                            callback.onLoad(totalFrames, width, height);
+                        }
+                        if (autoplay && bufferedPlayer != null) {
+                            bufferedPlayer.play();
+                        }
+                    });
+                }
+                
+                @Override
+                public void onError(String error) {
+                    Log.e(TAG, "Buffered player error: " + error);
+                    post(() -> {
+                        if (callback != null && !isReleased) {
+                            callback.onError(error);
+                        }
+                    });
+                }
+                
+                @Override
+                public void onLooped() {
+                    Log.d(TAG, "Buffered player looped");
+                }
+                
+                @Override
+                public void onEnded() {
+                    Log.d(TAG, "Buffered player ended");
+                }
+                
+                @Override
+                public void onBufferState(int bufferedFrames, int bufferCapacity) {
+                    Log.d(TAG, "Buffer: " + bufferedFrames + "/" + bufferCapacity);
+                }
+            });
+            
+            // Render callback - called when frame is ready from ring buffer
+            bufferedPlayer.setRenderCallback((frameIndex, colorTextureId, alphaTextureId) -> {
+                if (isReleased) return;
+                
+                // Store texture IDs for rendering
+                bufferedColorTextureId = colorTextureId;
+                bufferedAlphaTextureId = alphaTextureId;
+                hasBufferedFrame = true;
+                
+                // Request render on GL thread
+                requestRender();
+            });
+            
+            // Load the file (creates OES textures and ring buffer in this GL context)
+            if (!bufferedPlayer.loadFromFile(finalPath)) {
+                Log.e(TAG, "Failed to load buffered dual-stream file");
+                post(() -> {
+                    if (callback != null && !isReleased) {
+                        callback.onError("Failed to load dual-stream file");
+                    }
+                });
+            }
+        });
+    }
+    
+    /**
+     * Legacy: Load a dual-stream WebM file using ByteBuffer mode (slower, for fallback).
+     */
+    private void loadDualStreamFileLegacy(String path) {
+        Log.i(TAG, "🎬 Loading dual-stream file with MediaCodec (Legacy ByteBuffer mode): " + path);
+        
+        isDualStreamMode = true;
+        
+        // Release any existing single-stream player
+        if (playerId != 0) {
+            WebMAlphaPlayerNative.nativeDestroy(playerId);
+            playerId = 0;
+        }
+        
+        // Create dual-stream player if needed
+        if (dualStreamPlayer == null) {
+            dualStreamPlayer = new DualStreamMediaCodecPlayer();
+        }
+        
+        dualStreamPlayer.setLoop(loop);
+        dualStreamPlayer.setEventCallback(new DualStreamMediaCodecPlayer.EventCallback() {
+            @Override
+            public void onLoaded(int totalFrames, int width, int height, double frameRate) {
+                Log.i(TAG, "🎬 Dual-stream loaded: " + totalFrames + " frames, " + width + "x" + height);
+                post(() -> {
+                    if (callback != null && !isReleased) {
+                        callback.onLoad(totalFrames, width, height);
+                    }
+                    if (autoplay) {
+                        dualStreamPlayer.play();
+                    }
+                });
+            }
+            
+            @Override
+            public void onPlay() {
+                Log.d(TAG, "Dual-stream playing");
+            }
+            
+            @Override
+            public void onPause() {
+                Log.d(TAG, "Dual-stream paused");
+            }
+            
+            @Override
+            public void onLoop() {
+                Log.d(TAG, "Dual-stream looped");
+            }
+            
+            @Override
+            public void onEnd() {
+                Log.d(TAG, "Dual-stream ended");
+            }
+            
+            @Override
+            public void onError(String error) {
+                Log.e(TAG, "Dual-stream error: " + error);
+                post(() -> {
+                    if (callback != null && !isReleased) {
+                        callback.onError(error);
+                    }
+                });
+            }
+        });
+        
+        dualStreamPlayer.setFrameCallback((frameIndex, y, u, v, a, width, height) -> {
+            if (isReleased) return;
+            
+            synchronized (frameDataLock) {
+                if (isReleased) return;
+                
+                reuseY = copyToReusable(y, reuseY);
+                reuseU = copyToReusable(u, reuseU);
+                reuseV = copyToReusable(v, reuseV);
+                reuseA = copyToReusable(a, reuseA);
+                
+                pendingY = reuseY;
+                pendingU = reuseU;
+                pendingV = reuseV;
+                pendingA = reuseA;
+                pendingWidth = width;
+                pendingHeight = height;
+                hasNewFrame = true;
+            }
+            
+            if (!isReleased) {
+                requestRender();
+            }
+        });
+        
+        // Load on background thread
+        if (nativeLoadExecutor == null || nativeLoadExecutor.isShutdown()) {
+            nativeLoadExecutor = createLoadExecutor();
+        }
+        nativeLoadExecutor.execute(() -> {
+            if (!dualStreamPlayer.loadFromFile(path)) {
+                Log.e(TAG, "Failed to load dual-stream file");
+            }
+        });
+    }
+    
+    /**
+     * Load a single-stream WebM file using software decoding (existing behavior).
+     */
+    private void loadSingleStreamFile(String path) {
+        Log.i(TAG, "🎬 Loading single-stream file with software decoder: " + path);
+        
+        isDualStreamMode = false;
+        
+        // Release any existing dual-stream player
+        if (dualStreamPlayer != null) {
+            dualStreamPlayer.release();
+            dualStreamPlayer = null;
+        }
+        
+        // Initialize software player if needed - by now all React props should be set
         if (playerId == 0 && !isReleased) {
             initializePlayer();
         }
@@ -327,18 +592,51 @@ public class WebMAlphaTextureView extends TextureView implements
     }
     
     public void play() {
-        if (isReleased || playerId == 0) return;
-        WebMAlphaPlayerNative.nativePlay(playerId);
+        if (isReleased) return;
+        
+        if (isDualStreamMode) {
+            if (bufferedPlayer != null) {
+                bufferedPlayer.play();
+            } else if (dualStreamSurfacePlayer != null) {
+                dualStreamSurfacePlayer.play();
+            } else if (dualStreamPlayer != null) {
+                dualStreamPlayer.play();
+            }
+        } else if (playerId != 0) {
+            WebMAlphaPlayerNative.nativePlay(playerId);
+        }
     }
     
     public void pause() {
-        if (isReleased || playerId == 0) return;
-        WebMAlphaPlayerNative.nativePause(playerId);
+        if (isReleased) return;
+        
+        if (isDualStreamMode) {
+            if (bufferedPlayer != null) {
+                bufferedPlayer.pause();
+            } else if (dualStreamSurfacePlayer != null) {
+                dualStreamSurfacePlayer.pause();
+            } else if (dualStreamPlayer != null) {
+                dualStreamPlayer.pause();
+            }
+        } else if (playerId != 0) {
+            WebMAlphaPlayerNative.nativePause(playerId);
+        }
     }
     
     public void stop() {
-        if (isReleased || playerId == 0) return;
-        WebMAlphaPlayerNative.nativeStop(playerId);
+        if (isReleased) return;
+        
+        if (isDualStreamMode) {
+            if (bufferedPlayer != null) {
+                bufferedPlayer.stop();
+            } else if (dualStreamSurfacePlayer != null) {
+                dualStreamSurfacePlayer.stop();
+            } else if (dualStreamPlayer != null) {
+                dualStreamPlayer.stop();
+            }
+        } else if (playerId != 0) {
+            WebMAlphaPlayerNative.nativeStop(playerId);
+        }
     }
     
     public void seekToFrame(int frame) {
@@ -347,28 +645,80 @@ public class WebMAlphaTextureView extends TextureView implements
     }
     
     public boolean isLoaded() {
-        if (isReleased || playerId == 0) return false;
-        return WebMAlphaPlayerNative.nativeIsLoaded(playerId);
+        if (isReleased) return false;
+        
+        if (isDualStreamMode) {
+            if (bufferedPlayer != null) {
+                return bufferedPlayer.isLoaded();
+            } else if (dualStreamSurfacePlayer != null) {
+                return dualStreamSurfacePlayer.isLoaded();
+            } else if (dualStreamPlayer != null) {
+                return dualStreamPlayer.isLoaded();
+            }
+        } else if (playerId != 0) {
+            return WebMAlphaPlayerNative.nativeIsLoaded(playerId);
+        }
+        return false;
     }
     
     public boolean isPlaying() {
-        if (isReleased || playerId == 0) return false;
-        return WebMAlphaPlayerNative.nativeIsPlaying(playerId);
+        if (isReleased) return false;
+        
+        if (isDualStreamMode) {
+            if (dualStreamSurfacePlayer != null) {
+                return dualStreamSurfacePlayer.isPlaying();
+            } else if (dualStreamPlayer != null) {
+                return dualStreamPlayer.isPlaying();
+            }
+        } else if (playerId != 0) {
+            return WebMAlphaPlayerNative.nativeIsPlaying(playerId);
+        }
+        return false;
     }
     
     public int getTotalFrames() {
-        if (isReleased || playerId == 0) return 0;
-        return WebMAlphaPlayerNative.nativeGetTotalFrames(playerId);
+        if (isReleased) return 0;
+        
+        if (isDualStreamMode) {
+            if (dualStreamSurfacePlayer != null) {
+                return dualStreamSurfacePlayer.getTotalFrames();
+            } else if (dualStreamPlayer != null) {
+                return dualStreamPlayer.getTotalFrames();
+            }
+        } else if (playerId != 0) {
+            return WebMAlphaPlayerNative.nativeGetTotalFrames(playerId);
+        }
+        return 0;
     }
     
     public int getVideoWidth() {
-        if (isReleased || playerId == 0) return 0;
-        return WebMAlphaPlayerNative.nativeGetWidth(playerId);
+        if (isReleased) return 0;
+        
+        if (isDualStreamMode) {
+            if (dualStreamSurfacePlayer != null) {
+                return dualStreamSurfacePlayer.getWidth();
+            } else if (dualStreamPlayer != null) {
+                return dualStreamPlayer.getWidth();
+            }
+        } else if (playerId != 0) {
+            return WebMAlphaPlayerNative.nativeGetWidth(playerId);
+        }
+        return 0;
     }
     
     public int getVideoHeight() {
-        if (isReleased || playerId == 0) return 0;
-        return WebMAlphaPlayerNative.nativeGetHeight(playerId);
+        if (isReleased) return 0;
+        
+        if (isDualStreamMode) {
+            if (dualStreamSurfacePlayer != null) {
+                return dualStreamSurfacePlayer.getHeight();
+            } else if (dualStreamPlayer != null) {
+                return dualStreamPlayer.getHeight();
+            }
+        } else if (playerId != 0) {
+            return WebMAlphaPlayerNative.nativeGetHeight(playerId);
+        }
+        return 0;
     }
     
     //------------------------------------------------------------------------------
@@ -567,7 +917,7 @@ public class WebMAlphaTextureView extends TextureView implements
     private void initGL() {
         GLES20.glClearColor(0f, 0f, 0f, 0f);
         
-        // Create shader program
+        // Create YUVA shader program (for ByteBuffer mode - software decoded)
         String vertexShader = 
             "attribute vec4 aPosition;\n" +
             "attribute vec2 aTexCoord;\n" +
@@ -597,7 +947,73 @@ public class WebMAlphaTextureView extends TextureView implements
         
         programId = createProgram(vertexShader, fragmentShader);
         
-        // Create textures
+        // Create OES shader program (for Surface mode - GPU accelerated, zero-copy)
+        // Uses external OES textures which stay on GPU
+        String oesVertexShader = 
+            "attribute vec4 aPosition;\n" +
+            "attribute vec2 aTexCoord;\n" +
+            "uniform mat4 uColorSTMatrix;\n" +
+            "uniform mat4 uAlphaSTMatrix;\n" +
+            "varying vec2 vColorTexCoord;\n" +
+            "varying vec2 vAlphaTexCoord;\n" +
+            "void main() {\n" +
+            "    gl_Position = aPosition;\n" +
+            "    vColorTexCoord = (uColorSTMatrix * vec4(aTexCoord, 0.0, 1.0)).xy;\n" +
+            "    vAlphaTexCoord = (uAlphaSTMatrix * vec4(aTexCoord, 0.0, 1.0)).xy;\n" +
+            "}\n";
+        
+        // OES fragment shader - samples from external textures (MediaCodec output)
+        // Color texture is YUV, alpha texture Y channel contains alpha
+        String oesFragmentShader = 
+            "#extension GL_OES_EGL_image_external : require\n" +
+            "precision mediump float;\n" +
+            "varying vec2 vColorTexCoord;\n" +
+            "varying vec2 vAlphaTexCoord;\n" +
+            "uniform samplerExternalOES uColorTexture;\n" +
+            "uniform samplerExternalOES uAlphaTexture;\n" +
+            "void main() {\n" +
+            "    vec4 color = texture2D(uColorTexture, vColorTexCoord);\n" +
+            "    float alpha = texture2D(uAlphaTexture, vAlphaTexCoord).r;\n" +
+            "    gl_FragColor = vec4(color.rgb * alpha, alpha);\n" +
+            "}\n";
+        
+        oesProgramId = createProgram(oesVertexShader, oesFragmentShader);
+        if (oesProgramId == 0) {
+            Log.w(TAG, "OES shader creation failed - Surface mode will not work");
+        } else {
+            Log.i(TAG, "✅ OES shader created (GPU-accelerated compositing)");
+        }
+        
+        // 2D texture compositing shader for buffered player (FBO ring buffer output)
+        // Similar to OES but uses sampler2D (textures already have transform baked in)
+        String buffered2DVertexShader = 
+            "attribute vec4 aPosition;\n" +
+            "attribute vec2 aTexCoord;\n" +
+            "varying vec2 vTexCoord;\n" +
+            "void main() {\n" +
+            "    gl_Position = aPosition;\n" +
+            "    vTexCoord = aTexCoord;\n" +
+            "}\n";
+        
+        String buffered2DFragmentShader = 
+            "precision mediump float;\n" +
+            "varying vec2 vTexCoord;\n" +
+            "uniform sampler2D uColorTexture;\n" +
+            "uniform sampler2D uAlphaTexture;\n" +
+            "void main() {\n" +
+            "    vec4 color = texture2D(uColorTexture, vTexCoord);\n" +
+            "    float alpha = texture2D(uAlphaTexture, vTexCoord).r;\n" +
+            "    gl_FragColor = vec4(color.rgb * alpha, alpha);\n" +
+            "}\n";
+        
+        buffered2DProgramId = createProgram(buffered2DVertexShader, buffered2DFragmentShader);
+        if (buffered2DProgramId == 0) {
+            Log.w(TAG, "Buffered 2D shader creation failed");
+        } else {
+            Log.i(TAG, "✅ Buffered 2D shader created (FBO ring buffer compositing)");
+        }
+        
+        // Create textures for YUVA mode
         int[] textures = new int[4];
         GLES20.glGenTextures(4, textures, 0);
         yTextureId = textures[0];
@@ -605,7 +1021,7 @@ public class WebMAlphaTextureView extends TextureView implements
         vTextureId = textures[2];
         aTextureId = textures[3];
         
-        // Set up vertex buffer (fullscreen quad with flipped Y for TextureView)
+        // Set up vertex buffer (fullscreen quad with flipped Y for TextureView/YUVA mode)
         float[] vertices = {
             -1f, -1f, 0f, 1f,  // bottom-left
              1f, -1f, 1f, 1f,  // bottom-right
@@ -617,6 +1033,24 @@ public class WebMAlphaTextureView extends TextureView implements
             .asFloatBuffer()
             .put(vertices);
         vertexBuffer.position(0);
+        
+        // Set up OES vertex buffer with UN-FLIPPED texture coordinates
+        // SurfaceTexture's transformation matrix will handle the flip
+        float[] oesVertices = {
+            -1f, -1f, 0f, 0f,  // bottom-left  (tex coord: 0,0)
+             1f, -1f, 1f, 0f,  // bottom-right (tex coord: 1,0)
+            -1f,  1f, 0f, 1f,  // top-left     (tex coord: 0,1)
+             1f,  1f, 1f, 1f   // top-right    (tex coord: 1,1)
+        };
+        oesVertexBuffer = ByteBuffer.allocateDirect(oesVertices.length * 4)
+            .order(ByteOrder.nativeOrder())
+            .asFloatBuffer()
+            .put(oesVertices);
+        oesVertexBuffer.position(0);
+        
+        // Initialize identity matrices for OES
+        android.opengl.Matrix.setIdentityM(colorTransformMatrix, 0);
+        android.opengl.Matrix.setIdentityM(alphaTransformMatrix, 0);
         
         // Enable blending for transparency
         GLES20.glEnable(GLES20.GL_BLEND);
@@ -670,113 +1104,263 @@ public class WebMAlphaTextureView extends TextureView implements
             
             GLES20.glClear(GLES20.GL_COLOR_BUFFER_BIT);
             
-            // Grab frame data under lock
-            ByteBuffer y, u, v, a;
-            int width, height;
-            synchronized (frameDataLock) {
-                if (isReleased || !hasNewFrame || pendingY == null) {
-                    // Still need to swap buffers to show cleared frame
-                    EGL14.eglSwapBuffers(eglDisplay, eglSurface);
-                    return;
-                }
-                
-                y = pendingY;
-                u = pendingU;
-                v = pendingV;
-                a = pendingA;
-                width = pendingWidth;
-                height = pendingHeight;
-                hasNewFrame = false;
-            }
-            
-            if (y == null || u == null || v == null || a == null || width <= 0 || height <= 0) {
-                EGL14.eglSwapBuffers(eglDisplay, eglSurface);
+            // Check if we're in buffered mode (FBO ring buffer)
+            if (isDualStreamMode && bufferedPlayer != null && hasBufferedFrame) {
+                doRenderBuffered();
                 return;
             }
             
-            // Update textures
-            GLES20.glPixelStorei(GLES20.GL_UNPACK_ALIGNMENT, 1);
-            
-            // Y texture
-            GLES20.glActiveTexture(GLES20.GL_TEXTURE0);
-            GLES20.glBindTexture(GLES20.GL_TEXTURE_2D, yTextureId);
-            if (currentWidth != width || currentHeight != height) {
-                GLES20.glTexImage2D(GLES20.GL_TEXTURE_2D, 0, GLES20.GL_LUMINANCE,
-                    width, height, 0, GLES20.GL_LUMINANCE, GLES20.GL_UNSIGNED_BYTE, y);
-                setupTexture();
-            } else {
-                GLES20.glTexSubImage2D(GLES20.GL_TEXTURE_2D, 0, 0, 0, width, height,
-                    GLES20.GL_LUMINANCE, GLES20.GL_UNSIGNED_BYTE, y);
+            // Check if we're in OES (Surface) mode for dual-stream (legacy)
+            if (isDualStreamMode && dualStreamSurfacePlayer != null && hasNewOesFrame) {
+                doRenderOes();
+                return;
             }
             
-            // U texture
-            int uvWidth = width / 2;
-            int uvHeight = height / 2;
-            GLES20.glActiveTexture(GLES20.GL_TEXTURE1);
-            GLES20.glBindTexture(GLES20.GL_TEXTURE_2D, uTextureId);
-            if (currentWidth != width || currentHeight != height) {
-                GLES20.glTexImage2D(GLES20.GL_TEXTURE_2D, 0, GLES20.GL_LUMINANCE,
-                    uvWidth, uvHeight, 0, GLES20.GL_LUMINANCE, GLES20.GL_UNSIGNED_BYTE, u);
-                setupTexture();
-            } else {
-                GLES20.glTexSubImage2D(GLES20.GL_TEXTURE_2D, 0, 0, 0, uvWidth, uvHeight,
-                    GLES20.GL_LUMINANCE, GLES20.GL_UNSIGNED_BYTE, u);
-            }
-            
-            // V texture
-            GLES20.glActiveTexture(GLES20.GL_TEXTURE2);
-            GLES20.glBindTexture(GLES20.GL_TEXTURE_2D, vTextureId);
-            if (currentWidth != width || currentHeight != height) {
-                GLES20.glTexImage2D(GLES20.GL_TEXTURE_2D, 0, GLES20.GL_LUMINANCE,
-                    uvWidth, uvHeight, 0, GLES20.GL_LUMINANCE, GLES20.GL_UNSIGNED_BYTE, v);
-                setupTexture();
-            } else {
-                GLES20.glTexSubImage2D(GLES20.GL_TEXTURE_2D, 0, 0, 0, uvWidth, uvHeight,
-                    GLES20.GL_LUMINANCE, GLES20.GL_UNSIGNED_BYTE, v);
-            }
-            
-            // A texture
-            GLES20.glActiveTexture(GLES20.GL_TEXTURE3);
-            GLES20.glBindTexture(GLES20.GL_TEXTURE_2D, aTextureId);
-            if (currentWidth != width || currentHeight != height) {
-                GLES20.glTexImage2D(GLES20.GL_TEXTURE_2D, 0, GLES20.GL_LUMINANCE,
-                    width, height, 0, GLES20.GL_LUMINANCE, GLES20.GL_UNSIGNED_BYTE, a);
-                setupTexture();
-            } else {
-                GLES20.glTexSubImage2D(GLES20.GL_TEXTURE_2D, 0, 0, 0, width, height,
-                    GLES20.GL_LUMINANCE, GLES20.GL_UNSIGNED_BYTE, a);
-            }
-            
-            currentWidth = width;
-            currentHeight = height;
-            
-            // Draw
-            GLES20.glUseProgram(programId);
-            
-            int positionHandle = GLES20.glGetAttribLocation(programId, "aPosition");
-            int texCoordHandle = GLES20.glGetAttribLocation(programId, "aTexCoord");
-            
-            vertexBuffer.position(0);
-            GLES20.glVertexAttribPointer(positionHandle, 2, GLES20.GL_FLOAT, false, 16, vertexBuffer);
-            GLES20.glEnableVertexAttribArray(positionHandle);
-            
-            vertexBuffer.position(2);
-            GLES20.glVertexAttribPointer(texCoordHandle, 2, GLES20.GL_FLOAT, false, 16, vertexBuffer);
-            GLES20.glEnableVertexAttribArray(texCoordHandle);
-            
-            GLES20.glUniform1i(GLES20.glGetUniformLocation(programId, "yTexture"), 0);
-            GLES20.glUniform1i(GLES20.glGetUniformLocation(programId, "uTexture"), 1);
-            GLES20.glUniform1i(GLES20.glGetUniformLocation(programId, "vTexture"), 2);
-            GLES20.glUniform1i(GLES20.glGetUniformLocation(programId, "aTexture"), 3);
-            
-            GLES20.glDrawArrays(GLES20.GL_TRIANGLE_STRIP, 0, 4);
-            
-            // Swap buffers
-            EGL14.eglSwapBuffers(eglDisplay, eglSurface);
+            // ByteBuffer mode (YUVA textures)
+            doRenderYuva();
             
         } catch (Exception e) {
             Log.w(TAG, "Render exception: " + e.getMessage());
         }
+    }
+    
+    /**
+     * Render using OES textures (Surface mode - GPU accelerated, zero-copy).
+     * This is the fast path for dual-stream playback.
+     */
+    private void doRenderOes() {
+        if (dualStreamSurfacePlayer == null || oesProgramId == 0) {
+            EGL14.eglSwapBuffers(eglDisplay, eglSurface);
+            return;
+        }
+        
+        SurfaceTextureVp9Decoder colorDecoder = dualStreamSurfacePlayer.getColorDecoder();
+        SurfaceTextureVp9Decoder alphaDecoder = dualStreamSurfacePlayer.getAlphaDecoder();
+        
+        if (colorDecoder == null || alphaDecoder == null) {
+            EGL14.eglSwapBuffers(eglDisplay, eglSurface);
+            return;
+        }
+        
+        // Update SurfaceTextures to get latest frames
+        colorDecoder.updateTexImage();
+        alphaDecoder.updateTexImage();
+        hasNewOesFrame = false;
+        
+        // Get transformation matrices
+        colorDecoder.getTransformMatrix(colorTransformMatrix);
+        alphaDecoder.getTransformMatrix(alphaTransformMatrix);
+        
+        // Use OES program
+        GLES20.glUseProgram(oesProgramId);
+        
+        // Get attribute/uniform locations
+        int positionHandle = GLES20.glGetAttribLocation(oesProgramId, "aPosition");
+        int texCoordHandle = GLES20.glGetAttribLocation(oesProgramId, "aTexCoord");
+        int colorMatrixHandle = GLES20.glGetUniformLocation(oesProgramId, "uColorSTMatrix");
+        int alphaMatrixHandle = GLES20.glGetUniformLocation(oesProgramId, "uAlphaSTMatrix");
+        int colorTextureHandle = GLES20.glGetUniformLocation(oesProgramId, "uColorTexture");
+        int alphaTextureHandle = GLES20.glGetUniformLocation(oesProgramId, "uAlphaTexture");
+        
+        // Set vertex attributes (using OES vertex buffer with un-flipped tex coords)
+        oesVertexBuffer.position(0);
+        GLES20.glVertexAttribPointer(positionHandle, 2, GLES20.GL_FLOAT, false, 16, oesVertexBuffer);
+        GLES20.glEnableVertexAttribArray(positionHandle);
+        
+        oesVertexBuffer.position(2);
+        GLES20.glVertexAttribPointer(texCoordHandle, 2, GLES20.GL_FLOAT, false, 16, oesVertexBuffer);
+        GLES20.glEnableVertexAttribArray(texCoordHandle);
+        
+        // Set transformation matrices (from SurfaceTexture - handles Y flip)
+        GLES20.glUniformMatrix4fv(colorMatrixHandle, 1, false, colorTransformMatrix, 0);
+        GLES20.glUniformMatrix4fv(alphaMatrixHandle, 1, false, alphaTransformMatrix, 0);
+        
+        // Bind OES textures
+        GLES20.glActiveTexture(GLES20.GL_TEXTURE0);
+        GLES20.glBindTexture(GLES11Ext.GL_TEXTURE_EXTERNAL_OES, colorDecoder.getOesTextureId());
+        GLES20.glUniform1i(colorTextureHandle, 0);
+        
+        GLES20.glActiveTexture(GLES20.GL_TEXTURE1);
+        GLES20.glBindTexture(GLES11Ext.GL_TEXTURE_EXTERNAL_OES, alphaDecoder.getOesTextureId());
+        GLES20.glUniform1i(alphaTextureHandle, 1);
+        
+        // Draw
+        GLES20.glDrawArrays(GLES20.GL_TRIANGLE_STRIP, 0, 4);
+        
+        // Swap buffers
+        EGL14.eglSwapBuffers(eglDisplay, eglSurface);
+    }
+    
+    /**
+     * Render using 2D textures from buffered player (FBO ring buffer).
+     * This is the proper solution for smooth dual-stream playback.
+     */
+    private void doRenderBuffered() {
+        if (bufferedPlayer == null || buffered2DProgramId == 0) {
+            EGL14.eglSwapBuffers(eglDisplay, eglSurface);
+            return;
+        }
+        
+        int colorTexId = bufferedColorTextureId;
+        int alphaTexId = bufferedAlphaTextureId;
+        
+        if (colorTexId <= 0 || alphaTexId <= 0) {
+            EGL14.eglSwapBuffers(eglDisplay, eglSurface);
+            return;
+        }
+        
+        hasBufferedFrame = false;
+        
+        // Use 2D compositing program
+        GLES20.glUseProgram(buffered2DProgramId);
+        
+        // Get attribute/uniform locations
+        int positionHandle = GLES20.glGetAttribLocation(buffered2DProgramId, "aPosition");
+        int texCoordHandle = GLES20.glGetAttribLocation(buffered2DProgramId, "aTexCoord");
+        int colorTextureHandle = GLES20.glGetUniformLocation(buffered2DProgramId, "uColorTexture");
+        int alphaTextureHandle = GLES20.glGetUniformLocation(buffered2DProgramId, "uAlphaTexture");
+        
+        // Set vertex attributes - use oesVertexBuffer (un-flipped coords) for buffered rendering
+        // The FBO blit already applied SurfaceTexture's transform (which includes Y-flip), 
+        // so the 2D texture is already in the correct orientation for direct rendering.
+        // Using Y-flipped coords here would cause a double-flip.
+        oesVertexBuffer.position(0);
+        GLES20.glVertexAttribPointer(positionHandle, 2, GLES20.GL_FLOAT, false, 16, oesVertexBuffer);
+        GLES20.glEnableVertexAttribArray(positionHandle);
+        
+        oesVertexBuffer.position(2);
+        GLES20.glVertexAttribPointer(texCoordHandle, 2, GLES20.GL_FLOAT, false, 16, oesVertexBuffer);
+        GLES20.glEnableVertexAttribArray(texCoordHandle);
+        
+        // Bind 2D textures
+        GLES20.glActiveTexture(GLES20.GL_TEXTURE0);
+        GLES20.glBindTexture(GLES20.GL_TEXTURE_2D, colorTexId);
+        GLES20.glUniform1i(colorTextureHandle, 0);
+        
+        GLES20.glActiveTexture(GLES20.GL_TEXTURE1);
+        GLES20.glBindTexture(GLES20.GL_TEXTURE_2D, alphaTexId);
+        GLES20.glUniform1i(alphaTextureHandle, 1);
+        
+        // Draw
+        GLES20.glDrawArrays(GLES20.GL_TRIANGLE_STRIP, 0, 4);
+        
+        // Cleanup
+        GLES20.glDisableVertexAttribArray(positionHandle);
+        GLES20.glDisableVertexAttribArray(texCoordHandle);
+        GLES20.glBindTexture(GLES20.GL_TEXTURE_2D, 0);
+        
+        // Swap buffers
+        EGL14.eglSwapBuffers(eglDisplay, eglSurface);
+    }
+    
+    /**
+     * Render using YUVA textures (ByteBuffer mode - slower, CPU upload).
+     * This is the fallback path for single-stream or legacy dual-stream.
+     */
+    private void doRenderYuva() {
+        // Grab frame data under lock
+        ByteBuffer y, u, v, a;
+        int width, height;
+        synchronized (frameDataLock) {
+            if (isReleased || !hasNewFrame || pendingY == null) {
+                // Still need to swap buffers to show cleared frame
+                EGL14.eglSwapBuffers(eglDisplay, eglSurface);
+                return;
+            }
+            
+            y = pendingY;
+            u = pendingU;
+            v = pendingV;
+            a = pendingA;
+            width = pendingWidth;
+            height = pendingHeight;
+            hasNewFrame = false;
+        }
+        
+        if (y == null || u == null || v == null || a == null || width <= 0 || height <= 0) {
+            EGL14.eglSwapBuffers(eglDisplay, eglSurface);
+            return;
+        }
+        
+        // Update textures
+        GLES20.glPixelStorei(GLES20.GL_UNPACK_ALIGNMENT, 1);
+        
+        // Y texture
+        GLES20.glActiveTexture(GLES20.GL_TEXTURE0);
+        GLES20.glBindTexture(GLES20.GL_TEXTURE_2D, yTextureId);
+        if (currentWidth != width || currentHeight != height) {
+            GLES20.glTexImage2D(GLES20.GL_TEXTURE_2D, 0, GLES20.GL_LUMINANCE,
+                width, height, 0, GLES20.GL_LUMINANCE, GLES20.GL_UNSIGNED_BYTE, y);
+            setupTexture();
+        } else {
+            GLES20.glTexSubImage2D(GLES20.GL_TEXTURE_2D, 0, 0, 0, width, height,
+                GLES20.GL_LUMINANCE, GLES20.GL_UNSIGNED_BYTE, y);
+        }
+        
+        // U texture
+        int uvWidth = width / 2;
+        int uvHeight = height / 2;
+        GLES20.glActiveTexture(GLES20.GL_TEXTURE1);
+        GLES20.glBindTexture(GLES20.GL_TEXTURE_2D, uTextureId);
+        if (currentWidth != width || currentHeight != height) {
+            GLES20.glTexImage2D(GLES20.GL_TEXTURE_2D, 0, GLES20.GL_LUMINANCE,
+                uvWidth, uvHeight, 0, GLES20.GL_LUMINANCE, GLES20.GL_UNSIGNED_BYTE, u);
+            setupTexture();
+        } else {
+            GLES20.glTexSubImage2D(GLES20.GL_TEXTURE_2D, 0, 0, 0, uvWidth, uvHeight,
+                GLES20.GL_LUMINANCE, GLES20.GL_UNSIGNED_BYTE, u);
+        }
+        
+        // V texture
+        GLES20.glActiveTexture(GLES20.GL_TEXTURE2);
+        GLES20.glBindTexture(GLES20.GL_TEXTURE_2D, vTextureId);
+        if (currentWidth != width || currentHeight != height) {
+            GLES20.glTexImage2D(GLES20.GL_TEXTURE_2D, 0, GLES20.GL_LUMINANCE,
+                uvWidth, uvHeight, 0, GLES20.GL_LUMINANCE, GLES20.GL_UNSIGNED_BYTE, v);
+            setupTexture();
+        } else {
+            GLES20.glTexSubImage2D(GLES20.GL_TEXTURE_2D, 0, 0, 0, uvWidth, uvHeight,
+                GLES20.GL_LUMINANCE, GLES20.GL_UNSIGNED_BYTE, v);
+        }
+        
+        // A texture
+        GLES20.glActiveTexture(GLES20.GL_TEXTURE3);
+        GLES20.glBindTexture(GLES20.GL_TEXTURE_2D, aTextureId);
+        if (currentWidth != width || currentHeight != height) {
+            GLES20.glTexImage2D(GLES20.GL_TEXTURE_2D, 0, GLES20.GL_LUMINANCE,
+                width, height, 0, GLES20.GL_LUMINANCE, GLES20.GL_UNSIGNED_BYTE, a);
+            setupTexture();
+        } else {
+            GLES20.glTexSubImage2D(GLES20.GL_TEXTURE_2D, 0, 0, 0, width, height,
+                GLES20.GL_LUMINANCE, GLES20.GL_UNSIGNED_BYTE, a);
+        }
+        
+        currentWidth = width;
+        currentHeight = height;
+        
+        // Draw
+        GLES20.glUseProgram(programId);
+        
+        int positionHandle = GLES20.glGetAttribLocation(programId, "aPosition");
+        int texCoordHandle = GLES20.glGetAttribLocation(programId, "aTexCoord");
+        
+        vertexBuffer.position(0);
+        GLES20.glVertexAttribPointer(positionHandle, 2, GLES20.GL_FLOAT, false, 16, vertexBuffer);
+        GLES20.glEnableVertexAttribArray(positionHandle);
+        
+        vertexBuffer.position(2);
+        GLES20.glVertexAttribPointer(texCoordHandle, 2, GLES20.GL_FLOAT, false, 16, vertexBuffer);
+        GLES20.glEnableVertexAttribArray(texCoordHandle);
+        
+        GLES20.glUniform1i(GLES20.glGetUniformLocation(programId, "yTexture"), 0);
+        GLES20.glUniform1i(GLES20.glGetUniformLocation(programId, "uTexture"), 1);
+        GLES20.glUniform1i(GLES20.glGetUniformLocation(programId, "vTexture"), 2);
+        GLES20.glUniform1i(GLES20.glGetUniformLocation(programId, "aTexture"), 3);
+        
+        GLES20.glDrawArrays(GLES20.GL_TRIANGLE_STRIP, 0, 4);
+        
+        // Swap buffers
+        EGL14.eglSwapBuffers(eglDisplay, eglSurface);
     }
     
     private void setupTexture() {
@@ -938,13 +1522,33 @@ public class WebMAlphaTextureView extends TextureView implements
     //------------------------------------------------------------------------------
     
     public void release() {
-        Log.i(TAG, "🗑️ Full release of player " + playerId);
+        Log.i(TAG, "🗑️ Full release of player " + playerId + " (dualStream=" + isDualStreamMode + ")");
         
         final long pid = playerId;
         playerId = 0;
         isReleased = true;
         
         cancelNativeLoad();
+        
+        // Release buffered dual-stream player if in use
+        if (bufferedPlayer != null) {
+            bufferedPlayer.unload();
+            bufferedPlayer = null;
+        }
+        
+        // Release Surface-based dual-stream player if in use
+        if (dualStreamSurfacePlayer != null) {
+            dualStreamSurfacePlayer.unload();
+            dualStreamSurfacePlayer = null;
+        }
+        
+        // Release legacy dual-stream player if in use
+        if (dualStreamPlayer != null) {
+            dualStreamPlayer.release();
+            dualStreamPlayer = null;
+        }
+        isDualStreamMode = false;
+        hasNewOesFrame = false;
         
         // Clean up native player on executor
         if (pid != 0) {
@@ -971,16 +1575,40 @@ public class WebMAlphaTextureView extends TextureView implements
     }
     
     private void softRelease() {
-        Log.i(TAG, "📦 Soft release of player " + playerId);
+        Log.i(TAG, "📦 Soft release of player " + playerId + " (dualStream=" + isDualStreamMode + ")");
         
         cancelNativeLoad();
         
         synchronized (frameDataLock) {
             isReleased = true;
             hasNewFrame = false;
+            hasNewOesFrame = false;
             pendingY = pendingU = pendingV = pendingA = null;
             currentWidth = 0;
             currentHeight = 0;
+        }
+        
+        // Soft release buffered dual-stream player
+        if (isDualStreamMode && bufferedPlayer != null) {
+            bufferedPlayer.stop();
+            bufferedPlayer.unload();
+            bufferedPlayer = null;
+            Log.i(TAG, "📦 Soft release cleanup complete for buffered dual-stream player");
+        }
+        
+        // Soft release Surface-based dual-stream player (legacy)
+        if (isDualStreamMode && dualStreamSurfacePlayer != null) {
+            dualStreamSurfacePlayer.stop();
+            dualStreamSurfacePlayer.unload();
+            dualStreamSurfacePlayer = null;
+            Log.i(TAG, "📦 Soft release cleanup complete for Surface-based dual-stream player");
+        }
+        
+        // Soft release legacy dual-stream player
+        if (isDualStreamMode && dualStreamPlayer != null) {
+            dualStreamPlayer.stop();
+            dualStreamPlayer.unload();
+            Log.i(TAG, "📦 Soft release cleanup complete for legacy dual-stream player");
         }
         
         final long pid = playerId;

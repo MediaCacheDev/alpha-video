@@ -8,8 +8,119 @@ import {
   ViewStyle,
   UIManager,
   findNodeHandle,
+  NativeModules,
 } from 'react-native';
 import NativeWebMAlphaView from './WebMAlphaViewNativeComponent';
+
+/**
+ * Decoder status information (Android only)
+ */
+export interface DecoderStatus {
+  /** Maximum VP9 decoder instances supported by the device */
+  maxVp9Instances: number;
+  /** Currently active decoder instances */
+  activeDecoders: number;
+  /** Remaining available decoder slots */
+  availableSlots: number;
+  /** Maximum dual-stream players possible (maxVp9Instances / 2) */
+  maxDualStreamPlayers: number;
+  /** Currently active dual-stream players (activeDecoders / 2) */
+  activeDualStreamPlayers: number;
+  /** Whether we can create more dual-stream players */
+  canCreateMore: boolean;
+}
+
+/**
+ * Native module for WebM Alpha Player utilities (Android only)
+ */
+const RNWebMAlphaPlayerModule = Platform.OS === 'android' 
+  ? NativeModules.RNWebMAlphaPlayer 
+  : null;
+
+/**
+ * Get detailed VP9 decoder information.
+ * Returns a string with all decoder capabilities including max instances,
+ * hardware acceleration status, supported resolutions, etc.
+ * 
+ * @returns Promise<string> - Detailed decoder information
+ * @platform android
+ */
+export async function getVp9DecoderInfo(): Promise<string> {
+  if (Platform.OS !== 'android') {
+    return 'VP9 decoder info only available on Android';
+  }
+  if (!RNWebMAlphaPlayerModule) {
+    throw new Error('RNWebMAlphaPlayer native module not available');
+  }
+  return RNWebMAlphaPlayerModule.getVp9DecoderInfo();
+}
+
+/**
+ * Get the maximum number of concurrent VP9 decoder instances.
+ * Dual-stream videos require 2 instances per player.
+ * 
+ * @returns Promise<number> - Max instances (-1 if unable to determine)
+ * @platform android
+ */
+export async function getMaxVp9Instances(): Promise<number> {
+  if (Platform.OS !== 'android') {
+    return -1;
+  }
+  if (!RNWebMAlphaPlayerModule) {
+    throw new Error('RNWebMAlphaPlayer native module not available');
+  }
+  return RNWebMAlphaPlayerModule.getMaxVp9Instances();
+}
+
+/**
+ * Get the current number of active VP9 decoder instances.
+ * 
+ * @returns Promise<number> - Active decoder count
+ * @platform android
+ */
+export async function getActiveDecoderCount(): Promise<number> {
+  if (Platform.OS !== 'android') {
+    return 0;
+  }
+  if (!RNWebMAlphaPlayerModule) {
+    throw new Error('RNWebMAlphaPlayer native module not available');
+  }
+  return RNWebMAlphaPlayerModule.getActiveDecoderCount();
+}
+
+/**
+ * Get comprehensive decoder status as a structured object.
+ * Useful for determining if more dual-stream players can be created.
+ * 
+ * @returns Promise<DecoderStatus> - Decoder status information
+ * @platform android
+ * 
+ * @example
+ * ```ts
+ * const status = await getDecoderStatus();
+ * console.log(`Can create ${status.maxDualStreamPlayers} dual-stream players`);
+ * console.log(`Currently using ${status.activeDualStreamPlayers}`);
+ * if (!status.canCreateMore) {
+ *   console.warn('At decoder limit!');
+ * }
+ * ```
+ */
+export async function getDecoderStatus(): Promise<DecoderStatus> {
+  if (Platform.OS !== 'android') {
+    return {
+      maxVp9Instances: -1,
+      activeDecoders: 0,
+      availableSlots: -1,
+      maxDualStreamPlayers: -1,
+      activeDualStreamPlayers: 0,
+      canCreateMore: true,
+    };
+  }
+  if (!RNWebMAlphaPlayerModule) {
+    throw new Error('RNWebMAlphaPlayer native module not available');
+  }
+  return RNWebMAlphaPlayerModule.getDecoderStatus();
+}
 
 // Web video element type
 type VideoElement = HTMLVideoElement;

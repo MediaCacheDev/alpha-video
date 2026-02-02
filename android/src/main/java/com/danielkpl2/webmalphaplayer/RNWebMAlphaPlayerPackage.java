@@ -19,7 +19,9 @@ public class RNWebMAlphaPlayerPackage implements ReactPackage {
     @NonNull
     @Override
     public List<NativeModule> createNativeModules(@NonNull ReactApplicationContext reactContext) {
-        return Collections.emptyList();
+        List<NativeModule> modules = new ArrayList<>();
+        modules.add(new RNWebMAlphaPlayerModule(reactContext));
+        return modules;
     }
     
     @NonNull
