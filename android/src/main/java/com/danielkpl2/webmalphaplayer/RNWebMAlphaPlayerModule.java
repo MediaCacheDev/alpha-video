@@ -37,7 +37,7 @@ public class RNWebMAlphaPlayerModule extends ReactContextBaseJavaModule {
     @ReactMethod
     public void getVp9DecoderInfo(Promise promise) {
         try {
-            String info = MediaCodecVp9Decoder.getVp9DecoderInfo();
+            String info = SurfaceTextureVp9Decoder.getVp9DecoderInfo();
             Log.i(TAG, info);
             promise.resolve(info);
         } catch (Exception e) {
@@ -51,7 +51,7 @@ public class RNWebMAlphaPlayerModule extends ReactContextBaseJavaModule {
     @ReactMethod
     public void getMaxVp9Instances(Promise promise) {
         try {
-            int max = MediaCodecVp9Decoder.getMaxVp9Instances();
+            int max = SurfaceTextureVp9Decoder.getMaxVp9Instances();
             promise.resolve(max);
         } catch (Exception e) {
             promise.reject("DECODER_INFO_ERROR", e.getMessage());
@@ -64,7 +64,7 @@ public class RNWebMAlphaPlayerModule extends ReactContextBaseJavaModule {
     @ReactMethod
     public void getActiveDecoderCount(Promise promise) {
         try {
-            int count = MediaCodecVp9Decoder.getActiveDecoderCount();
+            int count = SurfaceTextureVp9Decoder.getActiveDecoderCount();
             promise.resolve(count);
         } catch (Exception e) {
             promise.reject("DECODER_INFO_ERROR", e.getMessage());
@@ -77,8 +77,8 @@ public class RNWebMAlphaPlayerModule extends ReactContextBaseJavaModule {
     @ReactMethod
     public void getDecoderStatus(Promise promise) {
         try {
-            int maxInstances = MediaCodecVp9Decoder.getMaxVp9Instances();
-            int activeCount = MediaCodecVp9Decoder.getActiveDecoderCount();
+            int maxInstances = SurfaceTextureVp9Decoder.getMaxVp9Instances();
+            int activeCount = SurfaceTextureVp9Decoder.getActiveDecoderCount();
             
             WritableMap result = new WritableNativeMap();
             result.putInt("maxVp9Instances", maxInstances);

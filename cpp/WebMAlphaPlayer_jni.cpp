@@ -1128,6 +1128,47 @@ Java_com_danielkpl2_webmalphaplayer_DualStreamMediaCodecPlayer_nativeIsDualStrea
     return (vp9StreamCount >= 2) ? JNI_TRUE : JNI_FALSE;
 }
 
+// BufferedDualStreamPlayer - same as above, just different class name binding
+JNIEXPORT jboolean JNICALL
+Java_com_danielkpl2_webmalphaplayer_BufferedDualStreamPlayer_nativeIsDualStream(
+    JNIEnv* env,
+    jclass clazz,
+    jstring filePath
+) {
+    const char* path = env->GetStringUTFChars(filePath, nullptr);
+    std::string pathStr(path);
+    env->ReleaseStringUTFChars(filePath, path);
+    
+    AVFormatContext* formatCtx = nullptr;
+    int ret = avformat_open_input(&formatCtx, pathStr.c_str(), nullptr, nullptr);
+    if (ret < 0) {
+        return JNI_FALSE;
+    }
+    
+    ret = avformat_find_stream_info(formatCtx, nullptr);
+    if (ret < 0) {
+        avformat_close_input(&formatCtx);
+        return JNI_FALSE;
+    }
+    
+    // Count VP9 video streams
+    int vp9StreamCount = 0;
+    for (unsigned i = 0; i < formatCtx->nb_streams; i++) {
+        AVStream* stream = formatCtx->streams[i];
+        if (stream->codecpar->codec_type == AVMEDIA_TYPE_VIDEO &&
+            stream->codecpar->codec_id == AV_CODEC_ID_VP9) {
+            vp9StreamCount++;
+        }
+    }
+    
+    avformat_close_input(&formatCtx);
+    
+    LOGI("File %s has %d VP9 streams (dual=%s)", 
+         pathStr.c_str(), vp9StreamCount, vp9StreamCount >= 2 ? "yes" : "no");
+    
+    return (vp9StreamCount >= 2) ? JNI_TRUE : JNI_FALSE;
+}
+
 // ============================================================================
 // DualStreamSurfacePlayer JNI bindings (GPU-accelerated Surface-based player)
 // These reuse the same demuxer infrastructure as DualStreamMediaCodecPlayer

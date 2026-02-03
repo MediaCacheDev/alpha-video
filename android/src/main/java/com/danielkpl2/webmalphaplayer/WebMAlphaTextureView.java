@@ -47,16 +47,9 @@ public class WebMAlphaTextureView extends TextureView implements
     private volatile long playerId = 0;
     private volatile boolean isReleased = false;
     
-    // Dual-stream MediaCodec player (used when file has 2 VP9 streams)
-    // OLD: ByteBuffer-based (slow, CPU bottleneck)
-    private DualStreamMediaCodecPlayer dualStreamPlayer;
-    // OLD Surface-based (had SurfaceTexture single-frame limit bug) 
-    private DualStreamSurfacePlayer dualStreamSurfacePlayer;
-    // NEW: Buffered Surface-based (FBO ring buffer - proper fix for frame timing)
+    // Dual-stream player with FBO ring buffer for hardware-accelerated VP9 decoding
     private BufferedDualStreamPlayer bufferedPlayer;
     private volatile boolean isDualStreamMode = false;
-    private volatile boolean useSurfacePlayer = true; // Use new Surface-based player by default
-    private volatile boolean useBufferedPlayer = true; // Use buffered FBO ring buffer player
     
     // Buffered player frame state
     private volatile int bufferedColorTextureId = -1;
@@ -81,7 +74,6 @@ public class WebMAlphaTextureView extends TextureView implements
     // OES texture transformation matrices (from SurfaceTexture)
     private final float[] colorTransformMatrix = new float[16];
     private final float[] alphaTransformMatrix = new float[16];
-    private volatile boolean hasNewOesFrame = false;
     
     // Surface state
     private SurfaceTexture surfaceTexture;
@@ -303,10 +295,10 @@ public class WebMAlphaTextureView extends TextureView implements
         
         // Check if this is a dual-stream file (2 VP9 video streams)
         // Use MediaCodec hardware decoder for dual-stream, software for single-stream
-        boolean isDualStream = DualStreamMediaCodecPlayer.nativeIsDualStream(path);
+        boolean isDualStream = BufferedDualStreamPlayer.nativeIsDualStream(path);
         Log.i(TAG, "🔍 File " + path + " isDualStream=" + isDualStream);
         
-        if (isDualStream && MediaCodecVp9Decoder.isVp9HardwareDecoderAvailable()) {
+        if (isDualStream && SurfaceTextureVp9Decoder.isVp9HardwareDecoderAvailable()) {
             // Use MediaCodec hardware decoder for dual-stream
             loadDualStreamFile(path);
         } else {
@@ -330,18 +322,10 @@ public class WebMAlphaTextureView extends TextureView implements
             playerId = 0;
         }
         
-        // Release any existing players
+        // Release any existing player
         if (bufferedPlayer != null) {
             bufferedPlayer.unload();
             bufferedPlayer = null;
-        }
-        if (dualStreamSurfacePlayer != null) {
-            dualStreamSurfacePlayer.unload();
-            dualStreamSurfacePlayer = null;
-        }
-        if (dualStreamPlayer != null) {
-            dualStreamPlayer.release();
-            dualStreamPlayer = null;
         }
         
         // Create Buffered player - must be done on GL thread for textures
@@ -427,107 +411,6 @@ public class WebMAlphaTextureView extends TextureView implements
     }
     
     /**
-     * Legacy: Load a dual-stream WebM file using ByteBuffer mode (slower, for fallback).
-     */
-    private void loadDualStreamFileLegacy(String path) {
-        Log.i(TAG, "🎬 Loading dual-stream file with MediaCodec (Legacy ByteBuffer mode): " + path);
-        
-        isDualStreamMode = true;
-        
-        // Release any existing single-stream player
-        if (playerId != 0) {
-            WebMAlphaPlayerNative.nativeDestroy(playerId);
-            playerId = 0;
-        }
-        
-        // Create dual-stream player if needed
-        if (dualStreamPlayer == null) {
-            dualStreamPlayer = new DualStreamMediaCodecPlayer();
-        }
-        
-        dualStreamPlayer.setLoop(loop);
-        dualStreamPlayer.setEventCallback(new DualStreamMediaCodecPlayer.EventCallback() {
-            @Override
-            public void onLoaded(int totalFrames, int width, int height, double frameRate) {
-                Log.i(TAG, "🎬 Dual-stream loaded: " + totalFrames + " frames, " + width + "x" + height);
-                post(() -> {
-                    if (callback != null && !isReleased) {
-                        callback.onLoad(totalFrames, width, height);
-                    }
-                    if (autoplay) {
-                        dualStreamPlayer.play();
-                    }
-                });
-            }
-            
-            @Override
-            public void onPlay() {
-                Log.d(TAG, "Dual-stream playing");
-            }
-            
-            @Override
-            public void onPause() {
-                Log.d(TAG, "Dual-stream paused");
-            }
-            
-            @Override
-            public void onLoop() {
-                Log.d(TAG, "Dual-stream looped");
-            }
-            
-            @Override
-            public void onEnd() {
-                Log.d(TAG, "Dual-stream ended");
-            }
-            
-            @Override
-            public void onError(String error) {
-                Log.e(TAG, "Dual-stream error: " + error);
-                post(() -> {
-                    if (callback != null && !isReleased) {
-                        callback.onError(error);
-                    }
-                });
-            }
-        });
-        
-        dualStreamPlayer.setFrameCallback((frameIndex, y, u, v, a, width, height) -> {
-            if (isReleased) return;
-            
-            synchronized (frameDataLock) {
-                if (isReleased) return;
-                
-                reuseY = copyToReusable(y, reuseY);
-                reuseU = copyToReusable(u, reuseU);
-                reuseV = copyToReusable(v, reuseV);
-                reuseA = copyToReusable(a, reuseA);
-                
-                pendingY = reuseY;
-                pendingU = reuseU;
-                pendingV = reuseV;
-                pendingA = reuseA;
-                pendingWidth = width;
-                pendingHeight = height;
-                hasNewFrame = true;
-            }
-            
-            if (!isReleased) {
-                requestRender();
-            }
-        });
-        
-        // Load on background thread
-        if (nativeLoadExecutor == null || nativeLoadExecutor.isShutdown()) {
-            nativeLoadExecutor = createLoadExecutor();
-        }
-        nativeLoadExecutor.execute(() -> {
-            if (!dualStreamPlayer.loadFromFile(path)) {
-                Log.e(TAG, "Failed to load dual-stream file");
-            }
-        });
-    }
-    
-    /**
      * Load a single-stream WebM file using software decoding (existing behavior).
      */
     private void loadSingleStreamFile(String path) {
@@ -536,9 +419,9 @@ public class WebMAlphaTextureView extends TextureView implements
         isDualStreamMode = false;
         
         // Release any existing dual-stream player
-        if (dualStreamPlayer != null) {
-            dualStreamPlayer.release();
-            dualStreamPlayer = null;
+        if (bufferedPlayer != null) {
+            bufferedPlayer.unload();
+            bufferedPlayer = null;
         }
         
         // Initialize software player if needed - by now all React props should be set
@@ -594,14 +477,8 @@ public class WebMAlphaTextureView extends TextureView implements
     public void play() {
         if (isReleased) return;
         
-        if (isDualStreamMode) {
-            if (bufferedPlayer != null) {
-                bufferedPlayer.play();
-            } else if (dualStreamSurfacePlayer != null) {
-                dualStreamSurfacePlayer.play();
-            } else if (dualStreamPlayer != null) {
-                dualStreamPlayer.play();
-            }
+        if (isDualStreamMode && bufferedPlayer != null) {
+            bufferedPlayer.play();
         } else if (playerId != 0) {
             WebMAlphaPlayerNative.nativePlay(playerId);
         }
@@ -610,14 +487,8 @@ public class WebMAlphaTextureView extends TextureView implements
     public void pause() {
         if (isReleased) return;
         
-        if (isDualStreamMode) {
-            if (bufferedPlayer != null) {
-                bufferedPlayer.pause();
-            } else if (dualStreamSurfacePlayer != null) {
-                dualStreamSurfacePlayer.pause();
-            } else if (dualStreamPlayer != null) {
-                dualStreamPlayer.pause();
-            }
+        if (isDualStreamMode && bufferedPlayer != null) {
+            bufferedPlayer.pause();
         } else if (playerId != 0) {
             WebMAlphaPlayerNative.nativePause(playerId);
         }
@@ -626,14 +497,8 @@ public class WebMAlphaTextureView extends TextureView implements
     public void stop() {
         if (isReleased) return;
         
-        if (isDualStreamMode) {
-            if (bufferedPlayer != null) {
-                bufferedPlayer.stop();
-            } else if (dualStreamSurfacePlayer != null) {
-                dualStreamSurfacePlayer.stop();
-            } else if (dualStreamPlayer != null) {
-                dualStreamPlayer.stop();
-            }
+        if (isDualStreamMode && bufferedPlayer != null) {
+            bufferedPlayer.stop();
         } else if (playerId != 0) {
             WebMAlphaPlayerNative.nativeStop(playerId);
         }
@@ -647,14 +512,8 @@ public class WebMAlphaTextureView extends TextureView implements
     public boolean isLoaded() {
         if (isReleased) return false;
         
-        if (isDualStreamMode) {
-            if (bufferedPlayer != null) {
-                return bufferedPlayer.isLoaded();
-            } else if (dualStreamSurfacePlayer != null) {
-                return dualStreamSurfacePlayer.isLoaded();
-            } else if (dualStreamPlayer != null) {
-                return dualStreamPlayer.isLoaded();
-            }
+        if (isDualStreamMode && bufferedPlayer != null) {
+            return bufferedPlayer.isLoaded();
         } else if (playerId != 0) {
             return WebMAlphaPlayerNative.nativeIsLoaded(playerId);
         }
@@ -664,12 +523,8 @@ public class WebMAlphaTextureView extends TextureView implements
     public boolean isPlaying() {
         if (isReleased) return false;
         
-        if (isDualStreamMode) {
-            if (dualStreamSurfacePlayer != null) {
-                return dualStreamSurfacePlayer.isPlaying();
-            } else if (dualStreamPlayer != null) {
-                return dualStreamPlayer.isPlaying();
-            }
+        if (isDualStreamMode && bufferedPlayer != null) {
+            return bufferedPlayer.isPlaying();
         } else if (playerId != 0) {
             return WebMAlphaPlayerNative.nativeIsPlaying(playerId);
         }
@@ -679,12 +534,8 @@ public class WebMAlphaTextureView extends TextureView implements
     public int getTotalFrames() {
         if (isReleased) return 0;
         
-        if (isDualStreamMode) {
-            if (dualStreamSurfacePlayer != null) {
-                return dualStreamSurfacePlayer.getTotalFrames();
-            } else if (dualStreamPlayer != null) {
-                return dualStreamPlayer.getTotalFrames();
-            }
+        if (isDualStreamMode && bufferedPlayer != null) {
+            return bufferedPlayer.getTotalFrames();
         } else if (playerId != 0) {
             return WebMAlphaPlayerNative.nativeGetTotalFrames(playerId);
         }
@@ -694,12 +545,8 @@ public class WebMAlphaTextureView extends TextureView implements
     public int getVideoWidth() {
         if (isReleased) return 0;
         
-        if (isDualStreamMode) {
-            if (dualStreamSurfacePlayer != null) {
-                return dualStreamSurfacePlayer.getWidth();
-            } else if (dualStreamPlayer != null) {
-                return dualStreamPlayer.getWidth();
-            }
+        if (isDualStreamMode && bufferedPlayer != null) {
+            return bufferedPlayer.getWidth();
         } else if (playerId != 0) {
             return WebMAlphaPlayerNative.nativeGetWidth(playerId);
         }
@@ -709,12 +556,8 @@ public class WebMAlphaTextureView extends TextureView implements
     public int getVideoHeight() {
         if (isReleased) return 0;
         
-        if (isDualStreamMode) {
-            if (dualStreamSurfacePlayer != null) {
-                return dualStreamSurfacePlayer.getHeight();
-            } else if (dualStreamPlayer != null) {
-                return dualStreamPlayer.getHeight();
-            }
+        if (isDualStreamMode && bufferedPlayer != null) {
+            return bufferedPlayer.getHeight();
         } else if (playerId != 0) {
             return WebMAlphaPlayerNative.nativeGetHeight(playerId);
         }
@@ -1110,85 +953,12 @@ public class WebMAlphaTextureView extends TextureView implements
                 return;
             }
             
-            // Check if we're in OES (Surface) mode for dual-stream (legacy)
-            if (isDualStreamMode && dualStreamSurfacePlayer != null && hasNewOesFrame) {
-                doRenderOes();
-                return;
-            }
-            
-            // ByteBuffer mode (YUVA textures)
+            // ByteBuffer mode (YUVA textures) - for single-stream files
             doRenderYuva();
             
         } catch (Exception e) {
             Log.w(TAG, "Render exception: " + e.getMessage());
         }
-    }
-    
-    /**
-     * Render using OES textures (Surface mode - GPU accelerated, zero-copy).
-     * This is the fast path for dual-stream playback.
-     */
-    private void doRenderOes() {
-        if (dualStreamSurfacePlayer == null || oesProgramId == 0) {
-            EGL14.eglSwapBuffers(eglDisplay, eglSurface);
-            return;
-        }
-        
-        SurfaceTextureVp9Decoder colorDecoder = dualStreamSurfacePlayer.getColorDecoder();
-        SurfaceTextureVp9Decoder alphaDecoder = dualStreamSurfacePlayer.getAlphaDecoder();
-        
-        if (colorDecoder == null || alphaDecoder == null) {
-            EGL14.eglSwapBuffers(eglDisplay, eglSurface);
-            return;
-        }
-        
-        // Update SurfaceTextures to get latest frames
-        colorDecoder.updateTexImage();
-        alphaDecoder.updateTexImage();
-        hasNewOesFrame = false;
-        
-        // Get transformation matrices
-        colorDecoder.getTransformMatrix(colorTransformMatrix);
-        alphaDecoder.getTransformMatrix(alphaTransformMatrix);
-        
-        // Use OES program
-        GLES20.glUseProgram(oesProgramId);
-        
-        // Get attribute/uniform locations
-        int positionHandle = GLES20.glGetAttribLocation(oesProgramId, "aPosition");
-        int texCoordHandle = GLES20.glGetAttribLocation(oesProgramId, "aTexCoord");
-        int colorMatrixHandle = GLES20.glGetUniformLocation(oesProgramId, "uColorSTMatrix");
-        int alphaMatrixHandle = GLES20.glGetUniformLocation(oesProgramId, "uAlphaSTMatrix");
-        int colorTextureHandle = GLES20.glGetUniformLocation(oesProgramId, "uColorTexture");
-        int alphaTextureHandle = GLES20.glGetUniformLocation(oesProgramId, "uAlphaTexture");
-        
-        // Set vertex attributes (using OES vertex buffer with un-flipped tex coords)
-        oesVertexBuffer.position(0);
-        GLES20.glVertexAttribPointer(positionHandle, 2, GLES20.GL_FLOAT, false, 16, oesVertexBuffer);
-        GLES20.glEnableVertexAttribArray(positionHandle);
-        
-        oesVertexBuffer.position(2);
-        GLES20.glVertexAttribPointer(texCoordHandle, 2, GLES20.GL_FLOAT, false, 16, oesVertexBuffer);
-        GLES20.glEnableVertexAttribArray(texCoordHandle);
-        
-        // Set transformation matrices (from SurfaceTexture - handles Y flip)
-        GLES20.glUniformMatrix4fv(colorMatrixHandle, 1, false, colorTransformMatrix, 0);
-        GLES20.glUniformMatrix4fv(alphaMatrixHandle, 1, false, alphaTransformMatrix, 0);
-        
-        // Bind OES textures
-        GLES20.glActiveTexture(GLES20.GL_TEXTURE0);
-        GLES20.glBindTexture(GLES11Ext.GL_TEXTURE_EXTERNAL_OES, colorDecoder.getOesTextureId());
-        GLES20.glUniform1i(colorTextureHandle, 0);
-        
-        GLES20.glActiveTexture(GLES20.GL_TEXTURE1);
-        GLES20.glBindTexture(GLES11Ext.GL_TEXTURE_EXTERNAL_OES, alphaDecoder.getOesTextureId());
-        GLES20.glUniform1i(alphaTextureHandle, 1);
-        
-        // Draw
-        GLES20.glDrawArrays(GLES20.GL_TRIANGLE_STRIP, 0, 4);
-        
-        // Swap buffers
-        EGL14.eglSwapBuffers(eglDisplay, eglSurface);
     }
     
     /**
@@ -1536,19 +1306,7 @@ public class WebMAlphaTextureView extends TextureView implements
             bufferedPlayer = null;
         }
         
-        // Release Surface-based dual-stream player if in use
-        if (dualStreamSurfacePlayer != null) {
-            dualStreamSurfacePlayer.unload();
-            dualStreamSurfacePlayer = null;
-        }
-        
-        // Release legacy dual-stream player if in use
-        if (dualStreamPlayer != null) {
-            dualStreamPlayer.release();
-            dualStreamPlayer = null;
-        }
         isDualStreamMode = false;
-        hasNewOesFrame = false;
         
         // Clean up native player on executor
         if (pid != 0) {
@@ -1582,7 +1340,6 @@ public class WebMAlphaTextureView extends TextureView implements
         synchronized (frameDataLock) {
             isReleased = true;
             hasNewFrame = false;
-            hasNewOesFrame = false;
             pendingY = pendingU = pendingV = pendingA = null;
             currentWidth = 0;
             currentHeight = 0;
@@ -1594,21 +1351,6 @@ public class WebMAlphaTextureView extends TextureView implements
             bufferedPlayer.unload();
             bufferedPlayer = null;
             Log.i(TAG, "📦 Soft release cleanup complete for buffered dual-stream player");
-        }
-        
-        // Soft release Surface-based dual-stream player (legacy)
-        if (isDualStreamMode && dualStreamSurfacePlayer != null) {
-            dualStreamSurfacePlayer.stop();
-            dualStreamSurfacePlayer.unload();
-            dualStreamSurfacePlayer = null;
-            Log.i(TAG, "📦 Soft release cleanup complete for Surface-based dual-stream player");
-        }
-        
-        // Soft release legacy dual-stream player
-        if (isDualStreamMode && dualStreamPlayer != null) {
-            dualStreamPlayer.stop();
-            dualStreamPlayer.unload();
-            Log.i(TAG, "📦 Soft release cleanup complete for legacy dual-stream player");
         }
         
         final long pid = playerId;

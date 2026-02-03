@@ -138,6 +138,112 @@ public class SurfaceTextureVp9Decoder implements SurfaceTexture.OnFrameAvailable
     }
     
     /**
+     * Check if VP9 hardware decoder is available on this device.
+     */
+    public static boolean isVp9HardwareDecoderAvailable() {
+        MediaCodecList codecList = new MediaCodecList(MediaCodecList.ALL_CODECS);
+        for (MediaCodecInfo info : codecList.getCodecInfos()) {
+            if (info.isEncoder()) continue;
+            
+            for (String type : info.getSupportedTypes()) {
+                if (MIME_VP9.equalsIgnoreCase(type)) {
+                    String name = info.getName();
+                    String lowerName = name.toLowerCase();
+                    
+                    // Skip secure decoders - they require DRM setup
+                    if (lowerName.contains(".secure") || lowerName.contains("_secure")) {
+                        continue;
+                    }
+                    
+                    // Check if it's hardware-accelerated
+                    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+                        if (info.isHardwareAccelerated()) {
+                            Log.i(TAG, "Found hardware VP9 decoder: " + name);
+                            return true;
+                        }
+                    } else {
+                        // Pre-Q: assume hardware if name doesn't contain "sw" or "google"
+                        if (!lowerName.contains("sw") && !lowerName.contains("google")) {
+                            Log.i(TAG, "Found probable hardware VP9 decoder: " + name);
+                            return true;
+                        }
+                    }
+                }
+            }
+        }
+        return false;
+    }
+    
+    /**
+     * Get detailed information about available VP9 decoders.
+     */
+    public static String getVp9DecoderInfo() {
+        StringBuilder info = new StringBuilder();
+        info.append("VP9 Decoder Information\n");
+        info.append("=======================\n");
+        
+        MediaCodecList codecList = new MediaCodecList(MediaCodecList.ALL_CODECS);
+        MediaCodecInfo[] codecInfos = codecList.getCodecInfos();
+        
+        int vp9DecoderCount = 0;
+        
+        for (MediaCodecInfo codecInfo : codecInfos) {
+            if (codecInfo.isEncoder()) continue;
+            
+            String[] supportedTypes = codecInfo.getSupportedTypes();
+            for (String type : supportedTypes) {
+                if (type.equalsIgnoreCase(MIME_VP9)) {
+                    vp9DecoderCount++;
+                    info.append("\nDecoder: ").append(codecInfo.getName()).append("\n");
+                    
+                    // Check if hardware accelerated
+                    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+                        info.append("  Hardware accelerated: ").append(codecInfo.isHardwareAccelerated()).append("\n");
+                        info.append("  Software only: ").append(codecInfo.isSoftwareOnly()).append("\n");
+                        info.append("  Vendor: ").append(codecInfo.isVendor()).append("\n");
+                    }
+                    
+                    try {
+                        MediaCodecInfo.CodecCapabilities caps = codecInfo.getCapabilitiesForType(MIME_VP9);
+                        
+                        // Get max supported instances (API 23+)
+                        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
+                            int maxInstances = caps.getMaxSupportedInstances();
+                            info.append("  Max concurrent instances: ").append(maxInstances).append("\n");
+                            info.append("  --> Max dual-stream players: ").append(maxInstances / 2).append("\n");
+                        }
+                        
+                        // Get supported color formats
+                        int[] colorFormats = caps.colorFormats;
+                        info.append("  Color formats: ");
+                        for (int i = 0; i < Math.min(colorFormats.length, 5); i++) {
+                            info.append(colorFormats[i]);
+                            if (i < colorFormats.length - 1 && i < 4) info.append(", ");
+                        }
+                        if (colorFormats.length > 5) info.append("...");
+                        info.append("\n");
+                        
+                        // Video capabilities
+                        MediaCodecInfo.VideoCapabilities videoCaps = caps.getVideoCapabilities();
+                        if (videoCaps != null) {
+                            info.append("  Width range: ").append(videoCaps.getSupportedWidths()).append("\n");
+                            info.append("  Height range: ").append(videoCaps.getSupportedHeights()).append("\n");
+                        }
+                        
+                    } catch (Exception e) {
+                        info.append("  Error getting capabilities: ").append(e.getMessage()).append("\n");
+                    }
+                }
+            }
+        }
+        
+        info.append("\nTotal VP9 decoders found: ").append(vp9DecoderCount).append("\n");
+        info.append("Currently active decoders: ").append(activeDecoderCount.get()).append("\n");
+        
+        return info.toString();
+    }
+    
+    /**
      * Configure the decoder. Must be called from GL thread so OES texture is created
      * in the correct EGL context.
      */

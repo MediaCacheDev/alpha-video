@@ -998,6 +998,12 @@ public class BufferedDualStreamPlayer implements SurfaceTextureVp9Decoder.FrameA
     private static native Object[] nativeReadPacket(long ptr);
     private static native void nativeSeekToStart(long ptr);
     
+    /**
+     * Check if a file contains dual VP9 streams (color + alpha).
+     * Static utility method for determining the appropriate player to use.
+     */
+    public static native boolean nativeIsDualStream(String filePath);
+    
     static {
         System.loadLibrary("webmalphaplayer");
     }
