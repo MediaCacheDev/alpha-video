@@ -47,15 +47,9 @@ public class WebMAlphaTextureView extends TextureView implements
     private volatile long playerId = 0;
     private volatile boolean isReleased = false;
     
-    // Dual-stream player with FBO ring buffer for hardware-accelerated VP9 decoding
+    // Dual-stream player — direct OES texture compositing (no FBO ring buffer)
     private BufferedDualStreamPlayer bufferedPlayer;
     private volatile boolean isDualStreamMode = false;
-    
-    // Buffered player frame state
-    private volatile int bufferedColorTextureId = -1;
-    private volatile int bufferedAlphaTextureId = -1;
-    private volatile boolean hasBufferedFrame = false;
-    private int buffered2DProgramId = 0;  // 2D texture compositing shader
     
     // EGL/OpenGL resources (managed on render thread)
     private EGLDisplay eglDisplay;
@@ -309,10 +303,10 @@ public class WebMAlphaTextureView extends TextureView implements
     
     /**
      * Load a dual-stream WebM file using MediaCodec hardware decoding.
-     * Uses buffered Surface-based rendering with FBO ring buffer for smooth playback.
+     * Uses direct OES texture compositing — no FBO ring buffer.
      */
     private void loadDualStreamFile(String path) {
-        Log.i(TAG, "🎬 Loading dual-stream file with MediaCodec (Buffered mode): " + path);
+        Log.i(TAG, "🎬 Loading dual-stream file with direct OES pipeline: " + path);
         
         isDualStreamMode = true;
         
@@ -328,16 +322,15 @@ public class WebMAlphaTextureView extends TextureView implements
             bufferedPlayer = null;
         }
         
-        // Create Buffered player - must be done on GL thread for textures
+        // Create player — must be done on GL thread for OES texture creation
         final String finalPath = path;
         renderThread.execute(() -> {
             if (isReleased) return;
             
             bufferedPlayer = new BufferedDualStreamPlayer();
             bufferedPlayer.setLoop(loop);
-            bufferedPlayer.setBufferSize(15); // 15 frame buffer
             
-            // Provide GL executor that posts tasks to the render thread
+            // GL executor posts tasks to the render thread
             bufferedPlayer.setGLExecutor(task -> {
                 if (renderThread != null && !renderThread.isShutdown()) {
                     renderThread.execute(task);
@@ -347,7 +340,7 @@ public class WebMAlphaTextureView extends TextureView implements
             bufferedPlayer.setEventCallback(new BufferedDualStreamPlayer.EventCallback() {
                 @Override
                 public void onLoaded(int totalFrames, int width, int height, double fps, double duration) {
-                    Log.i(TAG, "🎬 Dual-stream loaded (Buffered): " + totalFrames + " frames, " + 
+                    Log.i(TAG, "🎬 Dual-stream loaded (OES): " + totalFrames + " frames, " + 
                           width + "x" + height + " @ " + String.format("%.1f", fps) + " fps");
                     post(() -> {
                         if (callback != null && !isReleased) {
@@ -361,7 +354,7 @@ public class WebMAlphaTextureView extends TextureView implements
                 
                 @Override
                 public void onError(String error) {
-                    Log.e(TAG, "Buffered player error: " + error);
+                    Log.e(TAG, "Dual-stream player error: " + error);
                     post(() -> {
                         if (callback != null && !isReleased) {
                             callback.onError(error);
@@ -371,36 +364,24 @@ public class WebMAlphaTextureView extends TextureView implements
                 
                 @Override
                 public void onLooped() {
-                    Log.d(TAG, "Buffered player looped");
+                    Log.d(TAG, "Dual-stream player looped");
                 }
                 
                 @Override
                 public void onEnded() {
-                    Log.d(TAG, "Buffered player ended");
-                }
-                
-                @Override
-                public void onBufferState(int bufferedFrames, int bufferCapacity) {
-                    Log.d(TAG, "Buffer: " + bufferedFrames + "/" + bufferCapacity);
+                    Log.d(TAG, "Dual-stream player ended");
                 }
             });
             
-            // Render callback - called when frame is ready from ring buffer
-            bufferedPlayer.setRenderCallback((frameIndex, colorTextureId, alphaTextureId) -> {
+            // Render callback — playback loop signals when it's time to present a frame
+            bufferedPlayer.setRenderCallback((frameIndex) -> {
                 if (isReleased) return;
-                
-                // Store texture IDs for rendering
-                bufferedColorTextureId = colorTextureId;
-                bufferedAlphaTextureId = alphaTextureId;
-                hasBufferedFrame = true;
-                
-                // Request render on GL thread
                 requestRender();
             });
             
-            // Load the file (creates OES textures and ring buffer in this GL context)
+            // Load the file (creates OES textures in this GL context)
             if (!bufferedPlayer.loadFromFile(finalPath)) {
-                Log.e(TAG, "Failed to load buffered dual-stream file");
+                Log.e(TAG, "Failed to load dual-stream file");
                 post(() -> {
                     if (callback != null && !isReleased) {
                         callback.onError("Failed to load dual-stream file");
@@ -827,35 +808,6 @@ public class WebMAlphaTextureView extends TextureView implements
             Log.i(TAG, "✅ OES shader created (GPU-accelerated compositing)");
         }
         
-        // 2D texture compositing shader for buffered player (FBO ring buffer output)
-        // Similar to OES but uses sampler2D (textures already have transform baked in)
-        String buffered2DVertexShader = 
-            "attribute vec4 aPosition;\n" +
-            "attribute vec2 aTexCoord;\n" +
-            "varying vec2 vTexCoord;\n" +
-            "void main() {\n" +
-            "    gl_Position = aPosition;\n" +
-            "    vTexCoord = aTexCoord;\n" +
-            "}\n";
-        
-        String buffered2DFragmentShader = 
-            "precision mediump float;\n" +
-            "varying vec2 vTexCoord;\n" +
-            "uniform sampler2D uColorTexture;\n" +
-            "uniform sampler2D uAlphaTexture;\n" +
-            "void main() {\n" +
-            "    vec4 color = texture2D(uColorTexture, vTexCoord);\n" +
-            "    float alpha = texture2D(uAlphaTexture, vTexCoord).r;\n" +
-            "    gl_FragColor = vec4(color.rgb * alpha, alpha);\n" +
-            "}\n";
-        
-        buffered2DProgramId = createProgram(buffered2DVertexShader, buffered2DFragmentShader);
-        if (buffered2DProgramId == 0) {
-            Log.w(TAG, "Buffered 2D shader creation failed");
-        } else {
-            Log.i(TAG, "✅ Buffered 2D shader created (FBO ring buffer compositing)");
-        }
-        
         // Create textures for YUVA mode
         int[] textures = new int[4];
         GLES20.glGenTextures(4, textures, 0);
@@ -947,9 +899,9 @@ public class WebMAlphaTextureView extends TextureView implements
             
             GLES20.glClear(GLES20.GL_COLOR_BUFFER_BIT);
             
-            // Check if we're in buffered mode (FBO ring buffer)
-            if (isDualStreamMode && bufferedPlayer != null && hasBufferedFrame) {
-                doRenderBuffered();
+            // Dual-stream mode — composite directly from OES textures
+            if (isDualStreamMode && bufferedPlayer != null) {
+                doRenderDirectOes();
                 return;
             }
             
@@ -962,38 +914,44 @@ public class WebMAlphaTextureView extends TextureView implements
     }
     
     /**
-     * Render using 2D textures from buffered player (FBO ring buffer).
-     * This is the proper solution for smooth dual-stream playback.
+     * Render by compositing directly from OES textures (SurfaceTexture output).
+     * Single GL draw call: fragment shader samples both color and alpha OES textures,
+     * multiplies color by alpha, and outputs premultiplied RGBA.
+     * No intermediate FBO — the SurfaceTexture IS the buffer.
      */
-    private void doRenderBuffered() {
-        if (bufferedPlayer == null || buffered2DProgramId == 0) {
+    private void doRenderDirectOes() {
+        if (bufferedPlayer == null || oesProgramId == 0) {
             EGL14.eglSwapBuffers(eglDisplay, eglSurface);
             return;
         }
         
-        int colorTexId = bufferedColorTextureId;
-        int alphaTexId = bufferedAlphaTextureId;
+        // Consume frames from both SurfaceTextures (calls updateTexImage)
+        if (!bufferedPlayer.consumeFrames()) {
+            // No new frame pair available — show previous or blank
+            EGL14.eglSwapBuffers(eglDisplay, eglSurface);
+            return;
+        }
+        
+        int colorTexId = bufferedPlayer.getColorOesTextureId();
+        int alphaTexId = bufferedPlayer.getAlphaOesTextureId();
         
         if (colorTexId <= 0 || alphaTexId <= 0) {
             EGL14.eglSwapBuffers(eglDisplay, eglSurface);
             return;
         }
         
-        hasBufferedFrame = false;
-        
-        // Use 2D compositing program
-        GLES20.glUseProgram(buffered2DProgramId);
+        // Use OES compositing program
+        GLES20.glUseProgram(oesProgramId);
         
         // Get attribute/uniform locations
-        int positionHandle = GLES20.glGetAttribLocation(buffered2DProgramId, "aPosition");
-        int texCoordHandle = GLES20.glGetAttribLocation(buffered2DProgramId, "aTexCoord");
-        int colorTextureHandle = GLES20.glGetUniformLocation(buffered2DProgramId, "uColorTexture");
-        int alphaTextureHandle = GLES20.glGetUniformLocation(buffered2DProgramId, "uAlphaTexture");
+        int positionHandle = GLES20.glGetAttribLocation(oesProgramId, "aPosition");
+        int texCoordHandle = GLES20.glGetAttribLocation(oesProgramId, "aTexCoord");
+        int colorSTMatrixHandle = GLES20.glGetUniformLocation(oesProgramId, "uColorSTMatrix");
+        int alphaSTMatrixHandle = GLES20.glGetUniformLocation(oesProgramId, "uAlphaSTMatrix");
+        int colorTextureHandle = GLES20.glGetUniformLocation(oesProgramId, "uColorTexture");
+        int alphaTextureHandle = GLES20.glGetUniformLocation(oesProgramId, "uAlphaTexture");
         
-        // Set vertex attributes - use oesVertexBuffer (un-flipped coords) for buffered rendering
-        // The FBO blit already applied SurfaceTexture's transform (which includes Y-flip), 
-        // so the 2D texture is already in the correct orientation for direct rendering.
-        // Using Y-flipped coords here would cause a double-flip.
+        // Set vertex attributes (un-flipped — SurfaceTexture transform handles orientation)
         oesVertexBuffer.position(0);
         GLES20.glVertexAttribPointer(positionHandle, 2, GLES20.GL_FLOAT, false, 16, oesVertexBuffer);
         GLES20.glEnableVertexAttribArray(positionHandle);
@@ -1002,22 +960,29 @@ public class WebMAlphaTextureView extends TextureView implements
         GLES20.glVertexAttribPointer(texCoordHandle, 2, GLES20.GL_FLOAT, false, 16, oesVertexBuffer);
         GLES20.glEnableVertexAttribArray(texCoordHandle);
         
-        // Bind 2D textures
+        // Set SurfaceTexture transform matrices
+        GLES20.glUniformMatrix4fv(colorSTMatrixHandle, 1, false, bufferedPlayer.getColorTransformMatrix(), 0);
+        GLES20.glUniformMatrix4fv(alphaSTMatrixHandle, 1, false, bufferedPlayer.getAlphaTransformMatrix(), 0);
+        
+        // Bind OES textures
         GLES20.glActiveTexture(GLES20.GL_TEXTURE0);
-        GLES20.glBindTexture(GLES20.GL_TEXTURE_2D, colorTexId);
+        GLES20.glBindTexture(GLES11Ext.GL_TEXTURE_EXTERNAL_OES, colorTexId);
         GLES20.glUniform1i(colorTextureHandle, 0);
         
         GLES20.glActiveTexture(GLES20.GL_TEXTURE1);
-        GLES20.glBindTexture(GLES20.GL_TEXTURE_2D, alphaTexId);
+        GLES20.glBindTexture(GLES11Ext.GL_TEXTURE_EXTERNAL_OES, alphaTexId);
         GLES20.glUniform1i(alphaTextureHandle, 1);
         
-        // Draw
+        // Draw fullscreen quad
         GLES20.glDrawArrays(GLES20.GL_TRIANGLE_STRIP, 0, 4);
         
         // Cleanup
         GLES20.glDisableVertexAttribArray(positionHandle);
         GLES20.glDisableVertexAttribArray(texCoordHandle);
-        GLES20.glBindTexture(GLES20.GL_TEXTURE_2D, 0);
+        GLES20.glActiveTexture(GLES20.GL_TEXTURE1);
+        GLES20.glBindTexture(GLES11Ext.GL_TEXTURE_EXTERNAL_OES, 0);
+        GLES20.glActiveTexture(GLES20.GL_TEXTURE0);
+        GLES20.glBindTexture(GLES11Ext.GL_TEXTURE_EXTERNAL_OES, 0);
         
         // Swap buffers
         EGL14.eglSwapBuffers(eglDisplay, eglSurface);
