@@ -13,6 +13,11 @@ import android.util.AttributeSet;
 import android.util.Log;
 import android.view.TextureView;
 
+import com.facebook.react.bridge.Arguments;
+import com.facebook.react.bridge.ReactContext;
+import com.facebook.react.bridge.WritableMap;
+import com.facebook.react.uimanager.events.RCTEventEmitter;
+
 import java.nio.ByteBuffer;
 import java.nio.ByteOrder;
 import java.nio.FloatBuffer;
@@ -207,6 +212,30 @@ public class WebMAlphaTextureView extends TextureView implements
     }
     
     //------------------------------------------------------------------------------
+    // React Native Event Dispatch
+    //------------------------------------------------------------------------------
+    
+    private void sendEvent(String eventName, WritableMap params) {
+        ReactContext reactContext = (ReactContext) getContext();
+        reactContext.getJSModule(RCTEventEmitter.class)
+            .receiveEvent(getId(), eventName, params);
+    }
+    
+    private void dispatchOnLoad(int totalFrames, int width, int height) {
+        WritableMap event = Arguments.createMap();
+        event.putInt("totalFrames", totalFrames);
+        event.putInt("width", width);
+        event.putInt("height", height);
+        sendEvent("onLoad", event);
+    }
+    
+    private void dispatchOnError(String error) {
+        WritableMap event = Arguments.createMap();
+        event.putString("error", error);
+        sendEvent("onError", event);
+    }
+    
+    //------------------------------------------------------------------------------
     // Public API
     //------------------------------------------------------------------------------
     
@@ -360,6 +389,9 @@ public class WebMAlphaTextureView extends TextureView implements
                     Log.i(TAG, "🎬 Dual-stream loaded (OES): " + totalFrames + " frames, " + 
                           width + "x" + height + " @ " + String.format("%.1f", fps) + " fps");
                     post(() -> {
+                        if (!isReleased) {
+                            dispatchOnLoad(totalFrames, width, height);
+                        }
                         if (callback != null && !isReleased) {
                             callback.onLoad(totalFrames, width, height);
                         }
@@ -373,6 +405,9 @@ public class WebMAlphaTextureView extends TextureView implements
                 public void onError(String error) {
                     Log.e(TAG, "Dual-stream player error: " + error);
                     post(() -> {
+                        if (!isReleased) {
+                            dispatchOnError(error);
+                        }
                         if (callback != null && !isReleased) {
                             callback.onError(error);
                         }
@@ -1133,6 +1168,8 @@ public class WebMAlphaTextureView extends TextureView implements
         
         post(() -> {
             if (isReleased) return;
+            
+            dispatchOnLoad(totalFrames, width, height);
             
             if (callback != null) {
                 callback.onLoad(totalFrames, width, height);
