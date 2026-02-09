@@ -383,6 +383,17 @@ public class RNWebMAlphaViewManager extends SimpleViewManager<WebMAlphaTextureVi
         Log.d(TAG, "📋 Set useDecodeQueue: " + use);
     }
     
+    /**
+     * Enable verbose per-frame logging for debugging.
+     * When true: logs every frame queue, release, and render event.
+     * When false (default): only logs lifecycle events and periodic performance stats.
+     */
+    @ReactProp(name = "verbose", defaultBoolean = false)
+    public void setVerbose(WebMAlphaTextureView view, boolean verbose) {
+        view.setVerbose(verbose);
+        Log.d(TAG, "🔊 Set verbose: " + verbose);
+    }
+    
     @Nullable
     @Override
     public Map<String, Object> getExportedCustomDirectEventTypeConstants() {

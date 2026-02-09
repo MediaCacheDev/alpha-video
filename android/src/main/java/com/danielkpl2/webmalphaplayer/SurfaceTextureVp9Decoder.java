@@ -64,6 +64,16 @@ public class SurfaceTextureVp9Decoder implements SurfaceTexture.OnFrameAvailable
     private final AtomicInteger lastRenderedFrameIndex = new AtomicInteger(-1);
     private final AtomicLong lastFrameTimestampNs = new AtomicLong(0);
     
+    // PTS-gated release: decoded frames are held in MediaCodec output buffers
+    // until the playback clock advances targetPresentationTimeUs past their PTS.
+    // This prevents SurfaceTexture from being flooded with frames faster than
+    // the render loop can consume them, which would cause frame skipping.
+    private final AtomicLong targetPresentationTimeUs = new AtomicLong(0);
+    
+    // Tracks whether a frame has been released since the last updateTexImage().
+    // This lets consumeFrames() know if updateTexImage() will produce a new frame.
+    private final AtomicBoolean frameReleasedSinceConsume = new AtomicBoolean(false);
+    
     // Keep queue for PTS tracking (but don't use it for frame index)
     private final ConcurrentLinkedQueue<FrameInfo> pendingFrames = new ConcurrentLinkedQueue<>();
     
@@ -73,6 +83,9 @@ public class SurfaceTextureVp9Decoder implements SurfaceTexture.OnFrameAvailable
     // Codec thread for async operations
     private HandlerThread codecThread;
     private Handler codecHandler;
+    
+    // Verbose per-frame logging toggle
+    private volatile boolean verbose = false;
     
     // Track active decoders globally
     private static final AtomicInteger activeDecoderCount = new AtomicInteger(0);
@@ -431,7 +444,7 @@ public class SurfaceTextureVp9Decoder implements SurfaceTexture.OnFrameAvailable
                 inputBuffer.put(data);
                 data.rewind();
                 
-                Log.d(TAG, "[" + label + "] Queued frame " + frameIndex + ", size=" + size + ", pts=" + presentationTimeUs);
+                if (verbose) Log.d(TAG, "[" + label + "] Queued frame " + frameIndex + ", size=" + size + ", pts=" + presentationTimeUs);
                 
                 // Track this frame - synchronized with flush to prevent race condition
                 pendingFrames.offer(new FrameInfo(frameIndex, presentationTimeUs));
@@ -448,6 +461,14 @@ public class SurfaceTextureVp9Decoder implements SurfaceTexture.OnFrameAvailable
     
     /**
      * Poll for decoded output and release to Surface.
+     * 
+     * CRITICAL: Frames are only released to the SurfaceTexture when their PTS
+     * is <= targetPresentationTimeUs. This ensures the SurfaceTexture receives
+     * exactly one frame per render cycle, preventing frame skipping caused by
+     * SurfaceTexture always returning only the latest frame via updateTexImage().
+     * 
+     * Holding output buffers creates natural backpressure on MediaCodec, which
+     * throttles the decode pipeline to match the playback rate.
      */
     private void pollOutput() {
         if (isReleased.get() || !isStarted.get()) {
@@ -458,29 +479,48 @@ public class SurfaceTextureVp9Decoder implements SurfaceTexture.OnFrameAvailable
             MediaCodec.BufferInfo bufferInfo = new MediaCodec.BufferInfo();
             
             while (!isReleased.get() && isStarted.get()) {
+                // CRITICAL: Only release ONE frame per render cycle.
+                // If we already released a frame that hasn't been consumed by
+                // updateTexImage() yet, don't release another — it would overwrite
+                // the current frame in SurfaceTexture, and the two decoders could
+                // end up showing different temporal frames (color/alpha mismatch).
+                if (frameReleasedSinceConsume.get()) {
+                    break; // Wait for consumeFrames() to clear this flag
+                }
+                
                 int outputIndex = codec.dequeueOutputBuffer(bufferInfo, DEQUEUE_TIMEOUT_US);
                 
                 if (outputIndex >= 0) {
-                    // Got a decoded frame!
-                    Log.d(TAG, "[" + label + "] Decoded frame, pts=" + bufferInfo.presentationTimeUs + 
-                          ", size=" + bufferInfo.size + ", flags=" + bufferInfo.flags);
-                    // Release to Surface with render=true to make it available on SurfaceTexture
-                    // The timestamp controls when it becomes available
-                    codec.releaseOutputBuffer(outputIndex, true);
+                    long pts = bufferInfo.presentationTimeUs;
+                    long target = targetPresentationTimeUs.get();
                     
-                    // Note: onFrameAvailable will be called by SurfaceTexture
+                    if (pts <= target) {
+                        // This frame is due or past due — release to SurfaceTexture
+                        codec.releaseOutputBuffer(outputIndex, true);
+                        frameReleasedSinceConsume.set(true);
+                        
+                        if (verbose) Log.d(TAG, "[" + label + "] Released frame, pts=" + pts + 
+                              ", target=" + target + ", flags=" + bufferInfo.flags);
+                        
+                        // Only ONE frame per cycle — break after releasing
+                        break;
+                    } else {
+                        // This frame is ahead of the playback clock — hold it
+                        heldOutputIndex = outputIndex;
+                        heldOutputPts = pts;
+                        heldOutputFlags = bufferInfo.flags;
+                        break;
+                    }
                     
                 } else if (outputIndex == MediaCodec.INFO_OUTPUT_FORMAT_CHANGED) {
                     MediaFormat newFormat = codec.getOutputFormat();
                     Log.i(TAG, "[" + label + "] Output format changed: " + newFormat);
                     
                 } else if (outputIndex == MediaCodec.INFO_TRY_AGAIN_LATER) {
-                    // No output available, wait a bit
                     break;
                 }
             }
         } catch (IllegalStateException e) {
-            // Codec may be stopping
             if (!isReleased.get()) {
                 Log.w(TAG, "[" + label + "] Poll exception: " + e.getMessage());
             }
@@ -491,9 +531,71 @@ public class SurfaceTextureVp9Decoder implements SurfaceTexture.OnFrameAvailable
             }
         }
         
-        // Schedule next poll
+        // Schedule next poll — check held buffer or dequeue new
         if (!isReleased.get() && isStarted.get()) {
-            codecHandler.postDelayed(this::pollOutput, 1);
+            if (heldOutputIndex >= 0) {
+                codecHandler.postDelayed(this::checkHeldBuffer, 1);
+            } else {
+                codecHandler.postDelayed(this::pollOutput, 1);
+            }
+        }
+    }
+    
+    // Held output buffer state (only accessed from codec thread)
+    private int heldOutputIndex = -1;
+    private long heldOutputPts = 0;
+    private int heldOutputFlags = 0;
+    
+    /**
+     * Check if a held output buffer can now be released.
+     */
+    private void checkHeldBuffer() {
+        if (isReleased.get() || !isStarted.get()) {
+            if (heldOutputIndex >= 0) {
+                try { codec.releaseOutputBuffer(heldOutputIndex, false); } catch (Exception ignored) {}
+                heldOutputIndex = -1;
+            }
+            return;
+        }
+        
+        if (heldOutputIndex >= 0) {
+            // Don't release if a previous frame hasn't been consumed yet
+            if (frameReleasedSinceConsume.get()) {
+                // Wait for consumeFrames() to clear the flag
+                if (!isReleased.get() && isStarted.get()) {
+                    codecHandler.postDelayed(this::checkHeldBuffer, 1);
+                }
+                return;
+            }
+            
+            long target = targetPresentationTimeUs.get();
+            if (heldOutputPts <= target) {
+                // Target has caught up — release to SurfaceTexture
+                try {
+                    codec.releaseOutputBuffer(heldOutputIndex, true);
+                    frameReleasedSinceConsume.set(true);
+                    
+                    if (verbose) Log.d(TAG, "[" + label + "] Released held frame, pts=" + heldOutputPts + 
+                          ", target=" + target);
+                } catch (Exception e) {
+                    Log.w(TAG, "[" + label + "] Error releasing held buffer: " + e.getMessage());
+                }
+                heldOutputIndex = -1;
+                
+                // Don't immediately poll for more — wait for consume first
+                // Schedule check to resume polling after consume clears the flag
+                if (!isReleased.get() && isStarted.get()) {
+                    codecHandler.postDelayed(this::pollOutput, 1);
+                }
+            } else {
+                if (!isReleased.get() && isStarted.get()) {
+                    codecHandler.postDelayed(this::checkHeldBuffer, 1);
+                }
+            }
+        } else {
+            if (!isReleased.get() && isStarted.get()) {
+                codecHandler.post(this::pollOutput);
+            }
         }
     }
     
@@ -528,7 +630,7 @@ public class SurfaceTextureVp9Decoder implements SurfaceTexture.OnFrameAvailable
         
         long timestampNs = surfaceTexture.getTimestamp();
         
-        Log.d(TAG, "[" + label + "] onFrameAvailable: frameIndex=" + frameIndex + ", ts=" + timestampNs);
+        if (verbose) Log.d(TAG, "[" + label + "] onFrameAvailable: frameIndex=" + frameIndex + ", ts=" + timestampNs);
         
         lastFrameTimestampNs.set(timestampNs);
         lastRenderedFrameIndex.set(frameIndex);
@@ -612,6 +714,40 @@ public class SurfaceTextureVp9Decoder implements SurfaceTexture.OnFrameAvailable
     }
     
     /**
+     * Enable/disable verbose per-frame logging.
+     */
+    public void setVerbose(boolean verbose) {
+        this.verbose = verbose;
+    }
+    
+    /**
+     * Set the target presentation time. Decoded frames with PTS <= this value
+     * will be released to the SurfaceTexture. Frames ahead of this will be held
+     * in MediaCodec output buffers, creating natural backpressure.
+     * 
+     * Called by the playback loop as the clock advances.
+     */
+    public void setTargetPresentationTimeUs(long ptsUs) {
+        targetPresentationTimeUs.set(ptsUs);
+    }
+    
+    /**
+     * Check if a frame has been released to SurfaceTexture since the last call to
+     * clearFrameReleased(). Used by consumeFrames() to know if updateTexImage()
+     * will produce a new frame.
+     */
+    public boolean wasFrameReleased() {
+        return frameReleasedSinceConsume.get();
+    }
+    
+    /**
+     * Clear the frame-released flag. Called after updateTexImage().
+     */
+    public void clearFrameReleased() {
+        frameReleasedSinceConsume.set(false);
+    }
+    
+    /**
      * Flush the decoder (for seeking/looping).
      * After flush, the codec is ready to accept new input immediately.
      */
@@ -636,6 +772,9 @@ public class SurfaceTextureVp9Decoder implements SurfaceTexture.OnFrameAvailable
                 lastRenderedFrameIndex.set(-1);
                 hasNewFrame.set(false);
                 lastFrameTimestampNs.set(0);
+                targetPresentationTimeUs.set(0);
+                frameReleasedSinceConsume.set(false);
+                heldOutputIndex = -1; // Will be invalid after flush anyway
             }
             
             // Small delay to let pollOutput() exit its loop (outside lock to avoid blocking)

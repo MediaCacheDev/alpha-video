@@ -74,6 +74,13 @@ export interface NativeProps extends ViewProps {
    */
   useDecodeQueue?: boolean;
   
+  /**
+   * Enable verbose per-frame logging for debugging.
+   * When true: logs every frame queue, release, and render event.
+   * When false (default): only logs lifecycle events and periodic performance stats.
+   */
+  verbose?: boolean;
+  
   onLoad?: (event: { nativeEvent: { totalFrames: number; width: number; height: number } }) => void;
   onError?: (event: { nativeEvent: { error: string } }) => void;
   onEnd?: (event: { nativeEvent: {} }) => void;

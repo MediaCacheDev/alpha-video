@@ -51,7 +51,8 @@ public class BufferedDualStreamPlayer implements SurfaceTextureVp9Decoder.FrameA
     private final AtomicBoolean shouldStop = new AtomicBoolean(false);
     private final AtomicInteger playbackFrameIndex = new AtomicInteger(0);
     
-    // Frame availability — set by onFrameAvailable, cleared by consumeFrames()
+    // Frame availability — set by onFrameAvailable, used only for initial sync
+    // After initial frames arrive, the playback loop renders unconditionally at frame rate
     private final AtomicBoolean colorDirty = new AtomicBoolean(false);
     private final AtomicBoolean alphaDirty = new AtomicBoolean(false);
     
@@ -73,13 +74,13 @@ public class BufferedDualStreamPlayer implements SurfaceTextureVp9Decoder.FrameA
     
     // Configuration
     private boolean loop = true;
+    private volatile boolean verbose = false;
     private RenderCallback renderCallback;
     private EventCallback eventCallback;
     
     // Performance tracking
     private long lastPerfLogTime = 0;
     private int framesRendered = 0;
-    private int framesStalled = 0;
     
     /**
      * Callback to signal the view that a frame is ready for compositing.
@@ -113,6 +114,15 @@ public class BufferedDualStreamPlayer implements SurfaceTextureVp9Decoder.FrameA
     
     public void setLoop(boolean loop) {
         this.loop = loop;
+    }
+    
+    public void setVerbose(boolean verbose) {
+        this.verbose = verbose;
+        // Propagate to decoders
+        SurfaceTextureVp9Decoder cd = colorDecoder;
+        SurfaceTextureVp9Decoder ad = alphaDecoder;
+        if (cd != null) cd.setVerbose(verbose);
+        if (ad != null) ad.setVerbose(verbose);
     }
     
     public void setRenderCallback(RenderCallback callback) {
@@ -177,6 +187,8 @@ public class BufferedDualStreamPlayer implements SurfaceTextureVp9Decoder.FrameA
             // Create decoders — OES textures are created here (must be on GL thread)
             colorDecoder = new SurfaceTextureVp9Decoder("color");
             alphaDecoder = new SurfaceTextureVp9Decoder("alpha");
+            colorDecoder.setVerbose(verbose);
+            alphaDecoder.setVerbose(verbose);
             
             if (!colorDecoder.configure(width, height) || !alphaDecoder.configure(width, height)) {
                 Log.e(TAG, "Failed to configure decoders");
@@ -231,8 +243,8 @@ public class BufferedDualStreamPlayer implements SurfaceTextureVp9Decoder.FrameA
         
         // Reset counters
         framesRendered = 0;
-        framesStalled = 0;
         lastPerfLogTime = System.nanoTime();
+        playbackFrameIndex.set(0);
         
         Log.i(TAG, "Starting playback");
         
@@ -291,32 +303,43 @@ public class BufferedDualStreamPlayer implements SurfaceTextureVp9Decoder.FrameA
      * Consume pending frames from both SurfaceTextures.
      * MUST be called on the GL thread.
      * 
-     * This calls updateTexImage() on both decoders, making the latest decoded
-     * frame available as an OES texture for compositing.
+     * Calls updateTexImage() on both decoders to consume any frame that the
+     * PTS-gated pollOutput() has released. After consuming, clears the release
+     * flags so the decoder knows it can release the next frame on the next cycle.
      * 
-     * @return true if both textures were updated, false if no new frames were available
+     * @return true if decoders are valid and textures were updated
      */
     public boolean consumeFrames() {
         SurfaceTextureVp9Decoder cd = colorDecoder;
         SurfaceTextureVp9Decoder ad = alphaDecoder;
         if (cd == null || ad == null) return false;
         
-        // Both must have new frames for a valid pair
-        if (!colorDirty.get() || !alphaDirty.get()) {
+        // Only consume when BOTH decoders have released a frame.
+        // This guarantees color and alpha are from the same temporal position.
+        // If one decoder is slightly slower, we wait until next render cycle.
+        boolean colorReady = cd.wasFrameReleased();
+        boolean alphaReady = ad.wasFrameReleased();
+        
+        if (!colorReady || !alphaReady) {
+            // One or both decoders haven't released yet for this cycle.
+            // Still call updateTexImage() to avoid blocking the SurfaceTexture
+            // pipeline, but don't clear flags — let the slow decoder catch up.
+            // Return false to indicate no new synchronized frame pair.
             return false;
         }
         
-        // Consume from SurfaceTextures — makes latest frame available as OES texture
+        // Both decoders have released exactly one frame — consume them
         cd.updateTexImage();
         ad.updateTexImage();
+        
+        // Clear release flags so the decoder output loop can release
+        // the next frame on the next playback cycle
+        cd.clearFrameReleased();
+        ad.clearFrameReleased();
         
         // Get transform matrices for the vertex shader
         cd.getTransformMatrix(colorTransformMatrix);
         ad.getTransformMatrix(alphaTransformMatrix);
-        
-        // Clear dirty flags
-        colorDirty.set(false);
-        alphaDirty.set(false);
         
         return true;
     }
@@ -545,7 +568,6 @@ public class BufferedDualStreamPlayer implements SurfaceTextureVp9Decoder.FrameA
         
         // Reset perf counters
         framesRendered = 0;
-        framesStalled = 0;
         lastPerfLogTime = System.nanoTime();
         
         if (eventCallback != null) {
@@ -563,9 +585,17 @@ public class BufferedDualStreamPlayer implements SurfaceTextureVp9Decoder.FrameA
         Log.i(TAG, "Playback loop started");
         
         long frameDurationNs = (long)(1_000_000_000.0 / frameRate);
+        long frameDurationUs = (long)(1_000_000.0 / frameRate);
         long nextFrameTimeNs = System.nanoTime();
         
-        // Wait for first frames from both decoders before starting clock
+        // Set initial target PTS to 0 so the very first frame (pts=0) can be released
+        SurfaceTextureVp9Decoder cd = colorDecoder;
+        SurfaceTextureVp9Decoder ad = alphaDecoder;
+        if (cd != null) cd.setTargetPresentationTimeUs(0);
+        if (ad != null) ad.setTargetPresentationTimeUs(0);
+        
+        // Wait for first decoded frame from each decoder before starting the clock.
+        // We use dirty flags only for this initial sync.
         Log.i(TAG, "Waiting for initial frames...");
         int waitCount = 0;
         while (!shouldStop.get() && waitCount < 200) {
@@ -594,21 +624,26 @@ public class BufferedDualStreamPlayer implements SurfaceTextureVp9Decoder.FrameA
             long now = System.nanoTime();
             
             if (now >= nextFrameTimeNs) {
-                // Time for next frame — check if both decoders have new data
-                if (colorDirty.get() && alphaDirty.get()) {
-                    // Signal the view to render
-                    if (renderCallback != null) {
-                        renderCallback.onRenderRequested(playbackFrameIndex.get());
-                    }
-                    
-                    playbackFrameIndex.incrementAndGet();
-                    framesRendered++;
-                    nextFrameTimeNs += frameDurationNs;
-                } else {
-                    // Stall — decoders haven't caught up
-                    framesStalled++;
-                    try { Thread.sleep(1); } catch (InterruptedException e) { break; }
+                int frameIdx = playbackFrameIndex.get();
+                
+                // Advance the target PTS on BOTH decoders so they release exactly
+                // this frame's data to their SurfaceTextures. Both decoders get the
+                // same target, ensuring color and alpha stay synchronized.
+                long targetPtsUs = frameIdx * frameDurationUs;
+                cd = colorDecoder;
+                ad = alphaDecoder;
+                if (cd != null) cd.setTargetPresentationTimeUs(targetPtsUs);
+                if (ad != null) ad.setTargetPresentationTimeUs(targetPtsUs);
+                
+                // Request render — the view will call consumeFrames() which calls
+                // updateTexImage() to grab the frame we just allowed to be released
+                if (renderCallback != null) {
+                    renderCallback.onRenderRequested(frameIdx);
                 }
+                
+                playbackFrameIndex.incrementAndGet();
+                framesRendered++;
+                nextFrameTimeNs += frameDurationNs;
                 
                 // Don't fall too far behind
                 if (nextFrameTimeNs < now - frameDurationNs * 3) {
@@ -622,16 +657,15 @@ public class BufferedDualStreamPlayer implements SurfaceTextureVp9Decoder.FrameA
                 }
             }
             
-            // Performance logging every 2 seconds
-            if (now - lastPerfLogTime >= 2_000_000_000L) {
+            // Performance logging every 2 seconds (verbose only)
+            if (verbose && now - lastPerfLogTime >= 2_000_000_000L) {
                 double elapsed = (now - lastPerfLogTime) / 1_000_000_000.0;
                 double fps = framesRendered / elapsed;
                 
-                Log.i(TAG, String.format("PERF: fps=%.1f (target=%.1f), rendered=%d, stalled=%d",
-                    fps, frameRate, framesRendered, framesStalled));
+                Log.i(TAG, String.format("PERF: fps=%.1f (target=%.1f), rendered=%d, playbackFrame=%d",
+                    fps, frameRate, framesRendered, playbackFrameIndex.get()));
                 
                 framesRendered = 0;
-                framesStalled = 0;
                 lastPerfLogTime = now;
             }
         }

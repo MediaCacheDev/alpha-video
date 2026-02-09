@@ -197,6 +197,13 @@ export interface WebMAlphaViewProps extends ViewProps {
    */
   useDecodeQueue?: boolean;
   
+  /**
+   * Enable verbose per-frame logging for debugging.
+   * When true: logs every frame queue, release, and render event.
+   * When false (default): only logs lifecycle events and periodic performance stats.
+   */
+  verbose?: boolean;
+  
   /** Container style */
   style?: StyleProp<ViewStyle>;
   /** Callback when video loads */
@@ -408,6 +415,7 @@ const NativePlayer = forwardRef<WebMAlphaViewRef, WebMAlphaViewProps>(
         streamCacheSize={props.streamCacheSize}
         streamPrefetchAhead={props.streamPrefetchAhead}
         useDecodeQueue={props.useDecodeQueue}
+        verbose={props.verbose}
         style={props.style}
         onLoad={handleNativeLoad}
         onError={handleNativeError}

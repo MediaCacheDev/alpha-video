@@ -109,6 +109,9 @@ public class WebMAlphaTextureView extends TextureView implements
     // When true (default): decoding is serialized across all players
     // When false: each player decodes independently (can cause freezes with many players)
     private boolean useDecodeQueue = true;
+    
+    // Verbose per-frame logging — when false, only lifecycle/perf logs are emitted
+    private boolean verbose = false;
 
     // Render thread - handles all GL operations
     private ExecutorService renderThread;
@@ -269,6 +272,19 @@ public class WebMAlphaTextureView extends TextureView implements
         this.useDecodeQueue = use;
     }
     
+    /**
+     * Enable/disable verbose per-frame logging.
+     * When true: logs every frame queue, release, and render event.
+     * When false (default): only lifecycle events and periodic performance stats.
+     */
+    public void setVerbose(boolean verbose) {
+        this.verbose = verbose;
+        // Propagate to active dual-stream player if it exists
+        if (bufferedPlayer != null) {
+            bufferedPlayer.setVerbose(verbose);
+        }
+    }
+    
     public void setPaused(boolean paused) {
         if (paused) {
             pause();
@@ -329,6 +345,7 @@ public class WebMAlphaTextureView extends TextureView implements
             
             bufferedPlayer = new BufferedDualStreamPlayer();
             bufferedPlayer.setLoop(loop);
+            bufferedPlayer.setVerbose(verbose);
             
             // GL executor posts tasks to the render thread
             bufferedPlayer.setGLExecutor(task -> {
@@ -925,12 +942,11 @@ public class WebMAlphaTextureView extends TextureView implements
             return;
         }
         
-        // Consume frames from both SurfaceTextures (calls updateTexImage)
-        if (!bufferedPlayer.consumeFrames()) {
-            // No new frame pair available — show previous or blank
-            EGL14.eglSwapBuffers(eglDisplay, eglSurface);
-            return;
-        }
+        // Consume frames only when BOTH decoders have released a new frame.
+        // This ensures color and alpha are always from the same temporal position.
+        // If consumeFrames() returns false, we re-render the previous frame (OES
+        // textures retain their content), which is visually smooth.
+        bufferedPlayer.consumeFrames();
         
         int colorTexId = bufferedPlayer.getColorOesTextureId();
         int alphaTexId = bufferedPlayer.getAlphaOesTextureId();
