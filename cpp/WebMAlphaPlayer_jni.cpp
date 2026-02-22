@@ -814,7 +814,7 @@ Java_com_danielkpl2_webmalphaplayer_WebMAlphaPlayerNative_nativeGetFFmpegVersion
 
 //==============================================================================
 // Dual-Stream Demuxer for MediaCodec Hardware Decoding
-// Extracts raw VP9 packets from dual-stream WebM files
+// Extracts raw VP9/AV1 packets from dual-stream WebM files
 //==============================================================================
 
 // Include FFmpeg headers for demuxer
@@ -825,9 +825,14 @@ extern "C" {
 
 namespace {
 
+// Check if a codec is supported for dual-stream hardware decode
+static bool isSupportedVideoCodec(AVCodecID id) {
+    return id == AV_CODEC_ID_VP9 || id == AV_CODEC_ID_AV1;
+}
+
 /**
  * Demuxer context for dual-stream WebM files.
- * Extracts VP9 packets without decoding - MediaCodec will decode them.
+ * Extracts VP9/AV1 packets without decoding - MediaCodec will decode them.
  */
 struct DualStreamDemuxer {
     AVFormatContext* formatCtx = nullptr;
@@ -838,6 +843,7 @@ struct DualStreamDemuxer {
     int totalFrames = 0;
     double frameRate = 30.0;
     double timeBase = 0.0;
+    AVCodecID codecId = AV_CODEC_ID_NONE;
     
     // Track frame indices for each stream
     int colorFrameIndex = 0;
@@ -888,11 +894,12 @@ Java_com_danielkpl2_webmalphaplayer_DualStreamMediaCodecPlayer_nativeCreateDemux
     for (unsigned i = 0; i < demuxer->formatCtx->nb_streams; i++) {
         AVStream* stream = demuxer->formatCtx->streams[i];
         if (stream->codecpar->codec_type == AVMEDIA_TYPE_VIDEO &&
-            stream->codecpar->codec_id == AV_CODEC_ID_VP9) {
+            isSupportedVideoCodec(stream->codecpar->codec_id)) {
             if (demuxer->colorStreamIndex < 0) {
                 demuxer->colorStreamIndex = i;
                 demuxer->width = stream->codecpar->width;
                 demuxer->height = stream->codecpar->height;
+                demuxer->codecId = stream->codecpar->codec_id;
                 
                 // Calculate frame rate
                 if (stream->avg_frame_rate.den > 0) {
@@ -919,14 +926,14 @@ Java_com_danielkpl2_webmalphaplayer_DualStreamMediaCodecPlayer_nativeCreateDemux
     }
     
     if (demuxer->colorStreamIndex < 0) {
-        LOGE("No VP9 video stream found");
+        LOGE("No VP9/AV1 video stream found");
         return 0;
     }
     
     int streamCount = (demuxer->alphaStreamIndex >= 0) ? 2 : 1;
-    LOGI("Demuxer created: %dx%d, %d frames, %.2f fps, %d streams (color=%d, alpha=%d)",
+    LOGI("Demuxer created: %dx%d, %d frames, %.2f fps, %d streams, codec=%d (color=%d, alpha=%d)",
          demuxer->width, demuxer->height, demuxer->totalFrames, demuxer->frameRate,
-         streamCount, demuxer->colorStreamIndex, demuxer->alphaStreamIndex);
+         streamCount, (int)demuxer->codecId, demuxer->colorStreamIndex, demuxer->alphaStreamIndex);
     
     std::lock_guard<std::mutex> lock(demuxersMutex);
     jlong id = nextDemuxerId++;
@@ -959,16 +966,17 @@ Java_com_danielkpl2_webmalphaplayer_DualStreamMediaCodecPlayer_nativeGetVideoInf
     auto& demuxer = it->second;
     int streamCount = (demuxer->alphaStreamIndex >= 0) ? 2 : 1;
     
-    // Return: [width, height, totalFrames, frameRate*1000, streamCount]
-    jintArray result = env->NewIntArray(5);
+    // Return: [width, height, totalFrames, frameRate*1000, streamCount, codecId]
+    jintArray result = env->NewIntArray(6);
     jint values[] = {
         demuxer->width,
         demuxer->height,
         demuxer->totalFrames,
         static_cast<int>(demuxer->frameRate * 1000),
-        streamCount
+        streamCount,
+        static_cast<int>(demuxer->codecId)
     };
-    env->SetIntArrayRegion(result, 0, 5, values);
+    env->SetIntArrayRegion(result, 0, 6, values);
     
     return result;
 }
@@ -1110,22 +1118,22 @@ Java_com_danielkpl2_webmalphaplayer_DualStreamMediaCodecPlayer_nativeIsDualStrea
         return JNI_FALSE;
     }
     
-    // Count VP9 video streams
-    int vp9StreamCount = 0;
+    // Count supported video streams (VP9 or AV1)
+    int videoStreamCount = 0;
     for (unsigned i = 0; i < formatCtx->nb_streams; i++) {
         AVStream* stream = formatCtx->streams[i];
         if (stream->codecpar->codec_type == AVMEDIA_TYPE_VIDEO &&
-            stream->codecpar->codec_id == AV_CODEC_ID_VP9) {
-            vp9StreamCount++;
+            isSupportedVideoCodec(stream->codecpar->codec_id)) {
+            videoStreamCount++;
         }
     }
     
     avformat_close_input(&formatCtx);
     
-    LOGI("File %s has %d VP9 streams (dual=%s)", 
-         pathStr.c_str(), vp9StreamCount, vp9StreamCount >= 2 ? "yes" : "no");
+    LOGI("File %s has %d video streams (dual=%s)", 
+         pathStr.c_str(), videoStreamCount, videoStreamCount >= 2 ? "yes" : "no");
     
-    return (vp9StreamCount >= 2) ? JNI_TRUE : JNI_FALSE;
+    return (videoStreamCount >= 2) ? JNI_TRUE : JNI_FALSE;
 }
 
 // BufferedDualStreamPlayer - same as above, just different class name binding
@@ -1151,22 +1159,22 @@ Java_com_danielkpl2_webmalphaplayer_BufferedDualStreamPlayer_nativeIsDualStream(
         return JNI_FALSE;
     }
     
-    // Count VP9 video streams
-    int vp9StreamCount = 0;
+    // Count supported video streams (VP9 or AV1)
+    int videoStreamCount = 0;
     for (unsigned i = 0; i < formatCtx->nb_streams; i++) {
         AVStream* stream = formatCtx->streams[i];
         if (stream->codecpar->codec_type == AVMEDIA_TYPE_VIDEO &&
-            stream->codecpar->codec_id == AV_CODEC_ID_VP9) {
-            vp9StreamCount++;
+            isSupportedVideoCodec(stream->codecpar->codec_id)) {
+            videoStreamCount++;
         }
     }
     
     avformat_close_input(&formatCtx);
     
-    LOGI("File %s has %d VP9 streams (dual=%s)", 
-         pathStr.c_str(), vp9StreamCount, vp9StreamCount >= 2 ? "yes" : "no");
+    LOGI("File %s has %d video streams (dual=%s)", 
+         pathStr.c_str(), videoStreamCount, videoStreamCount >= 2 ? "yes" : "no");
     
-    return (vp9StreamCount >= 2) ? JNI_TRUE : JNI_FALSE;
+    return (videoStreamCount >= 2) ? JNI_TRUE : JNI_FALSE;
 }
 
 // ============================================================================
@@ -1204,11 +1212,12 @@ Java_com_danielkpl2_webmalphaplayer_DualStreamSurfacePlayer_nativeCreateDemuxer(
     for (unsigned i = 0; i < demuxer->formatCtx->nb_streams; i++) {
         AVStream* stream = demuxer->formatCtx->streams[i];
         if (stream->codecpar->codec_type == AVMEDIA_TYPE_VIDEO &&
-            stream->codecpar->codec_id == AV_CODEC_ID_VP9) {
+            isSupportedVideoCodec(stream->codecpar->codec_id)) {
             if (demuxer->colorStreamIndex < 0) {
                 demuxer->colorStreamIndex = i;
                 demuxer->width = stream->codecpar->width;
                 demuxer->height = stream->codecpar->height;
+                demuxer->codecId = stream->codecpar->codec_id;
                 
                 if (stream->avg_frame_rate.den > 0) {
                     demuxer->frameRate = av_q2d(stream->avg_frame_rate);
@@ -1233,13 +1242,13 @@ Java_com_danielkpl2_webmalphaplayer_DualStreamSurfacePlayer_nativeCreateDemuxer(
     }
     
     if (demuxer->colorStreamIndex < 0) {
-        LOGE("No VP9 video stream found");
+        LOGE("No VP9/AV1 video stream found");
         return 0;
     }
     
     int streamCount = (demuxer->alphaStreamIndex >= 0) ? 2 : 1;
-    LOGI("[Surface] Demuxer created: %dx%d, %d frames, %.2f fps, %d streams",
-         demuxer->width, demuxer->height, demuxer->totalFrames, demuxer->frameRate, streamCount);
+    LOGI("[Surface] Demuxer created: %dx%d, %d frames, %.2f fps, %d streams, codec=%d",
+         demuxer->width, demuxer->height, demuxer->totalFrames, demuxer->frameRate, streamCount, (int)demuxer->codecId);
     
     std::lock_guard<std::mutex> lock(demuxersMutex);
     jlong id = nextDemuxerId++;
@@ -1272,16 +1281,17 @@ Java_com_danielkpl2_webmalphaplayer_DualStreamSurfacePlayer_nativeGetVideoInfo(
     auto& demuxer = it->second;
     int streamCount = (demuxer->alphaStreamIndex >= 0) ? 2 : 1;
     
-    // Return: [width, height, totalFrames, frameRate*1000, streamCount]
-    jintArray result = env->NewIntArray(5);
+    // Return: [width, height, totalFrames, frameRate*1000, streamCount, codecId]
+    jintArray result = env->NewIntArray(6);
     jint values[] = {
         demuxer->width,
         demuxer->height,
         demuxer->totalFrames,
         static_cast<int>(demuxer->frameRate * 1000),
-        streamCount
+        streamCount,
+        static_cast<int>(demuxer->codecId)
     };
-    env->SetIntArrayRegion(result, 0, 5, values);
+    env->SetIntArrayRegion(result, 0, 6, values);
     
     return result;
 }
@@ -1425,11 +1435,12 @@ Java_com_danielkpl2_webmalphaplayer_BufferedDualStreamPlayer_nativeCreateDemuxer
     for (unsigned i = 0; i < demuxer->formatCtx->nb_streams; i++) {
         AVStream* stream = demuxer->formatCtx->streams[i];
         if (stream->codecpar->codec_type == AVMEDIA_TYPE_VIDEO &&
-            stream->codecpar->codec_id == AV_CODEC_ID_VP9) {
+            isSupportedVideoCodec(stream->codecpar->codec_id)) {
             if (demuxer->colorStreamIndex < 0) {
                 demuxer->colorStreamIndex = i;
                 demuxer->width = stream->codecpar->width;
                 demuxer->height = stream->codecpar->height;
+                demuxer->codecId = stream->codecpar->codec_id;
                 
                 if (stream->avg_frame_rate.den > 0) {
                     demuxer->frameRate = av_q2d(stream->avg_frame_rate);
@@ -1454,13 +1465,13 @@ Java_com_danielkpl2_webmalphaplayer_BufferedDualStreamPlayer_nativeCreateDemuxer
     }
     
     if (demuxer->colorStreamIndex < 0) {
-        LOGE("[Buffered] No VP9 video stream found");
+        LOGE("[Buffered] No VP9/AV1 video stream found");
         return 0;
     }
     
     int streamCount = (demuxer->alphaStreamIndex >= 0) ? 2 : 1;
-    LOGI("[Buffered] Demuxer created: %dx%d, %d frames, %.2f fps, %d streams",
-         demuxer->width, demuxer->height, demuxer->totalFrames, demuxer->frameRate, streamCount);
+    LOGI("[Buffered] Demuxer created: %dx%d, %d frames, %.2f fps, %d streams, codec=%d",
+         demuxer->width, demuxer->height, demuxer->totalFrames, demuxer->frameRate, streamCount, (int)demuxer->codecId);
     
     std::lock_guard<std::mutex> lock(demuxersMutex);
     jlong id = nextDemuxerId++;
@@ -1493,16 +1504,17 @@ Java_com_danielkpl2_webmalphaplayer_BufferedDualStreamPlayer_nativeGetVideoInfo(
     auto& demuxer = it->second;
     int streamCount = (demuxer->alphaStreamIndex >= 0) ? 2 : 1;
     
-    // Return: [width, height, totalFrames, frameRate*1000, streamCount]
-    jintArray result = env->NewIntArray(5);
+    // Return: [width, height, totalFrames, frameRate*1000, streamCount, codecId]
+    jintArray result = env->NewIntArray(6);
     jint values[] = {
         demuxer->width,
         demuxer->height,
         demuxer->totalFrames,
         static_cast<int>(demuxer->frameRate * 1000),
-        streamCount
+        streamCount,
+        static_cast<int>(demuxer->codecId)
     };
-    env->SetIntArrayRegion(result, 0, 5, values);
+    env->SetIntArrayRegion(result, 0, 6, values);
     
     return result;
 }

@@ -1,49 +1,70 @@
-# WebM VP9 + Alpha Player Architecture
+# WebM Alpha Player Architecture
 
 This document maps the flow and threading model across C++ core, Android, and iOS wrappers for `react-native-webm-alpha-player`.
+
+## Two Decode Paths
+
+The player has two completely separate decode backends, selected automatically based on the file's stream layout and available hardware:
+
+| | Software Path | Hardware Path |
+|---|---|---|
+| **File format** | Single VP9 stream with YUVA420P alpha | Two VP9 or AV1 streams (color + alpha) |
+| **Decoder** | FFmpeg (C++, libvpx) | Android MediaCodec (hardware or software codec) |
+| **Rendering** | YUVA textures → fragment shader | OES textures → fragment shader |
+| **Platforms** | iOS + Android | Android only |
+| **Looping** | Seamless (frames stay in cache) | Tiny stall (MediaCodec flush + refill) |
+| **Key class** | `WebMAlphaPlayer` (C++) | `BufferedDualStreamPlayer` (Java) |
+
+Detection happens in `WebMAlphaTextureView.loadFromFile()`: the JNI function `nativeIsDualStream()` counts video streams in the WebM container. If there are 2 video streams and a hardware decoder is available, the dual-stream path is used.
 
 ## High-Level Flow
 
 ```
 React (JS) WebMAlphaView props
-   │  source {uri|path}, cacheKey?, autoPlay, loop, paused
+   │  source {uri|path}, cacheKey?, autoPlay, loop, paused, mode, verbose
    │
    ├─ Android: RNWebMAlphaViewManager → WebMAlphaTextureView (TextureView)
-   │      └─ download/cache (HTTP→cache dir, cacheKey-aware) → loadFromFile
+   │      ├─ download/cache (HTTP→cache dir, cacheKey-aware) → loadFromFile
+   │      ├─ if dual-stream + HW decoder → BufferedDualStreamPlayer (MediaCodec)
+   │      └─ if single-stream or no HW   → WebMAlphaPlayer (C++/FFmpeg)
    │
    ├─ iOS: RNWebMAlphaViewManager → WebMAlphaWrapper → WebMAlphaMetalPlayerView
-   │      └─ download/cache (NSURLSession→Caches, cacheKey-aware) → loadFromPath
+   │      └─ download/cache (NSURLSession→Caches) → loadFromPath → WebMAlphaPlayer (C++)
    │
-   └─ C++ core (WebMAlphaPlayer)
-          ├─ openStreams / initCodecs (FFmpeg)
-          ├─ decode thread(s) → YUVA frames → FrameCache (LRU)
-          └─ playback loop → renders into Metal/TextureView surface
+   └─ Web: HTML5 <video> element fallback
 ```
 
 ## Components and Responsibilities
 
-- **JS/React side**: Sends props (`source`, `cacheKey`, `autoPlay`, `loop`, `paused`, `playbackSpeed`) to native view managers. No decoding logic here.
-- **Android (Java)**
-  - `RNWebMAlphaViewManager` owns `WebMAlphaTextureView` and a download executor (4 threads).
-  - `setSource`: HTTP URLs are downloaded to cache (honors `cacheKey` → nested cache dirs). `file://` and `asset://` are loaded directly.
-  - Caching: temp file → rename to cache file; reuses cached file if present. Passes file path to native texture view.
-  - Lifecycle: `createViewInstance` (TextureView), `setSource`, optional `onDropViewInstance` → `release`.
-- **iOS (ObjC++)**
-  - `RNWebMAlphaViewManager` creates `WebMAlphaWrapper` holding `WebMAlphaMetalPlayerView`.
-  - `source` setter triggers `loadSource`:
-    - HTTP URLs download via `NSURLSession`, cached to `Caches` (subdirs from `cacheKey`), then loaded.
-    - `file://` and `asset://` resolved to bundle/FS paths.
-  - Exposes methods via `RCT_EXPORT_METHOD` for play/pause/stop/seek.
-  - Delegate callbacks bridge events (`onLoad`, `onError`, `onEnd`).
-- **C++ core (cross-platform)**
-  - `WebMAlphaPlayer` wraps FFmpeg (avformat/avcodec/avutil/swscale) and provides:
-    - `openStreams`, `initCodecs`, `loadFromFile/loadFromMemory/loadFromUrl`.
-    - `decodeAllFrames` (optional preload) and on-demand `decodeFrame`.
-    - YUVA frame extraction with alpha handling (built-in YUVA420P or separate alpha track).
-    - `FrameCache` (LRU, mutex-protected) for decoded frames.
-    - Playback loop that clocks frames at FPS, pulls from cache/decodes, and emits to the platform renderer.
-    - `PlayerConfig`: cache size, `preloadAllFrames`, playback speed, etc.
+### JS/React
 
+- Sends props (`source`, `cacheKey`, `autoPlay`, `loop`, `paused`, `playbackSpeed`, `mode`, `verbose`) to native view managers.
+- Exposes `getDecoderStatus()`, `getDecoderInfo()`, `getMaxDecoderInstances()` for runtime capability queries (Android).
+- No decoding logic; platform detection is automatic.
+
+### Android (Java)
+
+- **`RNWebMAlphaViewManager`** — Creates `WebMAlphaTextureView`, handles prop dispatch, manages download executor (4 threads).
+- **`WebMAlphaTextureView`** — TextureView subclass, owns the EGL context and GL render thread. Routes to software or hardware path based on stream detection. Handles view lifecycle (attach/detach/z-index reorder) with deferred source reloading.
+- **`BufferedDualStreamPlayer`** — Hardware decode orchestrator. Manages the demux loop, codec thread, playback loop, and delegates rendering to the GL thread. Handles loop transitions (flush + seek).
+- **`SurfaceTextureVideoDecoder`** — Codec-agnostic MediaCodec wrapper. Supports VP9 and AV1. Creates OES texture + SurfaceTexture per instance. Implements one-frame-per-cycle release gate for synchronized output.
+- **`RNWebMAlphaPlayerModule`** — Native module exposing `getDecoderInfo()`, `getDecoderStatus()`, `getMaxDecoderInstances()` to JS.
+
+### iOS (Objective-C++)
+
+- **`RNWebMAlphaViewManager`** — Creates `WebMAlphaWrapper` holding `WebMAlphaMetalPlayerView`.
+- Source download via `NSURLSession`, cached to `Caches` (subdirs from `cacheKey`).
+- Exposes play/pause/stop/seek via `RCT_EXPORT_METHOD`. Delegate callbacks bridge events to JS.
+
+### C++ Core (cross-platform, software path)
+
+- **`WebMAlphaPlayer`** — FFmpeg (avformat/avcodec/avutil/swscale) wrapper:
+  - `openStreams`, `initCodecs`, `loadFromFile/loadFromMemory/loadFromUrl`
+  - `decodeAllFrames` (preload) and on-demand `decodeFrame`
+  - YUVA frame extraction with alpha handling (embedded YUVA420P or separate alpha track)
+  - `FrameCache` (LRU, mutex-protected) for decoded frames
+  - Playback loop clocking frames at target FPS
+  - `PlayerConfig`: cache size, `preloadAllFrames`, playback speed
 
 ## Threading Model
 
@@ -51,109 +72,153 @@ React (JS) WebMAlphaView props
 JS thread
   └─ Calls native props/methods
 
-Android
-  ├─ UI thread: View creation, prop updates, attach/detach, forwards file paths to native view
-  ├─ Download executor (fixed 4 threads): HTTP fetch → cache file → post to UI to load
-  └─ Native decoder threads (C++): see core below
+Android — Software Path
+  ├─ UI thread: View creation, prop updates, attach/detach
+  ├─ Download executor (4 threads): HTTP fetch → cache file → post to UI
+  ├─ GL render thread: EGL context, texture upload, YUVA→RGBA shader, present
+  ├─ Native load executor: nativeLoadFromFile, nativeStop, nativeUnload (async)
+  └─ C++ threads: playback loop, decode (on cache miss)
+
+Android — Hardware (Dual-Stream) Path
+  ├─ UI thread: View creation, prop updates, attach/detach
+  ├─ Download executor (4 threads): HTTP fetch → cache file
+  ├─ GL render thread: EGL context, OES texture creation, compositing shader, present
+  ├─ Demux thread: FFmpeg reads packets, feeds to MediaCodec input buffers
+  ├─ Codec callback threads (2): MediaCodec async output callbacks (one per decoder)
+  └─ Playback thread: PTS-gated frame release, timing control, render signaling
 
 iOS
-  ├─ Main thread: View creation, prop updates, NSURLSession callbacks dispatch to main for load
-  └─ Native decoder threads (C++): see core below
+  ├─ Main thread: View creation, prop updates, NSURLSession callbacks
+  ├─ Metal render thread: MTKView delegate, triple-buffered YUVA→RGBA
+  └─ C++ threads: playback loop, decode
 
-C++ core (both platforms)
-  ├─ Decoder thread: FFmpeg demux/decode → YUVA frames → FrameCache
-  ├─ Playback/render thread: time-based loop → fetch from cache (or decode) → render to surface
-  └─ Optional preload thread: `decodeAllFrames` to fill cache up-front
+Web
+  └─ Main thread: <video> element, standard browser media pipeline
 ```
 
+## Hardware Decode Path — Detailed Flow
 
-## Thread Lifecycle & Interaction
+### Initialization
 
-
-```text
-JS/Main thread                 Playback thread                Decode path (same thread)        Resources
---------------                 ----------------                -------------------------        ---------
-play()                     →  spawn playbackThread_      →   (none yet)                       FrameCache constructed
-                                          |  playing_=true
-                                          |  shouldStop_=false
-                                          |
-                                          |  playbackLoop start
-                                          |    per frame slot:
-                                          |    ├─ getFrame(idx)
-                                          |    │    ├─ cache hit → emitFrame → render
-                                          |    │    └─ cache miss → decodeFrame(idx)
-                                          |    │          ├─ lock decodeMutex_
-                                          |    │          ├─ av_seek_frame / avcodec_send/receive
-                                          |    │          ├─ YUVA copy → FrameCache
-                                          |    │          └─ unlock decodeMutex_
-                                          |    └─ advance idx
-                                          |
-pause() / seekToFrame()    →  playing_=false / set currentFrame / optional inline getFrame
-                                          |  (thread idles if paused)
-                                          |
-stop()                     →  shouldStop_=true
-                                          |  playing_=false
-                                          |  currentFrame_=0
-                                          |  join playbackThread_
-                                          |  emit stop
-                                          |
-unload()                   →  shouldStop_=true
-                                             try_lock decodeMutex_ (wait briefly)
-                                             join decodeThread_ (if ever spawned)
-                                             join playbackThread_ (if running)
-                                             close codecs / free formatCtx / cleanup IO
-                                             FrameCache.clear(), metadata reset, loaded_=false
+```
+loadDualStreamFile(path)
+  └─ renderThread.execute:
+       1. Create BufferedDualStreamPlayer
+       2. Set loop, verbose, GL executor, callbacks
+       3. bufferedPlayer.loadFromFile(path):
+            a. nativeCreateDemuxer (JNI) → FFmpeg opens WebM, finds 2 video streams
+            b. nativeGetVideoInfo → [width, height, frames, fps*1000, streamCount, codecId]
+            c. Map codecId to MIME type (VP9=167 → "video/x-vnd.on2.vp9", AV1=226 → "video/av01")
+            d. Create 2 SurfaceTextureVideoDecoder instances (color + alpha)
+                 - Each creates: OES texture → SurfaceTexture → Surface → MediaCodec
+                 - MediaCodec configured with Surface output (GPU-accelerated)
+            e. Start both decoders
+       4. bufferedPlayer.play() → starts demux + playback threads
 ```
 
-Notes
-- `playbackThread_` is the only long-lived thread; it is created on first `play()` and joined on `stop()` or `unload()`.
-- `decodeAllFrames()` runs on the caller thread (often JS/main during load) and holds `decodeMutex_`; there is no dedicated decode worker today.
-- `decodeFrame()` also runs on the caller (typically the playback thread on cache miss, or main thread during `seekToFrame`).
+### Playback Loop
 
-## Detailed Call Order (play from cached file)
-
-1) `WebMAlphaPlayer()` → `initializeFFmpeg()` (once per process) → create `FrameCache`.
-2) `loadFromFile(path)` (caller thread)
-   - Calls `unload()` (joins any threads, clears codecs/cache).
-   - Alloc `formatCtx_` → `openStreams()` → `initCodecs()`; sets `loaded_=true`.
-   - If `preloadAllFrames` is true, runs `decodeAllFrames()` inline on caller thread (holds `decodeMutex_`).
-3) `play()` (caller thread)
-   - Sets `playing_=true`, `shouldStop_=false`.
-   - If `playbackThread_` is null, spawns it running `playbackLoop`.
-4) `playbackLoop` (background thread)
-   - Computes frame interval from `frameRate_ * playbackSpeed`.
-   - Per frame slot: `getFrame(idx)` → cache hit or `decodeFrame(idx)` (holds `decodeMutex_`, seeks/decodes via FFmpeg) → `emitFrame`.
-   - Increments `currentFrame_`; if at end, either loops or emits `ended` and stops.
-5) Control paths
-   - `pause()` sets `playing_=false` (thread stays alive, idles).
-   - `seekToFrame(n)` on caller thread sets `currentFrame_`, calls `getFrame(n)` (may decode inline), then `emitFrame` and `emitEvent("seek")`.
-6) Shutdown paths
-   - `stop()` sets `shouldStop_=true`, `playing_=false`, resets `currentFrame_`, notifies CV, joins `playbackThread_`, emits `stop`.
-   - `unload()` (called before new loads or on view release) sets `shouldStop_=true`, waits briefly on `decodeMutex_`, joins `decodeThread_` (if used) and `playbackThread_`, frees codecs/formatCtx/IO, clears cache, resets metadata, sets `loaded_=false`.
-
-Thread lifecycle summary: `playbackThread_` is created on first `play()`, runs until `stop()` or `unload()` joins it. `decodeAllFrames()` and `decodeFrame()` execute on the calling thread (often the playback thread on cache miss), so there is no separate long-lived decode worker unless you introduce one.
 ```
+Demux Thread                     Codec Callbacks              Playback Thread              GL Thread
+------------                     ---------------              ---------------              ---------
+nativeReadPacket()               onOutputBufferAvailable      (waits for initial frames)
+  ├─ color pkt → colorDecoder      ├─ hold buffer until       per frame interval:
+  └─ alpha pkt → alphaDecoder      │   PTS <= targetTime        ├─ advance targetPTS
+                                    └─ release to Surface        ├─ checkHeldBuffer (color)
+loop until EOF or stopped             (one per cycle)            ├─ checkHeldBuffer (alpha)
+                                                                 ├─ if both have new frame:
+                                                                 │    signal GL thread
+                                                                 └─ sleep to next frame
+                                                                                            consumeFrames():
+                                                                                              colorTex.updateTexImage()
+                                                                                              alphaTex.updateTexImage()
+                                                                                              getTransformMatrix (both)
+                                                                                              draw with OES shader:
+                                                                                                color.rgb + alpha.r → RGBA
+                                                                                              eglSwapBuffers()
+```
+
+### Synchronization Mechanisms
+
+1. **PTS Gating** — `checkHeldBuffer()` holds each MediaCodec output buffer until its presentation timestamp is at or before the current playback target. Prevents frame skipping.
+
+2. **One-Frame-Per-Cycle Release** — Each decoder releases at most one frame to its SurfaceTexture per render cycle. Prevents faster decoders from flooding the output.
+
+3. **Paired Consumption** — `consumeFrames()` only calls `updateTexImage()` on both textures when *both* decoders have confirmed a new frame release. Guarantees temporal alignment between color and alpha.
+
+### Loop Transition
+
+```
+Demux thread detects EOF
+  └─ handleLoopTransition():
+       1. Pause demux + playback
+       2. colorDecoder.flush() → MediaCodec reset, buffers cleared
+       3. alphaDecoder.flush() → MediaCodec reset, buffers cleared
+       4. nativeSeekToStart(demuxer) → FFmpeg av_seek_frame to 0
+       5. Resume demux + playback from frame 0
+```
+
+This causes a brief stall (~10-20ms) as the MediaCodec pipelines refill. Inherent to hardware decode; the software path avoids this since frames stay in the LRU cache.
+
+## Software Decode Path — Detailed Flow
+
+```
+Thread Lifecycle:
+
+JS/Main thread                 Playback thread                Decode (inline)              Resources
+--------------                 ----------------               ---------------              ---------
+loadFromFile(path)         →   (not started yet)              FFmpeg open, init codecs     FrameCache created
+  if preload:                                                 decodeAllFrames (inline)
+play()                     →   spawn playbackThread           
+                                  playing=true
+                                  per frame slot:
+                                    getFrame(idx)
+                                      cache hit → emit        
+                                      cache miss → decode     av_seek + avcodec decode
+                                    advance idx               copy YUVA → FrameCache
+
+pause()                    →   playing=false (thread idles)
+seekToFrame(n)             →   set currentFrame, inline decode if needed
+stop()                     →   shouldStop=true, join thread
+unload()                   →   shouldStop=true, join threads, free codecs, clear cache
+```
+
+## View Lifecycle (Android)
+
+### Normal Flow
+1. `RNWebMAlphaViewManager.createViewInstance()` → creates `WebMAlphaTextureView`
+2. Props set (`setSource`, `setMode`, `setVerbose`, etc.)
+3. `onSurfaceTextureAvailable` → create render thread → init EGL
+4. Source downloaded/cached → `loadFromFile()` → auto-detect → software or hardware path
+5. `onLoad` event dispatched to JS with video dimensions
+6. Playback starts (if `autoPlay`)
+
+### Z-Index Reorder (detach → re-attach)
+React Native may detach and re-attach the view during z-index changes:
+1. `onDetachedFromWindow` → `softRelease()` stops player, clears state
+2. `onSurfaceTextureDestroyed` → EGL context destroyed
+3. `onAttachedToWindow` → resets `isReleased` flag
+4. `onSurfaceTextureAvailable` → new EGL context → `loadFromFile()` re-detects stream type → full reload
+5. Playback resumes (~20-40ms reload, imperceptible)
+
+### Unmount
+1. `onDetachedFromWindow` → `softRelease()`
+2. `onDropViewInstance` → `release()` → destroy native player, free all resources
 
 ## Data Paths
 
-1) **Asset acquisition**
-   - HTTP: downloaded to cache (cacheKey → subpath). If exists, skip download.
+1. **Asset acquisition**
+   - HTTP: downloaded to cache (cacheKey → subpath). Reuses cached file if present.
    - Local: `file://` or bundle asset resolved directly.
-2) **Decode**
-   - C++ opens file, finds color + alpha streams, initializes codecs.
-   - Frames decoded to YUVA; alpha merged (built-in or secondary stream).
-3) **Cache**
-   - `FrameCache` stores decoded frames keyed by frame index; LRU eviction.
-4) **Playback**
-   - Playback loop picks frames at target FPS, emits to renderer (TextureView/Metal).
-   - `paused` halts loop; `seekToFrame` jumps decode cursor.
-
-## Lifecycle
-
-- **Mount**: view created → source set → (download if remote) → `loadFromPath` → C++ `loadFromFile` → `onLoad` fired.
-- **Play**: autoPlay or explicit play → playback thread runs until paused/stopped/end.
-- **Pause/Stop**: pause halts loop; stop unloads, frees codecs and buffers.
-- **Unmount**: view release cleans native resources; downloads are detached via executor cleanup on Android and session tasks on iOS.
+2. **Decode**
+   - Software: C++ opens file, finds color + alpha streams, initializes codecs. Frames decoded to YUVA.
+   - Hardware: FFmpeg demuxes raw packets, MediaCodec decodes to SurfaceTexture.
+3. **Cache**
+   - Software: `FrameCache` stores decoded frames keyed by frame index; LRU eviction.
+   - Hardware: No frame cache; decoded frames go directly to OES textures.
+4. **Render**
+   - Software: YUVA textures uploaded per frame, fragment shader converts to RGBA.
+   - Hardware: OES textures sampled directly, fragment shader composites color + alpha.
 
 ## Cache Key Behavior
 
@@ -164,13 +229,13 @@ Thread lifecycle summary: `playbackThread_` is created on first `play()`, runs u
 ## Error and Event Flow
 
 - Download errors → `onError` (JS) with message.
-- Decode errors → C++ delegate → platform wrapper → `onError`.
+- Decode errors → C++ delegate / Java callback → `onError`.
 - Successful load → `onLoad` (totalFrames, width, height).
 - Playback end → `onEnd`.
 
 ## Key Interactions
 
-```text
+```
 JS sets source + cacheKey
    ↓
 Platform ViewManager
@@ -178,13 +243,19 @@ Platform ViewManager
    ↓
 if remote → download thread(s)
    ↓ cache file
-   ↓ UI thread: loadFromPath on native view
+   ↓ UI thread: loadFromFile
    ↓
-C++ player: loadFromFile → open streams → init codecs
+Auto-detect: nativeIsDualStream?
+   ├─ YES + HW decoder available:
+   │    BufferedDualStreamPlayer
+   │    ├─ demux thread: FFmpeg → raw packets
+   │    ├─ 2× MediaCodec → OES textures
+   │    └─ GL thread: composite + present
+   │
+   └─ NO (or no HW decoder):
+        WebMAlphaPlayer (C++)
+        ├─ decode thread: FFmpeg → YUVA frames → FrameCache
+        └─ playback loop → texture upload → GPU shader → present
    ↓
-Decoder thread: decode frames → FrameCache
-   ↓
-Playback loop: schedule frames → render surface
-   ↓
-Events: onLoad/onError/onEnd → JS
+Events: onLoad / onError / onEnd → JS
 ```

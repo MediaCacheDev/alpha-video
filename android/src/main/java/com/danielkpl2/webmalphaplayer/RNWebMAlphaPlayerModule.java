@@ -13,7 +13,7 @@ import com.facebook.react.bridge.WritableNativeMap;
 
 /**
  * React Native Module for WebM Alpha Player utility functions.
- * Provides access to VP9 decoder information and diagnostics.
+ * Provides access to video decoder information and diagnostics.
  */
 public class RNWebMAlphaPlayerModule extends ReactContextBaseJavaModule {
     
@@ -31,13 +31,12 @@ public class RNWebMAlphaPlayerModule extends ReactContextBaseJavaModule {
     }
     
     /**
-     * Get detailed VP9 decoder information.
-     * Returns a string with all decoder capabilities.
+     * Get detailed decoder information for all supported codecs (VP9, AV1).
      */
     @ReactMethod
-    public void getVp9DecoderInfo(Promise promise) {
+    public void getDecoderInfo(Promise promise) {
         try {
-            String info = SurfaceTextureVp9Decoder.getVp9DecoderInfo();
+            String info = SurfaceTextureVideoDecoder.getDecoderInfo();
             Log.i(TAG, info);
             promise.resolve(info);
         } catch (Exception e) {
@@ -45,13 +44,30 @@ public class RNWebMAlphaPlayerModule extends ReactContextBaseJavaModule {
         }
     }
     
+    /** @deprecated Use getDecoderInfo() */
+    @ReactMethod
+    public void getVp9DecoderInfo(Promise promise) {
+        getDecoderInfo(promise);
+    }
+    
     /**
-     * Get the maximum number of concurrent VP9 decoder instances.
+     * Get the maximum number of concurrent decoder instances for a given codec.
      */
+    @ReactMethod
+    public void getMaxDecoderInstances(String mimeType, Promise promise) {
+        try {
+            int max = SurfaceTextureVideoDecoder.getMaxInstances(mimeType);
+            promise.resolve(max);
+        } catch (Exception e) {
+            promise.reject("DECODER_INFO_ERROR", e.getMessage());
+        }
+    }
+    
+    /** @deprecated Use getMaxDecoderInstances() */
     @ReactMethod
     public void getMaxVp9Instances(Promise promise) {
         try {
-            int max = SurfaceTextureVp9Decoder.getMaxVp9Instances();
+            int max = SurfaceTextureVideoDecoder.getMaxVp9Instances();
             promise.resolve(max);
         } catch (Exception e) {
             promise.reject("DECODER_INFO_ERROR", e.getMessage());
@@ -59,12 +75,12 @@ public class RNWebMAlphaPlayerModule extends ReactContextBaseJavaModule {
     }
     
     /**
-     * Get the current number of active VP9 decoder instances.
+     * Get the current number of active decoder instances.
      */
     @ReactMethod
     public void getActiveDecoderCount(Promise promise) {
         try {
-            int count = SurfaceTextureVp9Decoder.getActiveDecoderCount();
+            int count = SurfaceTextureVideoDecoder.getActiveDecoderCount();
             promise.resolve(count);
         } catch (Exception e) {
             promise.reject("DECODER_INFO_ERROR", e.getMessage());
@@ -77,16 +93,21 @@ public class RNWebMAlphaPlayerModule extends ReactContextBaseJavaModule {
     @ReactMethod
     public void getDecoderStatus(Promise promise) {
         try {
-            int maxInstances = SurfaceTextureVp9Decoder.getMaxVp9Instances();
-            int activeCount = SurfaceTextureVp9Decoder.getActiveDecoderCount();
+            int maxVp9 = SurfaceTextureVideoDecoder.getMaxInstances(SurfaceTextureVideoDecoder.MIME_VP9);
+            int maxAv1 = SurfaceTextureVideoDecoder.getMaxInstances(SurfaceTextureVideoDecoder.MIME_AV1);
+            int activeCount = SurfaceTextureVideoDecoder.getActiveDecoderCount();
+            boolean hasVp9Hw = SurfaceTextureVideoDecoder.isVp9HardwareDecoderAvailable();
+            boolean hasAv1Hw = SurfaceTextureVideoDecoder.isAv1HardwareDecoderAvailable();
             
             WritableMap result = new WritableNativeMap();
-            result.putInt("maxVp9Instances", maxInstances);
+            result.putInt("maxVp9Instances", maxVp9);
+            result.putInt("maxAv1Instances", maxAv1);
+            result.putBoolean("vp9HardwareAvailable", hasVp9Hw);
+            result.putBoolean("av1HardwareAvailable", hasAv1Hw);
             result.putInt("activeDecoders", activeCount);
-            result.putInt("availableSlots", Math.max(0, maxInstances - activeCount));
-            result.putInt("maxDualStreamPlayers", maxInstances / 2);
-            result.putInt("activeDualStreamPlayers", activeCount / 2);
-            result.putBoolean("canCreateMore", activeCount < maxInstances - 1); // Need 2 for dual-stream
+            result.putInt("availableVp9Slots", Math.max(0, maxVp9 - activeCount));
+            result.putInt("maxDualStreamPlayers", Math.max(maxVp9, maxAv1) / 2);
+            result.putBoolean("canCreateMore", activeCount < Math.max(maxVp9, maxAv1) - 1);
             
             promise.resolve(result);
         } catch (Exception e) {

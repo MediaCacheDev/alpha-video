@@ -332,12 +332,15 @@ public class WebMAlphaTextureView extends TextureView implements
             return;
         }
         
-        // Check if this is a dual-stream file (2 VP9 video streams)
+        // Check if this is a dual-stream file (2 VP9/AV1 video streams)
         // Use MediaCodec hardware decoder for dual-stream, software for single-stream
         boolean isDualStream = BufferedDualStreamPlayer.nativeIsDualStream(path);
         Log.i(TAG, "🔍 File " + path + " isDualStream=" + isDualStream);
         
-        if (isDualStream && SurfaceTextureVp9Decoder.isVp9HardwareDecoderAvailable()) {
+        boolean hasHwDecoder = SurfaceTextureVideoDecoder.isVp9HardwareDecoderAvailable() ||
+                               SurfaceTextureVideoDecoder.isAv1HardwareDecoderAvailable();
+        
+        if (isDualStream && hasHwDecoder) {
             // Use MediaCodec hardware decoder for dual-stream
             loadDualStreamFile(path);
         } else {
@@ -621,25 +624,25 @@ public class WebMAlphaTextureView extends TextureView implements
             });
         }
         
-        // Initialize EGL on render thread
+        // Initialize EGL on render thread, then reload source
         renderThread.execute(() -> {
             initEGL();
             
-            // Load any pending source now that EGL is ready
             if (pendingSourcePath != null) {
                 Log.i(TAG, "🔄 Loading deferred source: " + pendingSourcePath);
-                // Initialize player now - all props should be set by this point
-                initializePlayer();
-                // Wait for any pending soft release to complete before reloading
-                // This prevents race condition when view is detached and reattached quickly
-                waitForSoftRelease();
-                if (pendingSourceIsUrl) {
-                    enqueueNativeLoad(() -> WebMAlphaPlayerNative.nativeLoadFromUrl(playerId, pendingSourcePath),
-                        "from url (deferred)");
-                } else {
-                    enqueueNativeLoad(() -> WebMAlphaPlayerNative.nativeLoadFromFile(playerId, pendingSourcePath),
-                        "from file (deferred)");
-                }
+                final String path = pendingSourcePath;
+                final boolean isUrl = pendingSourceIsUrl;
+                // loadFromFile/loadFromUrl dispatch to renderThread internally,
+                // so post to main thread to avoid deadlocking the single-threaded executor
+                post(() -> {
+                    if (isReleased) return;
+                    waitForSoftRelease();
+                    if (isUrl) {
+                        loadFromUrl(path);
+                    } else {
+                        loadFromFile(path);
+                    }
+                });
             }
         });
     }
@@ -1408,21 +1411,19 @@ public class WebMAlphaTextureView extends TextureView implements
     @Override
     protected void onAttachedToWindow() {
         super.onAttachedToWindow();
-        Log.i(TAG, "🔄 View attached (isReleased=" + isReleased + ", playerId=" + playerId + ")");
+        Log.i(TAG, "🔄 View attached (isReleased=" + isReleased + ", playerId=" + playerId +
+              ", dualStream=" + isDualStreamMode + ")");
         
-        // If we were previously released but player still exists, just reset flag
-        // The surface callback will handle re-initialization if needed
-        if (isReleased && playerId != 0) {
+        // If we were previously released, reset the flag so the surface callback can re-load.
+        // This covers both software decode (playerId != 0) and dual-stream (isDualStreamMode)
+        // re-attach after z-index reordering.
+        if (isReleased && (playerId != 0 || isDualStreamMode || pendingSourcePath != null)) {
             isReleased = false;
             
             if (renderThread == null || renderThread.isShutdown()) {
                 renderThread = createRenderThread();
             }
-            
-            // Don't try to load here - let onSurfaceTextureAvailable handle it
-            // when the surface becomes available again
         }
-        // Note: If playerId == 0, player initialization happens in onSurfaceTextureAvailable
     }
     
     @Override

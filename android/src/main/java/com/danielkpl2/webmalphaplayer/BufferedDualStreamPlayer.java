@@ -28,15 +28,15 @@ import java.util.concurrent.atomic.AtomicInteger;
  * 4. Seek demuxer to frame 0
  * 5. Reset frame index, restart feeding
  */
-public class BufferedDualStreamPlayer implements SurfaceTextureVp9Decoder.FrameAvailableCallback {
+public class BufferedDualStreamPlayer implements SurfaceTextureVideoDecoder.FrameAvailableCallback {
     private static final String TAG = "DualStreamOES";
     
     // Native demuxer handle
     private long nativeDemuxerPtr = 0;
     
     // Surface-based decoders (OES texture output)
-    private SurfaceTextureVp9Decoder colorDecoder;
-    private SurfaceTextureVp9Decoder alphaDecoder;
+    private SurfaceTextureVideoDecoder colorDecoder;
+    private SurfaceTextureVideoDecoder alphaDecoder;
     
     // Video info
     private int width;
@@ -119,8 +119,8 @@ public class BufferedDualStreamPlayer implements SurfaceTextureVp9Decoder.FrameA
     public void setVerbose(boolean verbose) {
         this.verbose = verbose;
         // Propagate to decoders
-        SurfaceTextureVp9Decoder cd = colorDecoder;
-        SurfaceTextureVp9Decoder ad = alphaDecoder;
+        SurfaceTextureVideoDecoder cd = colorDecoder;
+        SurfaceTextureVideoDecoder ad = alphaDecoder;
         if (cd != null) cd.setVerbose(verbose);
         if (ad != null) ad.setVerbose(verbose);
     }
@@ -156,9 +156,9 @@ public class BufferedDualStreamPlayer implements SurfaceTextureVp9Decoder.FrameA
                 return false;
             }
             
-            // Get video info
+            // Get video info: [width, height, totalFrames, frameRate*1000, streamCount, codecId]
             int[] videoInfo = nativeGetVideoInfo(nativeDemuxerPtr);
-            if (videoInfo == null || videoInfo.length < 5) {
+            if (videoInfo == null || videoInfo.length < 6) {
                 Log.e(TAG, "Failed to get video info");
                 nativeDestroyDemuxer(nativeDemuxerPtr);
                 nativeDemuxerPtr = 0;
@@ -170,12 +170,22 @@ public class BufferedDualStreamPlayer implements SurfaceTextureVp9Decoder.FrameA
             totalFrames = videoInfo[2];
             int fpsMul1000 = videoInfo[3];
             int numStreams = videoInfo[4];
+            int codecId = videoInfo[5];
+            
+            // Map FFmpeg codec_id to Android MIME type
+            // AV_CODEC_ID_VP9 = 167, AV_CODEC_ID_AV1 = 226
+            String mimeType;
+            if (codecId == 226) {
+                mimeType = SurfaceTextureVideoDecoder.MIME_AV1;
+            } else {
+                mimeType = SurfaceTextureVideoDecoder.MIME_VP9;
+            }
             
             frameRate = fpsMul1000 / 1000.0;
             duration = totalFrames / frameRate;
             
             Log.i(TAG, "Video: " + width + "x" + height + ", " + totalFrames + " frames, " + 
-                  String.format("%.2f", frameRate) + " fps, " + numStreams + " streams");
+                  String.format("%.2f", frameRate) + " fps, " + numStreams + " streams, codec=" + mimeType);
             
             if (numStreams < 2) {
                 Log.e(TAG, "Not a dual-stream file");
@@ -184,9 +194,9 @@ public class BufferedDualStreamPlayer implements SurfaceTextureVp9Decoder.FrameA
                 return false;
             }
             
-            // Create decoders — OES textures are created here (must be on GL thread)
-            colorDecoder = new SurfaceTextureVp9Decoder("color");
-            alphaDecoder = new SurfaceTextureVp9Decoder("alpha");
+            // Create decoders with detected MIME type — OES textures are created here (must be on GL thread)
+            colorDecoder = new SurfaceTextureVideoDecoder("color", mimeType);
+            alphaDecoder = new SurfaceTextureVideoDecoder("alpha", mimeType);
             colorDecoder.setVerbose(verbose);
             alphaDecoder.setVerbose(verbose);
             
@@ -296,8 +306,8 @@ public class BufferedDualStreamPlayer implements SurfaceTextureVp9Decoder.FrameA
     public double getDuration() { return duration; }
     public int getCurrentFrame() { return playbackFrameIndex.get(); }
     
-    public SurfaceTextureVp9Decoder getColorDecoder() { return colorDecoder; }
-    public SurfaceTextureVp9Decoder getAlphaDecoder() { return alphaDecoder; }
+    public SurfaceTextureVideoDecoder getColorDecoder() { return colorDecoder; }
+    public SurfaceTextureVideoDecoder getAlphaDecoder() { return alphaDecoder; }
     
     /**
      * Consume pending frames from both SurfaceTextures.
@@ -310,8 +320,8 @@ public class BufferedDualStreamPlayer implements SurfaceTextureVp9Decoder.FrameA
      * @return true if decoders are valid and textures were updated
      */
     public boolean consumeFrames() {
-        SurfaceTextureVp9Decoder cd = colorDecoder;
-        SurfaceTextureVp9Decoder ad = alphaDecoder;
+        SurfaceTextureVideoDecoder cd = colorDecoder;
+        SurfaceTextureVideoDecoder ad = alphaDecoder;
         if (cd == null || ad == null) return false;
         
         // Only consume when BOTH decoders have released a frame.
@@ -348,7 +358,7 @@ public class BufferedDualStreamPlayer implements SurfaceTextureVp9Decoder.FrameA
      * Get color OES texture ID for use in compositor shader.
      */
     public int getColorOesTextureId() {
-        SurfaceTextureVp9Decoder cd = colorDecoder;
+        SurfaceTextureVideoDecoder cd = colorDecoder;
         return cd != null ? cd.getOesTextureId() : -1;
     }
     
@@ -356,7 +366,7 @@ public class BufferedDualStreamPlayer implements SurfaceTextureVp9Decoder.FrameA
      * Get alpha OES texture ID for use in compositor shader.
      */
     public int getAlphaOesTextureId() {
-        SurfaceTextureVp9Decoder ad = alphaDecoder;
+        SurfaceTextureVideoDecoder ad = alphaDecoder;
         return ad != null ? ad.getOesTextureId() : -1;
     }
     
@@ -375,7 +385,7 @@ public class BufferedDualStreamPlayer implements SurfaceTextureVp9Decoder.FrameA
     }
     
     // -------------------------------------------------------------------------
-    // Frame availability callback (from SurfaceTextureVp9Decoder)
+    // Frame availability callback (from SurfaceTextureVideoDecoder)
     // -------------------------------------------------------------------------
     
     /**
@@ -385,7 +395,7 @@ public class BufferedDualStreamPlayer implements SurfaceTextureVp9Decoder.FrameA
      * The actual updateTexImage() happens on the GL render thread via consumeFrames().
      */
     @Override
-    public void onFrameAvailable(SurfaceTextureVp9Decoder decoder, int frameIndex, long timestampNs) {
+    public void onFrameAvailable(SurfaceTextureVideoDecoder decoder, int frameIndex, long timestampNs) {
         if (shouldStop.get()) return;
         
         if (decoder == colorDecoder) {
@@ -396,7 +406,7 @@ public class BufferedDualStreamPlayer implements SurfaceTextureVp9Decoder.FrameA
     }
     
     @Override
-    public void onDecoderError(SurfaceTextureVp9Decoder decoder, String error) {
+    public void onDecoderError(SurfaceTextureVideoDecoder decoder, String error) {
         Log.e(TAG, "[" + decoder.getLabel() + "] Error: " + error);
         if (eventCallback != null) {
             eventCallback.onError(error);
@@ -486,8 +496,8 @@ public class BufferedDualStreamPlayer implements SurfaceTextureVp9Decoder.FrameA
             
             if (shouldStop.get()) break;
             
-            SurfaceTextureVp9Decoder cd = colorDecoder;
-            SurfaceTextureVp9Decoder ad = alphaDecoder;
+            SurfaceTextureVideoDecoder cd = colorDecoder;
+            SurfaceTextureVideoDecoder ad = alphaDecoder;
             if (cd == null || ad == null) break;
             
             // Queue to color decoder — retry until accepted or stopped
@@ -526,8 +536,8 @@ public class BufferedDualStreamPlayer implements SurfaceTextureVp9Decoder.FrameA
             final AtomicBoolean drained = new AtomicBoolean(false);
             
             glExecutor.executeOnGLThread(() -> {
-                SurfaceTextureVp9Decoder cd = colorDecoder;
-                SurfaceTextureVp9Decoder ad = alphaDecoder;
+                SurfaceTextureVideoDecoder cd = colorDecoder;
+                SurfaceTextureVideoDecoder ad = alphaDecoder;
                 if (cd != null && cd.hasNewFrame()) {
                     cd.updateTexImage();
                 }
@@ -589,8 +599,8 @@ public class BufferedDualStreamPlayer implements SurfaceTextureVp9Decoder.FrameA
         long nextFrameTimeNs = System.nanoTime();
         
         // Set initial target PTS to 0 so the very first frame (pts=0) can be released
-        SurfaceTextureVp9Decoder cd = colorDecoder;
-        SurfaceTextureVp9Decoder ad = alphaDecoder;
+        SurfaceTextureVideoDecoder cd = colorDecoder;
+        SurfaceTextureVideoDecoder ad = alphaDecoder;
         if (cd != null) cd.setTargetPresentationTimeUs(0);
         if (ad != null) ad.setTargetPresentationTimeUs(0);
         
@@ -732,7 +742,7 @@ public class BufferedDualStreamPlayer implements SurfaceTextureVp9Decoder.FrameA
     private static native void nativeSeekToStart(long ptr);
     
     /**
-     * Check if a file contains dual VP9 streams (color + alpha).
+     * Check if a file contains dual video streams (VP9 or AV1, color + alpha).
      */
     public static native boolean nativeIsDualStream(String filePath);
     

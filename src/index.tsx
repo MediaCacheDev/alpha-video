@@ -18,14 +18,18 @@ import NativeWebMAlphaView from './WebMAlphaViewNativeComponent';
 export interface DecoderStatus {
   /** Maximum VP9 decoder instances supported by the device */
   maxVp9Instances: number;
+  /** Maximum AV1 decoder instances supported by the device */
+  maxAv1Instances: number;
+  /** Whether VP9 hardware decoder is available */
+  vp9HardwareAvailable: boolean;
+  /** Whether AV1 hardware decoder is available */
+  av1HardwareAvailable: boolean;
   /** Currently active decoder instances */
   activeDecoders: number;
-  /** Remaining available decoder slots */
-  availableSlots: number;
-  /** Maximum dual-stream players possible (maxVp9Instances / 2) */
+  /** Remaining available VP9 decoder slots */
+  availableVp9Slots: number;
+  /** Maximum dual-stream players possible */
   maxDualStreamPlayers: number;
-  /** Currently active dual-stream players (activeDecoders / 2) */
-  activeDualStreamPlayers: number;
   /** Whether we can create more dual-stream players */
   canCreateMore: boolean;
 }
@@ -38,30 +42,45 @@ const RNWebMAlphaPlayerModule = Platform.OS === 'android'
   : null;
 
 /**
- * Get detailed VP9 decoder information.
+ * Get detailed decoder information for all supported codecs (VP9, AV1).
  * Returns a string with all decoder capabilities including max instances,
  * hardware acceleration status, supported resolutions, etc.
  * 
  * @returns Promise<string> - Detailed decoder information
  * @platform android
  */
-export async function getVp9DecoderInfo(): Promise<string> {
+export async function getDecoderInfo(): Promise<string> {
   if (Platform.OS !== 'android') {
-    return 'VP9 decoder info only available on Android';
+    return 'Decoder info only available on Android';
   }
   if (!RNWebMAlphaPlayerModule) {
     throw new Error('RNWebMAlphaPlayer native module not available');
   }
-  return RNWebMAlphaPlayerModule.getVp9DecoderInfo();
+  return RNWebMAlphaPlayerModule.getDecoderInfo();
 }
 
+/** @deprecated Use getDecoderInfo() */
+export const getVp9DecoderInfo = getDecoderInfo;
+
 /**
- * Get the maximum number of concurrent VP9 decoder instances.
+ * Get the maximum number of concurrent decoder instances for a codec.
  * Dual-stream videos require 2 instances per player.
  * 
+ * @param mimeType - MIME type (e.g. 'video/x-vnd.on2.vp9' or 'video/av01')
  * @returns Promise<number> - Max instances (-1 if unable to determine)
  * @platform android
  */
+export async function getMaxDecoderInstances(mimeType: string): Promise<number> {
+  if (Platform.OS !== 'android') {
+    return -1;
+  }
+  if (!RNWebMAlphaPlayerModule) {
+    throw new Error('RNWebMAlphaPlayer native module not available');
+  }
+  return RNWebMAlphaPlayerModule.getMaxDecoderInstances(mimeType);
+}
+
+/** @deprecated Use getMaxDecoderInstances() */
 export async function getMaxVp9Instances(): Promise<number> {
   if (Platform.OS !== 'android') {
     return -1;
@@ -109,10 +128,12 @@ export async function getDecoderStatus(): Promise<DecoderStatus> {
   if (Platform.OS !== 'android') {
     return {
       maxVp9Instances: -1,
+      maxAv1Instances: -1,
+      vp9HardwareAvailable: false,
+      av1HardwareAvailable: false,
       activeDecoders: 0,
-      availableSlots: -1,
+      availableVp9Slots: -1,
       maxDualStreamPlayers: -1,
-      activeDualStreamPlayers: 0,
       canCreateMore: true,
     };
   }
@@ -428,7 +449,7 @@ const NativePlayer = forwardRef<WebMAlphaViewRef, WebMAlphaViewProps>(
 NativePlayer.displayName = 'NativePlayer';
 
 /**
- * WebMAlphaView - Cross-platform WebM VP9 video player with alpha transparency support
+ * WebMAlphaView - Cross-platform WebM VP9/AV1 video player with alpha transparency support
  * 
  * Uses native C++ implementation with Metal (iOS) and OpenGL ES (Android) for optimal performance
  * Falls back to HTML5 video element on web platforms
