@@ -252,6 +252,27 @@ public class WebMAlphaTextureView extends TextureView implements
     }
     
     /**
+     * Sets the playback rate, live.
+     *
+     * Stored as well as applied, because this arrives as a React prop and props are set before
+     * a surface exists — without keeping it, a rate given at mount would be lost and only a
+     * later change would ever be seen.
+     *
+     * Both backends are covered: single-stream files play through the C++ player, dual-stream
+     * ones through {@link BufferedDualStreamPlayer}, and which one is in use is decided at load
+     * time from the file itself. Neither moves the playhead when the rate changes.
+     */
+    public void setPlaybackSpeed(double playbackSpeed) {
+        this.playbackSpeed = playbackSpeed > 0.01 ? playbackSpeed : 0.01;
+        
+        if (isDualStreamMode && bufferedPlayer != null) {
+            bufferedPlayer.setPlaybackSpeed(this.playbackSpeed);
+        } else if (playerId != 0 && !isReleased) {
+            WebMAlphaPlayerNative.nativeSetPlaybackSpeed(playerId, this.playbackSpeed);
+        }
+    }
+    
+    /**
      * Set the playback mode.
      * - "preload" (default): decode all frames upfront, then play
      * - "stream": decode on-demand with sliding window cache
@@ -378,6 +399,9 @@ public class WebMAlphaTextureView extends TextureView implements
             bufferedPlayer = new BufferedDualStreamPlayer();
             bufferedPlayer.setLoop(loop);
             bufferedPlayer.setVerbose(verbose);
+            // A rate set as a prop arrived long before this player existed; apply it here or
+            // the first render would run at 1x regardless of what was asked for.
+            bufferedPlayer.setPlaybackSpeed(playbackSpeed);
             
             // GL executor posts tasks to the render thread
             bufferedPlayer.setGLExecutor(task -> {

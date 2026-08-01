@@ -618,6 +618,15 @@ Java_com_danielkpl2_webmalphaplayer_WebMAlphaPlayerNative_nativeSeekToFrame(
 }
 
 JNIEXPORT void JNICALL
+Java_com_danielkpl2_webmalphaplayer_WebMAlphaPlayerNative_nativeSetPlaybackSpeed(
+    JNIEnv* env, jclass clazz, jlong playerId, jdouble speed
+) {
+    std::lock_guard<std::mutex> lock(playersMutex);
+    auto it = players.find(playerId);
+    if (it != players.end()) it->second->setPlaybackSpeed(speed);
+}
+
+JNIEXPORT void JNICALL
 Java_com_danielkpl2_webmalphaplayer_WebMAlphaPlayerNative_nativeSeekToTime(
     JNIEnv* env, jclass clazz, jlong playerId, jdouble seconds
 ) {

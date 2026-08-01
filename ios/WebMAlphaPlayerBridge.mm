@@ -306,6 +306,14 @@
     _player->seekToFrame(frameIndex);
 }
 
+- (void)setPlaybackSpeed:(double)speed {
+    _player->setPlaybackSpeed(speed);
+}
+
+- (double)playbackSpeed {
+    return _player->getPlaybackSpeed();
+}
+
 - (WebMFrame *)getFrame:(int)index {
     auto frame = _player->getFrame(index);
     if (!frame) return nil;
@@ -417,6 +425,18 @@
 
 - (void)dealloc {
     // Nothing special needed - MTKView handles its own cleanup
+}
+
+/**
+ * Forwards to the running player rather than only recording the value.
+ *
+ * `playerDidLoad:` pushes this into the config, which covers a rate set before the video was
+ * ready. On its own that is not enough: props change after load too, and a hover that speeds the
+ * animation up would otherwise do nothing until the source was reloaded.
+ */
+- (void)setPlaybackSpeed:(double)playbackSpeed {
+    _playbackSpeed = playbackSpeed;
+    [_player setPlaybackSpeed:playbackSpeed];
 }
 
 - (void)setupMetal {

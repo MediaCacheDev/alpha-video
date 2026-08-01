@@ -55,6 +55,11 @@ public class WebMAlphaPlayerNative {
     public static native void nativePause(long playerId);
     public static native void nativeStop(long playerId);
     public static native void nativeSeekToFrame(long playerId, int frameIndex);
+
+    /**
+     * Changes playback rate without moving the playhead. Safe mid-playback.
+     */
+    public static native void nativeSetPlaybackSpeed(long playerId, double speed);
     public static native void nativeSeekToTime(long playerId, double seconds);
     
     // State queries

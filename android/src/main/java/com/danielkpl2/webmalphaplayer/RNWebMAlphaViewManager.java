@@ -31,6 +31,7 @@ import java.util.concurrent.Executors;
  * - autoPlay: boolean (default true)
  * - loop: boolean (default true)
  * - paused: boolean (default false)
+ * - playbackSpeed: double (default 1.0, changeable while playing)
  * - cacheKey: string (optional custom cache path)
  */
 public class RNWebMAlphaViewManager extends SimpleViewManager<WebMAlphaTextureView> {
@@ -320,6 +321,15 @@ public class RNWebMAlphaViewManager extends SimpleViewManager<WebMAlphaTextureVi
     @ReactProp(name = "paused", defaultBoolean = false)
     public void setPaused(WebMAlphaTextureView view, boolean paused) {
         view.setPaused(paused);
+    }
+    
+    /**
+     * Playback rate. iOS and web have had this; Android had the plumbing but no prop, so the
+     * value never left JS.
+     */
+    @ReactProp(name = "playbackSpeed", defaultDouble = 1.0)
+    public void setPlaybackSpeed(WebMAlphaTextureView view, double playbackSpeed) {
+        view.setPlaybackSpeed(playbackSpeed);
     }
     
     @ReactProp(name = "cacheKey")

@@ -509,6 +509,10 @@ void WebMAlphaPlayer::setConfig(const PlayerConfig& config) {
     size_t oldCacheSize = config_.cacheSize;
     config_ = config;
     
+    // The loop reads the atomic, never the struct, so the config's speed has to be mirrored
+    // across or a rate passed at construction would be silently ignored.
+    playbackSpeed_ = config.playbackSpeed > 0.01 ? config.playbackSpeed : 0.01;
+    
     // Only recreate cache if size changed AND cache is empty
     // This preserves preloaded frames from decodeAllFrames()
     if (frameCache_) {
@@ -1372,6 +1376,19 @@ void WebMAlphaPlayer::seekTo(double timeSeconds) {
     seekToFrame(targetFrame);
 }
 
+void WebMAlphaPlayer::setPlaybackSpeed(double speed) {
+    // A rate at or below zero would make the frame interval infinite or negative. Pausing is
+    // `pause()`; this clamps to something slow rather than wedging the playback thread.
+    const double clamped = speed > 0.01 ? speed : 0.01;
+    playbackSpeed_ = clamped;
+    config_.playbackSpeed = clamped;
+    LOGI("🎬 Playback speed set to %.3f", clamped);
+}
+
+double WebMAlphaPlayer::getPlaybackSpeed() const {
+    return playbackSpeed_.load();
+}
+
 void WebMAlphaPlayer::seekToFrame(int frameIndex) {
     frameIndex = std::max(0, std::min(frameIndex, totalFrames_ - 1));
     currentFrame_ = frameIndex;
@@ -1387,10 +1404,9 @@ void WebMAlphaPlayer::seekToFrame(int frameIndex) {
 
 void WebMAlphaPlayer::playbackLoop() {
     auto lastFrameTime = std::chrono::high_resolution_clock::now();
-    double frameDurationMs = 1000.0 / (frameRate_ * config_.playbackSpeed);
     
-    LOGI("🎬 Playback loop started: frameRate=%.2f, speed=%.2f, frameDurationMs=%.2f", 
-         frameRate_, config_.playbackSpeed, frameDurationMs);
+    LOGI("🎬 Playback loop started: frameRate=%.2f, speed=%.2f", 
+         frameRate_, playbackSpeed_.load());
     
     int framesEmitted = 0;
     auto loopStartTime = std::chrono::high_resolution_clock::now();
@@ -1400,6 +1416,16 @@ void WebMAlphaPlayer::playbackLoop() {
             std::this_thread::sleep_for(std::chrono::milliseconds(16));
             continue;
         }
+        
+        /**
+         * Read per tick, not once before the loop.
+         *
+         * The rate can change while playing — that is the whole point of `setPlaybackSpeed` —
+         * and a duration hoisted out of the loop would pin the speed to whatever it was when
+         * playback happened to start. Only the interval changes; the frame index still advances
+         * by one per tick below, so speeding up never moves the playhead.
+         */
+        const double frameDurationMs = 1000.0 / (frameRate_ * playbackSpeed_.load());
         
         auto now = std::chrono::high_resolution_clock::now();
         auto elapsed = std::chrono::duration<double, std::milli>(now - lastFrameTime);

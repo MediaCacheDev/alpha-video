@@ -43,6 +43,15 @@ public class BufferedDualStreamPlayer implements SurfaceTextureVideoDecoder.Fram
     private int height;
     private int totalFrames;
     private double frameRate;
+
+    /**
+     * Wall-clock rate multiplier. Volatile: written from the UI thread, read by the playback loop.
+     *
+     * Scales only how long each frame is shown. The frame index and the PTS handed to the
+     * decoders are in the media's own timebase and must not move, or a rate change would seek
+     * as well as accelerate.
+     */
+    private volatile double playbackSpeed = 1.0;
     private double duration;
     
     // State
@@ -296,8 +305,19 @@ public class BufferedDualStreamPlayer implements SurfaceTextureVideoDecoder.Fram
         cleanup();
     }
     
+    /**
+     * Changes how fast frames are presented, leaving the playhead where it is.
+     *
+     * Takes effect on the next frame, so this is safe to call while playing — which is the
+     * intended use: a button that speeds its animation up on hover must not also jump.
+     */
+    public void setPlaybackSpeed(double speed) {
+        playbackSpeed = speed > 0.01 ? speed : 0.01;
+    }
+
     // Getters
     public boolean isLoaded() { return isLoaded.get(); }
+    public double getPlaybackSpeed() { return playbackSpeed; }
     public boolean isPlaying() { return isPlaying.get(); }
     public int getWidth() { return width; }
     public int getHeight() { return height; }
@@ -594,7 +614,7 @@ public class BufferedDualStreamPlayer implements SurfaceTextureVideoDecoder.Fram
     private void playbackLoop() {
         Log.i(TAG, "Playback loop started");
         
-        long frameDurationNs = (long)(1_000_000_000.0 / frameRate);
+        // Media timebase — one frame's worth of presentation time, whatever the playback rate.
         long frameDurationUs = (long)(1_000_000.0 / frameRate);
         long nextFrameTimeNs = System.nanoTime();
         
@@ -630,6 +650,12 @@ public class BufferedDualStreamPlayer implements SurfaceTextureVideoDecoder.Fram
                 nextFrameTimeNs = System.nanoTime();
                 continue;
             }
+            
+            // Read per iteration so a mid-playback rate change takes effect on the next frame
+            // rather than at the next load.
+            double speed = playbackSpeed;
+            if (speed <= 0.01) speed = 0.01;
+            long frameDurationNs = (long)(1_000_000_000.0 / (frameRate * speed));
             
             long now = System.nanoTime();
             

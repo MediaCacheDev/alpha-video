@@ -132,6 +132,15 @@ NS_ASSUME_NONNULL_BEGIN
 - (void)seekToTime:(double)seconds;
 - (void)seekToFrame:(int)frameIndex;
 
+/**
+ * Changes playback rate live, without moving the playhead.
+ *
+ * Distinct from setting `playbackSpeed` in the config, which only takes effect at load: this
+ * reaches the running playback loop, so a rate swapped on hover applies to the next frame.
+ */
+- (void)setPlaybackSpeed:(double)speed;
+- (double)playbackSpeed;
+
 // Direct frame access (for manual rendering)
 - (nullable WebMFrame *)getFrame:(int)index;
 - (nullable WebMFrame *)getCurrentFrame;

@@ -91,7 +91,7 @@ The player automatically detects whether a file contains a single YUVA stream (s
 | `autoPlay` | `boolean` | `true` | Auto-play video when loaded |
 | `loop` | `boolean` | `true` | Loop video playback |
 | `paused` | `boolean` | `false` | Pause video playback |
-| `playbackSpeed` | `number` | `1.0` | Playback speed multiplier |
+| `playbackSpeed` | `number` | `1.0` | Playback speed multiplier. Changeable while playing, and does **not** move the playhead — see below |
 | `style` | `ViewStyle` | - | Container style |
 | `onLoad` | `function` | - | Callback when video loads (`{ totalFrames, width, height }`) |
 | `onError` | `function` | - | Callback when error occurs (`{ error }`) |
@@ -100,6 +100,59 @@ The player automatically detects whether a file contains a single YUVA stream (s
 | `streamPrefetchAhead` | `number` | `15` | Frames to decode ahead of playback position |
 | `useDecodeQueue` | `boolean` | `true` | Serialize decoding across all players (prevents CPU saturation) |
 | `verbose` | `boolean` | `false` | Enable per-frame debug logging |
+
+### Playback speed
+
+`playbackSpeed` can change at any time, including mid-playback, and only affects how long each
+frame is shown. The playhead stays exactly where it was:
+
+```tsx
+// Speeds the animation up from wherever it currently is. No seek, no restart.
+<WebMAlphaView source={source} playbackSpeed={hovered ? 2 : 1} />
+```
+
+That distinction matters for anything driven by interaction. A rate change that also reset the
+position would read as a glitch rather than as an acceleration.
+
+Values at or below zero are clamped to `0.01` rather than stopping playback — use `paused` to
+stop.
+
+### Glow buttons from a multi-state sheet
+
+`GlowButton` plays one video that holds several interaction states stacked as rows, showing the
+row that matches the pointer. It pairs with
+[react-native-animated-glow](https://github.com/realimposter/react-native-animated-glow)'s studio
+export, which produces exactly this layout.
+
+```tsx
+import { GlowButton } from 'react-native-webm-alpha-player';
+import { Text } from 'react-native';
+
+<GlowButton
+  source={{ uri: exportedUri }}
+  cacheKey={contentHash}
+  // The rows the file holds, in order.
+  states={['default', 'hover', 'press']}
+  // Each row's own speed, which the exporter could not bake in. See below.
+  rates={[1, 1.5, 2.1]}
+  // The button's size, excluding the glow margin baked into every row.
+  content={{ width: 220, height: 90 }}
+  onPress={() => {}}
+>
+  <Text style={{ color: '#fff', fontWeight: '700' }}>Press me</Text>
+</GlowButton>
+```
+
+One file, one decoder, and hover costs nothing — no second fetch and no shader on the consuming
+side. The button occupies its `content` box in layout while the glow spills outside it, which is
+what the baked margin is for.
+
+**Why `rates` exists.** Every row of a sheet has to be baked at a single speed, because the rows
+share one timeline: rows baked at their own speeds line up only at frame 0 and drift apart after,
+so switching mid-loop would jump by however far they had diverged. The states' own speeds survive
+as these per-row multipliers instead, and `GlowButton` applies the right one through
+`playbackSpeed`. Being able to honour them is the reason to prefer a video over an APNG here — no
+APNG decoder exposes its frame clock.
 
 ### Ref Methods
 

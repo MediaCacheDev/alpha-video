@@ -231,6 +231,20 @@ public:
     void stop();
     void seekTo(double timeSeconds);
     void seekToFrame(int frameIndex);
+
+    /**
+     * Changes how fast the frames are shown, without moving the playhead.
+     *
+     * Safe to call at any time, including mid-playback, and that is the point: a UI that swaps
+     * speed on hover must not also jump position, or the change reads as a glitch rather than an
+     * acceleration. The playback loop only ever advances the frame index by one per tick, so
+     * altering the tick interval leaves `currentFrame_` exactly where it was.
+     *
+     * Clamped away from zero — a rate of 0 is a pause, and expressing it here would divide by
+     * zero and stall the loop forever rather than pausing it.
+     */
+    void setPlaybackSpeed(double speed);
+    double getPlaybackSpeed() const;
     
     // State queries
     bool isLoaded() const;
@@ -282,6 +296,15 @@ private:
     std::atomic<bool> loaded_{false};
     std::atomic<bool> playing_{false};
     std::atomic<int> currentFrame_{0};
+
+    /**
+     * The live rate, separate from `config_.playbackSpeed`.
+     *
+     * `config_` is a plain struct read without a lock all over the playback thread; making one
+     * of its fields mutable from the outside would be a data race. This mirrors the config's
+     * value at construction and is the only copy the loop consults.
+     */
+    std::atomic<double> playbackSpeed_{1.0};
     
     // Threading
     std::unique_ptr<std::thread> decodeThread_;
