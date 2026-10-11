@@ -8,7 +8,7 @@ Pod::Spec.new do |s|
                    DESC
   s.homepage     = "https://github.com/danielkpl2/webm-alpha-player-ios"
   s.license      = { :type => "LGPL-2.1", :file => "LICENSE" }
-  s.author       = { "danielkpl2" => "danielkpl2@gmail.com" }
+  s.author       = { "Daniel Kasprowicz" => "danielkpl2@gmail.com" }
   s.platform     = :ios, "12.0"
   s.source       = { :git => "https://github.com/danielkpl2/webm-alpha-player-ios.git", :tag => "#{s.version}" }
 

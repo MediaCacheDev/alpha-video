@@ -57,7 +57,7 @@
     "type": "git",
     "url": "git+https://github.com/danielkpl2/react-native-webm-alpha-player.git"
   },
-  "author": "danielkpl2",
+  "author": "Daniel Kasprowicz",
   "license": "LGPL-2.1-or-later",
   "bugs": {
     "url": "https://github.com/danielkpl2/react-native-webm-alpha-player/issues"
