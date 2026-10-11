@@ -1,9 +1,8 @@
 /**
  * Package entry point.
  *
- * The player view itself lives in `WebMAlphaView.tsx` and the glow button in `GlowButton.tsx`;
- * this file holds the native-module utilities and re-exports the rest. Splitting them keeps a
- * component that is BUILT ON the player from having to import the barrel that exports it.
+ * The player view itself lives in `WebMAlphaView.tsx`; this file holds the native-module
+ * utilities and re-exports the rest.
  */
 
 import { Platform, NativeModules } from 'react-native';
@@ -146,26 +145,6 @@ export {
   type WebMSource,
   type PlaybackMode,
 } from './WebMAlphaView';
-
-/**
- * A button whose glow is a pre-rendered animation, driven by one multi-state sheet.
- *
- * Pairs with react-native-animated-glow's studio export: rows for `default`, `hover` and `press`
- * in one file, plus the per-row playback rates that put each state's own speed back.
- */
-export { GlowButton, type GlowButtonProps } from './GlowButton';
-
-export {
-  DEFAULT_GLOW_MARGIN,
-  STATE_ORDER,
-  glowSheetLayout,
-  rateForRow,
-  rowForState,
-  rowOffset,
-  type GlowSheetLayout,
-  type GlowState,
-  type Size,
-} from './glowSheet';
 
 // Kept as the package default for callers who imported it that way before the split.
 export { default } from './WebMAlphaView';

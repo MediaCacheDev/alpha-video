@@ -1,9 +1,9 @@
 /**
  * The player view, split out from the package barrel.
  *
- * Separate from `index.tsx` so that components built ON the player — `GlowButton` — can import
- * it without the barrel importing them back. A cycle through the entry point happens to work
- * while every reference is inside a render, which makes it a trap rather than a design.
+ * Separate from `index.tsx` so that anything built ON the player can import it without the barrel
+ * importing that code back. A cycle through the entry point happens to work while every reference
+ * is inside a render, which makes it a trap rather than a design.
  */
 
 import React, { useRef, useEffect, useState, forwardRef, useImperativeHandle } from 'react';

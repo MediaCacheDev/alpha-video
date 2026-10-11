@@ -117,42 +117,12 @@ position would read as a glitch rather than as an acceleration.
 Values at or below zero are clamped to `0.01` rather than stopping playback — use `paused` to
 stop.
 
-### Glow buttons from a multi-state sheet
+### Glow buttons
 
-`GlowButton` plays one video that holds several interaction states stacked as rows, showing the
-row that matches the pointer. It pairs with
-[react-native-animated-glow](https://github.com/realimposter/react-native-animated-glow)'s studio
-export, which produces exactly this layout.
-
-```tsx
-import { GlowButton } from 'react-native-webm-alpha-player';
-import { Text } from 'react-native';
-
-<GlowButton
-  source={{ uri: exportedUri }}
-  cacheKey={contentHash}
-  // The rows the file holds, in order.
-  states={['default', 'hover', 'press']}
-  // Each row's own speed, which the exporter could not bake in. See below.
-  rates={[1, 1.5, 2.1]}
-  // The button's size, excluding the glow margin baked into every row.
-  content={{ width: 220, height: 90 }}
-  onPress={() => {}}
->
-  <Text style={{ color: '#fff', fontWeight: '700' }}>Press me</Text>
-</GlowButton>
-```
-
-One file, one decoder, and hover costs nothing — no second fetch and no shader on the consuming
-side. The button occupies its `content` box in layout while the glow spills outside it, which is
-what the baked margin is for.
-
-**Why `rates` exists.** Every row of a sheet has to be baked at a single speed, because the rows
-share one timeline: rows baked at their own speeds line up only at frame 0 and drift apart after,
-so switching mid-loop would jump by however far they had diverged. The states' own speeds survive
-as these per-row multipliers instead, and `GlowButton` applies the right one through
-`playbackSpeed`. Being able to honour them is the reason to prefer a video over an APNG here — no
-APNG decoder exposes its frame clock.
+A button that plays a multi-state glow sheet (default, hover and press stacked as rows in one
+file) lives in its own package, [alpha-glow-button](https://github.com/danielkpl2/alpha-glow-button).
+Its `alpha-glow-button/alpha-video` entry point uses this player, and relies on the live
+`playbackSpeed` above to change speed per state without restarting the loop.
 
 ### Ref Methods
 
