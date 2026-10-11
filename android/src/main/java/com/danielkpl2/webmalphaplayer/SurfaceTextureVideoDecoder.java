@@ -156,12 +156,10 @@ public class SurfaceTextureVideoDecoder implements SurfaceTexture.OnFrameAvailab
                     
                     if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
                         if (info.isHardwareAccelerated()) {
-                            Log.i(TAG, "Found hardware decoder for " + mime + ": " + name);
                             return true;
                         }
                     } else {
                         if (!lowerName.contains("sw") && !lowerName.contains("google")) {
-                            Log.i(TAG, "Found probable hardware decoder for " + mime + ": " + name);
                             return true;
                         }
                     }
@@ -284,7 +282,7 @@ public class SurfaceTextureVideoDecoder implements SurfaceTexture.OnFrameAvailab
             GLES20.glTexParameteri(GLES11Ext.GL_TEXTURE_EXTERNAL_OES, GLES20.GL_TEXTURE_WRAP_S, GLES20.GL_CLAMP_TO_EDGE);
             GLES20.glTexParameteri(GLES11Ext.GL_TEXTURE_EXTERNAL_OES, GLES20.GL_TEXTURE_WRAP_T, GLES20.GL_CLAMP_TO_EDGE);
             
-            Log.i(TAG, "[" + label + "] Created OES texture: " + oesTextureId);
+            logV("[" + label + "] Created OES texture: " + oesTextureId);
             
             surfaceTexture = new SurfaceTexture(oesTextureId);
             surfaceTexture.setDefaultBufferSize(width, height);
@@ -300,13 +298,13 @@ public class SurfaceTextureVideoDecoder implements SurfaceTexture.OnFrameAvailab
             
             int maxInstances = getMaxInstances(mimeType);
             int currentActive = activeDecoderCount.get();
-            Log.i(TAG, "[" + label + "] Decoder instances: " + currentActive + "/" + maxInstances + " (mime=" + mimeType + ")");
+            logV("[" + label + "] Decoder instances: " + currentActive + "/" + maxInstances + " (mime=" + mimeType + ")");
             
             if (maxInstances > 0 && currentActive >= maxInstances) {
                 Log.w(TAG, "[" + label + "] WARNING: At max decoder limit!");
             }
             
-            Log.i(TAG, "[" + label + "] Using decoder: " + decoderName + " for " + width + "x" + height + " (" + mimeType + ")");
+            logV("[" + label + "] Using decoder: " + decoderName + " for " + width + "x" + height + " (" + mimeType + ")");
             codec = MediaCodec.createByCodecName(decoderName);
             activeDecoderCount.incrementAndGet();
             
@@ -318,7 +316,7 @@ public class SurfaceTextureVideoDecoder implements SurfaceTexture.OnFrameAvailab
             codecHandler = new Handler(codecThread.getLooper());
             
             isConfigured.set(true);
-            Log.i(TAG, "[" + label + "] Configured with Surface output (GPU-accelerated)");
+            logV("[" + label + "] Configured with Surface output (GPU-accelerated)");
             return true;
             
         } catch (IOException e) {
@@ -347,7 +345,7 @@ public class SurfaceTextureVideoDecoder implements SurfaceTexture.OnFrameAvailab
             codec.start();
             isStarted.set(true);
             codecHandler.post(this::pollOutput);
-            Log.i(TAG, "[" + label + "] Started");
+            logV("[" + label + "] Started");
             return true;
         } catch (Exception e) {
             Log.e(TAG, "[" + label + "] Failed to start: " + e.getMessage());
@@ -409,7 +407,7 @@ public class SurfaceTextureVideoDecoder implements SurfaceTexture.OnFrameAvailab
                 inputBuffer.put(data);
                 data.rewind();
                 
-                if (verbose) Log.d(TAG, "[" + label + "] Queued frame " + frameIndex + ", size=" + size + ", pts=" + presentationTimeUs);
+                logV("[" + label + "] Queued frame " + frameIndex + ", size=" + size + ", pts=" + presentationTimeUs);
                 
                 pendingFrames.offer(new FrameInfo(frameIndex, presentationTimeUs));
                 codec.queueInputBuffer(inputIndex, 0, size, presentationTimeUs, 0);
@@ -445,7 +443,7 @@ public class SurfaceTextureVideoDecoder implements SurfaceTexture.OnFrameAvailab
                         codec.releaseOutputBuffer(outputIndex, true);
                         frameReleasedSinceConsume.set(true);
                         
-                        if (verbose) Log.d(TAG, "[" + label + "] Released frame, pts=" + pts + 
+                        logV("[" + label + "] Released frame, pts=" + pts + 
                               ", target=" + target + ", flags=" + bufferInfo.flags);
                         break;
                     } else {
@@ -457,7 +455,7 @@ public class SurfaceTextureVideoDecoder implements SurfaceTexture.OnFrameAvailab
                     
                 } else if (outputIndex == MediaCodec.INFO_OUTPUT_FORMAT_CHANGED) {
                     MediaFormat newFormat = codec.getOutputFormat();
-                    Log.i(TAG, "[" + label + "] Output format changed: " + newFormat);
+                    logV("[" + label + "] Output format changed: " + newFormat);
                     
                 } else if (outputIndex == MediaCodec.INFO_TRY_AGAIN_LATER) {
                     break;
@@ -510,7 +508,7 @@ public class SurfaceTextureVideoDecoder implements SurfaceTexture.OnFrameAvailab
                     codec.releaseOutputBuffer(heldOutputIndex, true);
                     frameReleasedSinceConsume.set(true);
                     
-                    if (verbose) Log.d(TAG, "[" + label + "] Released held frame, pts=" + heldOutputPts + 
+                    logV("[" + label + "] Released held frame, pts=" + heldOutputPts + 
                           ", target=" + target);
                 } catch (Exception e) {
                     Log.w(TAG, "[" + label + "] Error releasing held buffer: " + e.getMessage());
@@ -549,7 +547,7 @@ public class SurfaceTextureVideoDecoder implements SurfaceTexture.OnFrameAvailab
         
         long timestampNs = surfaceTexture.getTimestamp();
         
-        if (verbose) Log.d(TAG, "[" + label + "] onFrameAvailable: frameIndex=" + frameIndex + ", ts=" + timestampNs);
+        logV("[" + label + "] onFrameAvailable: frameIndex=" + frameIndex + ", ts=" + timestampNs);
         
         lastFrameTimestampNs.set(timestampNs);
         lastRenderedFrameIndex.set(frameIndex);
@@ -603,6 +601,11 @@ public class SurfaceTextureVideoDecoder implements SurfaceTexture.OnFrameAvailab
         this.verbose = verbose;
     }
     
+    /** Lifecycle and per-frame chatter, only with verbose. Warnings and errors always log. */
+    private void logV(String message) {
+        if (verbose) Log.i(TAG, message);
+    }
+    
     public void setTargetPresentationTimeUs(long ptsUs) {
         targetPresentationTimeUs.set(ptsUs);
     }
@@ -621,7 +624,7 @@ public class SurfaceTextureVideoDecoder implements SurfaceTexture.OnFrameAvailab
             return;
         }
         
-        Log.i(TAG, "[" + label + "] Flushing decoder...");
+        logV("[" + label + "] Flushing decoder...");
         
         try {
             synchronized (pendingFramesLock) {
@@ -648,7 +651,7 @@ public class SurfaceTextureVideoDecoder implements SurfaceTexture.OnFrameAvailab
                 codecHandler.post(this::pollOutput);
             }
             
-            Log.i(TAG, "[" + label + "] Flushed and restarted successfully");
+            logV("[" + label + "] Flushed and restarted successfully");
         } catch (IllegalStateException e) {
             Log.e(TAG, "[" + label + "] Flush failed (illegal state): " + e.getMessage());
             synchronized (pendingFramesLock) {
@@ -670,14 +673,14 @@ public class SurfaceTextureVideoDecoder implements SurfaceTexture.OnFrameAvailab
             return;
         }
         
-        Log.i(TAG, "[" + label + "] Releasing");
+        logV("[" + label + "] Releasing");
         
         isStarted.set(false);
         isConfigured.set(false);
         
         cleanup();
         
-        Log.i(TAG, "[" + label + "] Released");
+        logV("[" + label + "] Released");
     }
     
     private void cleanup() {
@@ -755,12 +758,12 @@ public class SurfaceTextureVideoDecoder implements SurfaceTexture.OnFrameAvailab
                     if (isHardware) {
                         if (hwDecoder == null) {
                             hwDecoder = name;
-                            Log.d(TAG, "Found hardware decoder for " + mimeType + ": " + name);
+                            logV("Found hardware decoder for " + mimeType + ": " + name);
                         }
                     } else {
                         if (swDecoder == null) {
                             swDecoder = name;
-                            Log.d(TAG, "Found software decoder for " + mimeType + ": " + name);
+                            logV("Found software decoder for " + mimeType + ": " + name);
                         }
                     }
                 }
@@ -768,7 +771,7 @@ public class SurfaceTextureVideoDecoder implements SurfaceTexture.OnFrameAvailab
         }
         
         String selected = hwDecoder != null ? hwDecoder : swDecoder;
-        Log.i(TAG, "Selected decoder for " + mimeType + ": " + selected + " (hw=" + hwDecoder + ", sw=" + swDecoder + ")");
+        logV("Selected decoder for " + mimeType + ": " + selected + " (hw=" + hwDecoder + ", sw=" + swDecoder + ")");
         return selected;
     }
 }

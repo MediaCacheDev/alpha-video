@@ -6,7 +6,11 @@ set -e
 echo "Building Android WebM Alpha Player AAR..."
 
 # Ensure we're in the android directory
-cd "$(dirname "$0")/android"
+cd "$(dirname "$0")/../android"
+
+# The module has no Gradle wrapper of its own
+GRADLE=./gradlew
+[ -x "$GRADLE" ] || GRADLE=gradle
 
 # Build FFmpeg first
 echo "Building FFmpeg libraries..."
@@ -18,16 +22,16 @@ if [ ! -d "../prebuilt/android" ]; then
 fi
 
 # Clean previous build
-./gradlew clean
+"$GRADLE" clean
 
 # Build release AAR
-./gradlew assembleRelease
+"$GRADLE" assembleRelease
 
 # Copy AAR to output directory
 mkdir -p ../dist/android
-cp build/outputs/aar/webmalphaplayer-release.aar ../dist/android/
+cp build/outputs/aar/*-release.aar ../dist/android/
 
-echo "Android AAR built successfully: ../dist/android/webmalphaplayer-release.aar"
+echo "Android AAR built successfully in ../dist/android/"
 echo ""
 echo "To publish to Maven Central:"
 echo "1. Sign the AAR with jarsigner"

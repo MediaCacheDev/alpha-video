@@ -218,10 +218,15 @@ public:
     // Configuration
     void setConfig(const PlayerConfig& config);
     PlayerConfig getConfig() const;
+    // Info logging (lifecycle, decode/playback stats); errors are always logged
+    void setVerbose(bool verbose) { verbose_ = verbose; }
     
     // Loading
     bool loadFromFile(const std::string& path);
     bool loadFromMemory(const uint8_t* data, size_t size);
+    // Reads bytes [offset, offset + length) of fd in place (APK assets, content:// streams).
+    // fd is duplicated; the caller keeps ownership. A negative length means "to end of file".
+    bool loadFromFileRange(int fd, int64_t offset, int64_t length);
     bool loadFromUrl(const std::string& url);  // Network loading
     void unload();
     
@@ -305,6 +310,7 @@ private:
      * value at construction and is the only copy the loop consults.
      */
     std::atomic<double> playbackSpeed_{1.0};
+    std::atomic<bool> verbose_{false};
     
     // Threading
     std::unique_ptr<std::thread> decodeThread_;
@@ -335,6 +341,7 @@ private:
     DecoderStats stats_;
     
     // Private methods
+    bool finishLoad();  // After avformat_open_input: streams, codecs, "loaded", playback mode
     bool openStreams();
     bool initCodecs();
     void closeCodecs();
@@ -363,6 +370,7 @@ private:
     struct AVIOContext* avioCtx_ = nullptr;
     void* bufferCtx_ = nullptr;    // Opaque context for memory buffer
     uint8_t* avioBuffer_ = nullptr; // I/O buffer (must be freed separately)
+    struct AVIOContext* rangeIO_ = nullptr;  // loadFromFileRange reader (FileRangeIO)
     
     // Swscale context for YUVA420P conversion
     SwsContext* swsCtx_ = nullptr;

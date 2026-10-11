@@ -125,6 +125,11 @@ public class BufferedDualStreamPlayer implements SurfaceTextureVideoDecoder.Fram
         this.loop = loop;
     }
     
+    /** Lifecycle and performance chatter, only with verbose. Warnings and errors always log. */
+    private void logV(String message) {
+        if (verbose) Log.i(TAG, message);
+    }
+    
     public void setVerbose(boolean verbose) {
         this.verbose = verbose;
         // Propagate to decoders
@@ -147,19 +152,18 @@ public class BufferedDualStreamPlayer implements SurfaceTextureVideoDecoder.Fram
     }
     
     /**
-     * Load a dual-stream WebM file.
+     * Load a dual-stream WebM from bytes [offset, offset + length) of fd (length -1: to end of file).
+     * The demuxer duplicates fd, so the caller may close it as soon as this returns.
      * MUST be called from GL thread so OES textures are created in correct EGL context.
      */
-    public boolean loadFromFile(String path) {
+    public boolean loadFromFd(int fd, long offset, long length) {
         if (isLoaded.get()) {
             unload();
         }
         
-        Log.i(TAG, "Loading: " + path);
-        
         try {
             // Create native demuxer
-            nativeDemuxerPtr = nativeCreateDemuxer(path);
+            nativeDemuxerPtr = nativeCreateDemuxer(fd, offset, length);
             if (nativeDemuxerPtr == 0) {
                 Log.e(TAG, "Failed to create demuxer");
                 return false;
@@ -193,7 +197,7 @@ public class BufferedDualStreamPlayer implements SurfaceTextureVideoDecoder.Fram
             frameRate = fpsMul1000 / 1000.0;
             duration = totalFrames / frameRate;
             
-            Log.i(TAG, "Video: " + width + "x" + height + ", " + totalFrames + " frames, " + 
+            logV("Video: " + width + "x" + height + ", " + totalFrames + " frames, " + 
                   String.format("%.2f", frameRate) + " fps, " + numStreams + " streams, codec=" + mimeType);
             
             if (numStreams < 2) {
@@ -236,7 +240,7 @@ public class BufferedDualStreamPlayer implements SurfaceTextureVideoDecoder.Fram
             
             isLoaded.set(true);
             
-            Log.i(TAG, "Loaded successfully (direct OES pipeline)");
+            logV("Loaded successfully (direct OES pipeline)");
             
             if (eventCallback != null) {
                 eventCallback.onLoaded(totalFrames, width, height, frameRate, duration);
@@ -265,7 +269,7 @@ public class BufferedDualStreamPlayer implements SurfaceTextureVideoDecoder.Fram
         lastPerfLogTime = System.nanoTime();
         playbackFrameIndex.set(0);
         
-        Log.i(TAG, "Starting playback");
+        logV("Starting playback");
         
         // Start demux loop (feeds packets to decoders)
         demuxHandler.post(this::demuxLoop);
@@ -279,7 +283,7 @@ public class BufferedDualStreamPlayer implements SurfaceTextureVideoDecoder.Fram
      */
     public void pause() {
         isPlaying.set(false);
-        Log.i(TAG, "Paused");
+        logV("Paused");
     }
     
     /**
@@ -291,14 +295,14 @@ public class BufferedDualStreamPlayer implements SurfaceTextureVideoDecoder.Fram
         playbackFrameIndex.set(0);
         colorDirty.set(false);
         alphaDirty.set(false);
-        Log.i(TAG, "Stopped");
+        logV("Stopped");
     }
     
     /**
      * Unload the video.
      */
     public void unload() {
-        Log.i(TAG, "Unloading");
+        logV("Unloading");
         shouldStop.set(true);
         isPlaying.set(false);
         isLoaded.set(false);
@@ -440,7 +444,7 @@ public class BufferedDualStreamPlayer implements SurfaceTextureVideoDecoder.Fram
     private int loopCount = 0;
     
     private void demuxLoop() {
-        Log.i(TAG, "Demux loop started");
+        logV("Demux loop started");
         
         decodeFrameIndex = 0;
         loopCount = 0;
@@ -455,11 +459,11 @@ public class BufferedDualStreamPlayer implements SurfaceTextureVideoDecoder.Fram
             Object[] packet1 = nativeReadPacket(nativeDemuxerPtr);
             if (packet1 == null) {
                 // End of file
-                Log.i(TAG, "End of file at frame " + decodeFrameIndex);
+                logV("End of file at frame " + decodeFrameIndex);
                 
                 if (loop) {
                     loopCount++;
-                    Log.i(TAG, "Loop #" + loopCount + " - handling loop transition");
+                    logV("Loop #" + loopCount + " - handling loop transition");
                     
                     // Detect stuck loop
                     if (decodeFrameIndex == 0) {
@@ -534,7 +538,7 @@ public class BufferedDualStreamPlayer implements SurfaceTextureVideoDecoder.Fram
             decodeFrameIndex++;
         }
         
-        Log.i(TAG, "Demux loop ended");
+        logV("Demux loop ended");
     }
     
     /**
@@ -545,7 +549,7 @@ public class BufferedDualStreamPlayer implements SurfaceTextureVideoDecoder.Fram
      * 4. Reset state and restart
      */
     private void handleLoop() {
-        Log.i(TAG, "Loop transition starting...");
+        logV("Loop transition starting...");
         
         if (shouldStop.get()) return;
         
@@ -580,12 +584,12 @@ public class BufferedDualStreamPlayer implements SurfaceTextureVideoDecoder.Fram
         }
         
         // Step 2: Flush both decoders (resets VP9 reference frames and timestamps)
-        Log.i(TAG, "Flushing decoders...");
+        logV("Flushing decoders...");
         if (colorDecoder != null) colorDecoder.flush();
         if (alphaDecoder != null) alphaDecoder.flush();
         
         // Step 3: Seek demuxer to start
-        Log.i(TAG, "Seeking demuxer to start...");
+        logV("Seeking demuxer to start...");
         if (nativeDemuxerPtr != 0) {
             nativeSeekToStart(nativeDemuxerPtr);
         }
@@ -604,7 +608,7 @@ public class BufferedDualStreamPlayer implements SurfaceTextureVideoDecoder.Fram
             eventCallback.onLooped();
         }
         
-        Log.i(TAG, "Loop transition complete - resuming from frame 0");
+        logV("Loop transition complete - resuming from frame 0");
     }
     
     // -------------------------------------------------------------------------
@@ -612,7 +616,7 @@ public class BufferedDualStreamPlayer implements SurfaceTextureVideoDecoder.Fram
     // -------------------------------------------------------------------------
     
     private void playbackLoop() {
-        Log.i(TAG, "Playback loop started");
+        logV("Playback loop started");
         
         // Media timebase — one frame's worth of presentation time, whatever the playback rate.
         long frameDurationUs = (long)(1_000_000.0 / frameRate);
@@ -626,7 +630,7 @@ public class BufferedDualStreamPlayer implements SurfaceTextureVideoDecoder.Fram
         
         // Wait for first decoded frame from each decoder before starting the clock.
         // We use dirty flags only for this initial sync.
-        Log.i(TAG, "Waiting for initial frames...");
+        logV("Waiting for initial frames...");
         int waitCount = 0;
         while (!shouldStop.get() && waitCount < 200) {
             if (colorDirty.get() && alphaDirty.get()) {
@@ -637,11 +641,11 @@ public class BufferedDualStreamPlayer implements SurfaceTextureVideoDecoder.Fram
         }
         
         if (shouldStop.get()) {
-            Log.i(TAG, "Playback loop aborted during initial wait");
+            logV("Playback loop aborted during initial wait");
             return;
         }
         
-        Log.i(TAG, "Initial frames ready after " + (waitCount * 10) + "ms");
+        logV("Initial frames ready after " + (waitCount * 10) + "ms");
         nextFrameTimeNs = System.nanoTime();
         
         while (!shouldStop.get() && isLoaded.get()) {
@@ -698,7 +702,7 @@ public class BufferedDualStreamPlayer implements SurfaceTextureVideoDecoder.Fram
                 double elapsed = (now - lastPerfLogTime) / 1_000_000_000.0;
                 double fps = framesRendered / elapsed;
                 
-                Log.i(TAG, String.format("PERF: fps=%.1f (target=%.1f), rendered=%d, playbackFrame=%d",
+                logV(String.format("PERF: fps=%.1f (target=%.1f), rendered=%d, playbackFrame=%d",
                     fps, frameRate, framesRendered, playbackFrameIndex.get()));
                 
                 framesRendered = 0;
@@ -706,7 +710,7 @@ public class BufferedDualStreamPlayer implements SurfaceTextureVideoDecoder.Fram
             }
         }
         
-        Log.i(TAG, "Playback loop ended");
+        logV("Playback loop ended");
     }
     
     // -------------------------------------------------------------------------
@@ -714,7 +718,7 @@ public class BufferedDualStreamPlayer implements SurfaceTextureVideoDecoder.Fram
     // -------------------------------------------------------------------------
     
     private void cleanup() {
-        Log.i(TAG, "Starting cleanup...");
+        logV("Starting cleanup...");
         
         shouldStop.set(true);
         
@@ -754,23 +758,23 @@ public class BufferedDualStreamPlayer implements SurfaceTextureVideoDecoder.Fram
         colorDirty.set(false);
         alphaDirty.set(false);
         
-        Log.i(TAG, "Cleanup complete");
+        logV("Cleanup complete");
     }
     
     // -------------------------------------------------------------------------
     // Native methods
     // -------------------------------------------------------------------------
     
-    private static native long nativeCreateDemuxer(String path);
+    private static native long nativeCreateDemuxer(int fd, long offset, long length);
     private static native void nativeDestroyDemuxer(long ptr);
     private static native int[] nativeGetVideoInfo(long ptr);
     private static native Object[] nativeReadPacket(long ptr);
     private static native void nativeSeekToStart(long ptr);
     
     /**
-     * Check if a file contains dual video streams (VP9 or AV1, color + alpha).
+     * Check if bytes [offset, offset + length) of fd hold dual video streams (VP9 or AV1, color + alpha).
      */
-    public static native boolean nativeIsDualStream(String filePath);
+    public static native boolean nativeIsDualStream(int fd, long offset, long length);
     
     static {
         System.loadLibrary("webmalphaplayer");

@@ -26,6 +26,10 @@ type VideoElement = HTMLVideoElement;
  * Source types for WebM video
  */
 export interface WebMSource {
+  /**
+   * https:// (downloaded to the cache), file://, an absolute path, asset://relative/path
+   * (app bundle / APK assets), content:// (Android), or Image.resolveAssetSource(require(...)).uri
+   */
   uri: string;
 }
 

@@ -8,6 +8,9 @@
 #import <React/RCTUIManager.h>
 #import "WebMAlphaPlayerBridge.h"
 
+// Lifecycle logging inside WebMAlphaWrapper, only with the verbose prop
+#define WEBM_VLOG(...) do { if (self.verbose) NSLog(__VA_ARGS__); } while (0)
+
 #pragma mark - Global Decode Queue
 
 // Global decode queue - serializes non-stream decoding across all player instances
@@ -25,7 +28,6 @@ static dispatch_queue_t getGlobalDecodeQueue(void) {
     dispatch_semaphore_wait(_globalDecodeQueueLock, DISPATCH_TIME_FOREVER);
     if (!_globalDecodeQueue) {
         _globalDecodeQueue = dispatch_queue_create("com.webmalpha.globalDecode", DISPATCH_QUEUE_SERIAL);
-        NSLog(@"🔧 Created global decode queue");
     }
     _globalDecodeQueueRefCount++;
     dispatch_semaphore_signal(_globalDecodeQueueLock);
@@ -37,7 +39,6 @@ static void releaseGlobalDecodeQueue(void) {
     dispatch_semaphore_wait(_globalDecodeQueueLock, DISPATCH_TIME_FOREVER);
     _globalDecodeQueueRefCount--;
     if (_globalDecodeQueueRefCount <= 0 && _globalDecodeQueue) {
-        NSLog(@"🗑️ Releasing global decode queue (no more references)");
         _globalDecodeQueue = nil;
         _globalDecodeQueueRefCount = 0;
     }
@@ -72,6 +73,8 @@ static void releaseGlobalDecodeQueue(void) {
 
 // Global decode queue for preload/streamAndPreload modes
 @property (nonatomic, assign) BOOL useDecodeQueue;
+
+@property (nonatomic, assign) BOOL verbose;
 
 // Event callbacks
 @property (nonatomic, copy) RCTDirectEventBlock onLoad;
@@ -110,8 +113,6 @@ static void releaseGlobalDecodeQueue(void) {
     _metalView.translatesAutoresizingMaskIntoConstraints = YES;
     
     [self addSubview:_metalView];
-    
-    NSLog(@"✅ RNWebMAlphaWrapper initialized with C++ backend");
 }
 
 - (void)layoutSubviews {
@@ -159,6 +160,11 @@ static void releaseGlobalDecodeQueue(void) {
     self.metalView.playbackSpeed = playbackSpeed;
 }
 
+- (void)setVerbose:(BOOL)verbose {
+    _verbose = verbose;
+    self.metalView.verbose = verbose;
+}
+
 - (void)setMode:(NSString *)mode {
     if ([mode isEqualToString:@"stream"] || [mode isEqualToString:@"streamAndPreload"]) {
         _mode = mode;
@@ -195,7 +201,7 @@ static void releaseGlobalDecodeQueue(void) {
     config.streamPrefetchAhead = _streamPrefetchAhead;
     [self.metalView.player setConfig:config];
     
-    NSLog(@"📺 iOS mode: %@, cacheSize=%d, prefetchAhead=%d", _mode, _streamCacheSize, _streamPrefetchAhead);
+    WEBM_VLOG(@"iOS mode: %@, cacheSize=%d, prefetchAhead=%d", _mode, _streamCacheSize, _streamPrefetchAhead);
 }
 
 #pragma mark - Source Loading
@@ -207,18 +213,18 @@ static void releaseGlobalDecodeQueue(void) {
     // Apply streaming config before loading
     [self updatePlayerConfig];
     
-    NSLog(@"🎬 RNWebMAlphaWrapper loading: %@ (mode=%@, useDecodeQueue=%d)", sourceUri, _mode, _useDecodeQueue);
+    WEBM_VLOG(@"RNWebMAlphaWrapper loading: %@ (mode=%@, useDecodeQueue=%d)", sourceUri, _mode, _useDecodeQueue);
     
-    if ([sourceUri hasPrefix:@"http://"] || [sourceUri hasPrefix:@"https://"]) {
-        [self downloadAndLoadURL:sourceUri];
-    } else if ([sourceUri hasPrefix:@"file://"]) {
-        NSString *path = [sourceUri stringByReplacingOccurrencesOfString:@"file://" withString:@""];
-        [self loadFromPathWithQueue:path];
-    } else if ([sourceUri hasPrefix:@"asset://"] || [sourceUri hasPrefix:@"asset:/"]) {
-        [self loadFromAsset:sourceUri];
-    } else {
-        [self loadFromPathWithQueue:sourceUri];
-    }
+    __weak WebMAlphaWrapper *weakSelf = self;
+    [WebMSourceResolver resolveSource:sourceUri cacheKey:self.cacheKey completion:^(NSString *path, NSString *error) {
+        WebMAlphaWrapper *strongSelf = weakSelf;
+        if (!strongSelf || ![sourceUri isEqualToString:strongSelf.currentSourceUri]) return;
+        if (error) {
+            [strongSelf playerDidEncounterError:error];
+            return;
+        }
+        [strongSelf loadFromPathWithQueue:path];
+    }];
 }
 
 /**
@@ -231,7 +237,7 @@ static void releaseGlobalDecodeQueue(void) {
     BOOL shouldUseQueue = ![_mode isEqualToString:@"stream"] && _useDecodeQueue;
     
     if (shouldUseQueue) {
-        NSLog(@"📋 Using global decode queue for: %@", path);
+        WEBM_VLOG(@"Using global decode queue for: %@", path);
         __weak WebMAlphaWrapper *weakSelf = self;
         dispatch_queue_t queue = getGlobalDecodeQueue();
         dispatch_async(queue, ^{
@@ -249,110 +255,6 @@ static void releaseGlobalDecodeQueue(void) {
         });
     } else {
         [self.metalView loadFromPath:path];
-    }
-}
-
-- (void)downloadAndLoadURL:(NSString *)urlString {
-    NSURL *url = [NSURL URLWithString:urlString];
-    if (!url) {
-        NSLog(@"❌ Invalid URL: %@", urlString);
-        if (self.onError) {
-            self.onError(@{@"error": [NSString stringWithFormat:@"Invalid URL: %@", urlString]});
-        }
-        return;
-    }
-    
-    // Determine cache file path
-    NSURL *cacheDir = [[NSFileManager defaultManager] URLsForDirectory:NSCachesDirectory inDomains:NSUserDomainMask].firstObject;
-    NSURL *cachedFile;
-    
-    if (self.cacheKey && self.cacheKey.length > 0) {
-        // Use custom cache key - create subdirectories if needed
-        cachedFile = [cacheDir URLByAppendingPathComponent:self.cacheKey];
-        
-        // Ensure parent directories exist
-        NSURL *parentDir = [cachedFile URLByDeletingLastPathComponent];
-        NSError *dirError = nil;
-        [[NSFileManager defaultManager] createDirectoryAtURL:parentDir 
-                                 withIntermediateDirectories:YES 
-                                                  attributes:nil 
-                                                       error:&dirError];
-        if (dirError) {
-            NSLog(@"⚠️ Failed to create cache directory: %@", dirError);
-        }
-        NSLog(@"🔑 Using custom cache key: %@", self.cacheKey);
-    } else {
-        // Fall back to URL hash
-        NSString *hashKey = [NSString stringWithFormat:@"%lu", (unsigned long)[urlString hash]];
-        cachedFile = [cacheDir URLByAppendingPathComponent:[NSString stringWithFormat:@"webm_%@.webm", hashKey]];
-    }
-    
-    // Check cache first
-    if ([[NSFileManager defaultManager] fileExistsAtPath:cachedFile.path]) {
-        NSLog(@"📦 Using cached file: %@", cachedFile.path);
-        [self.metalView loadFromPath:cachedFile.path];
-        return;
-    }
-    
-    // Download
-    __weak WebMAlphaWrapper *weakSelf = self;
-    NSURLSessionDataTask *task = [[NSURLSession sharedSession] dataTaskWithURL:url completionHandler:^(NSData *data, NSURLResponse *response, NSError *error) {
-        WebMAlphaWrapper *strongSelf = weakSelf;
-        if (!strongSelf) return;
-        
-        if (error || !data) {
-            NSLog(@"❌ Download failed: %@", error.localizedDescription ?: @"unknown");
-            RCTDirectEventBlock errorBlock = strongSelf.onError;
-            if (errorBlock) {
-                NSString *errorMessage = error.localizedDescription ?: @"Download failed";
-                dispatch_async(dispatch_get_main_queue(), ^{
-                    errorBlock(@{@"error": errorMessage});
-                });
-            }
-            return;
-        }
-        
-        // Save to cache
-        NSError *writeError = nil;
-        [data writeToURL:cachedFile options:NSDataWritingAtomic error:&writeError];
-        if (writeError) {
-            NSLog(@"❌ Failed to save cached file: %@", writeError);
-        } else {
-            NSLog(@"💾 Saved to cache: %@", cachedFile.path);
-        }
-        
-        NSString *filePath = cachedFile.path;
-        dispatch_async(dispatch_get_main_queue(), ^{
-            [strongSelf loadFromPathWithQueue:filePath];
-        });
-    }];
-    [task resume];
-}
-
-- (void)loadFromAsset:(NSString *)assetPath {
-    NSString *path = assetPath;
-    path = [path stringByReplacingOccurrencesOfString:@"asset://" withString:@""];
-    path = [path stringByReplacingOccurrencesOfString:@"asset:/" withString:@""];
-    
-    if ([path hasPrefix:@"/"]) {
-        path = [path substringFromIndex:1];
-    }
-    
-    NSString *bundlePath = [[NSBundle mainBundle] pathForResource:path ofType:nil];
-    if (bundlePath) {
-        [self loadFromPathWithQueue:bundlePath];
-    } else {
-        NSString *name = [path stringByDeletingPathExtension];
-        NSString *ext = [path pathExtension];
-        bundlePath = [[NSBundle mainBundle] pathForResource:name ofType:ext.length > 0 ? ext : @"webm"];
-        if (bundlePath) {
-            [self loadFromPathWithQueue:bundlePath];
-        } else {
-            NSLog(@"❌ Asset not found: %@", path);
-            if (self.onError) {
-                self.onError(@{@"error": [NSString stringWithFormat:@"Asset not found: %@", path]});
-            }
-        }
     }
 }
 
@@ -377,7 +279,7 @@ static void releaseGlobalDecodeQueue(void) {
 #pragma mark - WebMAlphaPlayerDelegate
 
 - (void)playerDidLoad:(int)totalFrames width:(int)width height:(int)height {
-    NSLog(@"🎬 C++ Player loaded: %d frames, %dx%d", totalFrames, width, height);
+    WEBM_VLOG(@"C++ Player loaded: %d frames, %dx%d", totalFrames, width, height);
     if (self.onLoad) {
         self.onLoad(@{
             @"totalFrames": @(totalFrames),
@@ -392,21 +294,21 @@ static void releaseGlobalDecodeQueue(void) {
 }
 
 - (void)playerDidEncounterError:(NSString *)error {
-    NSLog(@"❌ C++ Player error: %@", error);
+    NSLog(@"C++ Player error: %@", error);
     if (self.onError) {
         self.onError(@{@"error": error ?: @"Unknown error"});
     }
 }
 
 - (void)playerDidEnd {
-    NSLog(@"🏁 C++ Player ended");
+    WEBM_VLOG(@"C++ Player ended");
     if (self.onEnd) {
         self.onEnd(@{});
     }
 }
 
 - (void)playerPreloadComplete:(int)totalFrames timeMs:(double)timeMs {
-    NSLog(@"✅ C++ Preload complete: %d frames in %.1fms", totalFrames, timeMs);
+    WEBM_VLOG(@"C++ Preload complete: %d frames in %.1fms", totalFrames, timeMs);
 }
 
 @end
@@ -448,6 +350,9 @@ RCT_EXPORT_VIEW_PROPERTY(streamPrefetchAhead, int)
 
 // Global decode queue for preload/streamAndPreload modes
 RCT_EXPORT_VIEW_PROPERTY(useDecodeQueue, BOOL)
+
+// Lifecycle and per-frame logging; errors are always logged
+RCT_EXPORT_VIEW_PROPERTY(verbose, BOOL)
 
 // Events
 RCT_EXPORT_VIEW_PROPERTY(onLoad, RCTDirectEventBlock)

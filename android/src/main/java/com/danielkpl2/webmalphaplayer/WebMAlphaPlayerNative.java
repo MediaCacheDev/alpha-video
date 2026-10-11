@@ -46,6 +46,8 @@ public class WebMAlphaPlayerNative {
     
     // Loading
     public static native boolean nativeLoadFromFile(long playerId, String path);
+    /** Bytes [offset, offset + length) of fd; length -1 means to end of file. fd is duplicated. */
+    public static native boolean nativeLoadFromFd(long playerId, int fd, long offset, long length);
     public static native boolean nativeLoadFromBytes(long playerId, byte[] data);
     public static native boolean nativeLoadFromUrl(long playerId, String url);
     public static native void nativeUnload(long playerId);
@@ -60,6 +62,7 @@ public class WebMAlphaPlayerNative {
      * Changes playback rate without moving the playhead. Safe mid-playback.
      */
     public static native void nativeSetPlaybackSpeed(long playerId, double speed);
+    public static native void nativeSetVerbose(long playerId, boolean verbose);
     public static native void nativeSeekToTime(long playerId, double seconds);
     
     // State queries

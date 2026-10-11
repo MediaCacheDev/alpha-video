@@ -1,6 +1,8 @@
 require 'json'
+require 'pathname'
 
 package = JSON.parse(File.read(File.join(__dir__, 'package.json')))
+pod_dir = Pathname.new(__dir__).relative_path_from(Pathname.new(Pod::Config.instance.installation_root)).to_s
 
 Pod::Spec.new do |s|
   s.name         = 'RNWebMAlphaPlayer'
@@ -46,13 +48,16 @@ Pod::Spec.new do |s|
     'LIBRARY_SEARCH_PATHS[sdk=iphonesimulator*]' => '"$(PODS_TARGET_SRCROOT)/prebuilt/ios-simulator/lib"'
   }
   
-  # Propagate linker flags to the user target (app)
-  s.user_target_xcconfig = {
-    'LIBRARY_SEARCH_PATHS[sdk=iphoneos*]' => '$(inherited) "$(PODS_ROOT)/../../node_modules/react-native-webm-alpha-player/prebuilt/ios/lib"',
-    'LIBRARY_SEARCH_PATHS[sdk=iphonesimulator*]' => '$(inherited) "$(PODS_ROOT)/../../node_modules/react-native-webm-alpha-player/prebuilt/ios-simulator/lib"',
-    'OTHER_LDFLAGS[sdk=iphoneos*]' => '$(inherited) -force_load "$(PODS_ROOT)/../../node_modules/react-native-webm-alpha-player/prebuilt/ios/lib/libavcodec.a" -force_load "$(PODS_ROOT)/../../node_modules/react-native-webm-alpha-player/prebuilt/ios/lib/libavformat.a" -force_load "$(PODS_ROOT)/../../node_modules/react-native-webm-alpha-player/prebuilt/ios/lib/libavutil.a" -force_load "$(PODS_ROOT)/../../node_modules/react-native-webm-alpha-player/prebuilt/ios/lib/libswscale.a" -force_load "$(PODS_ROOT)/../../node_modules/react-native-webm-alpha-player/prebuilt/ios/lib/libswresample.a" -force_load "$(PODS_ROOT)/../../node_modules/react-native-webm-alpha-player/prebuilt/ios/lib/libvpx.a"',
-    'OTHER_LDFLAGS[sdk=iphonesimulator*]' => '$(inherited) -force_load "$(PODS_ROOT)/../../node_modules/react-native-webm-alpha-player/prebuilt/ios-simulator/lib/libavcodec.a" -force_load "$(PODS_ROOT)/../../node_modules/react-native-webm-alpha-player/prebuilt/ios-simulator/lib/libavformat.a" -force_load "$(PODS_ROOT)/../../node_modules/react-native-webm-alpha-player/prebuilt/ios-simulator/lib/libavutil.a" -force_load "$(PODS_ROOT)/../../node_modules/react-native-webm-alpha-player/prebuilt/ios-simulator/lib/libswscale.a" -force_load "$(PODS_ROOT)/../../node_modules/react-native-webm-alpha-player/prebuilt/ios-simulator/lib/libswresample.a" -force_load "$(PODS_ROOT)/../../node_modules/react-native-webm-alpha-player/prebuilt/ios-simulator/lib/libvpx.a"'
-  }
+  # Propagate linker flags to the user target (app). The prebuilt libs differ per SDK, so they
+  # can't be vendored; the app links them by path, relative to the Podfile's directory.
+  user_target_xcconfig = {}
+  { 'iphoneos' => 'ios', 'iphonesimulator' => 'ios-simulator' }.each do |sdk, dir|
+    lib_dir = "$(PODS_ROOT)/../#{pod_dir}/prebuilt/#{dir}/lib"
+    user_target_xcconfig["LIBRARY_SEARCH_PATHS[sdk=#{sdk}*]"] = "$(inherited) \"#{lib_dir}\""
+    user_target_xcconfig["OTHER_LDFLAGS[sdk=#{sdk}*]"] = '$(inherited) ' +
+      %w[avcodec avformat avutil swscale swresample vpx].map { |lib| "-force_load \"#{lib_dir}/lib#{lib}.a\"" }.join(' ')
+  end
+  s.user_target_xcconfig = user_target_xcconfig
   
   s.frameworks = ['Metal', 'MetalKit', 'AVFoundation', 'VideoToolbox', 'CoreMedia', 'CoreVideo', 'Security']
   s.libraries = ['z', 'bz2', 'iconv', 'c++']

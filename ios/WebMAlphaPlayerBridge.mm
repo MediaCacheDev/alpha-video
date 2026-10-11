@@ -4,8 +4,12 @@
  */
 
 #import "WebMAlphaPlayerBridge.h"
+#import <CommonCrypto/CommonDigest.h>
 #include "WebMAlphaPlayer.h"
 #include <memory>
+
+// Lifecycle and per-frame logging inside WebMAlphaMetalPlayerView, only with its verbose flag
+#define WEBM_VLOG(...) do { if (self.verbose) NSLog(__VA_ARGS__); } while (0)
 
 //==============================================================================
 // WebMFrame Implementation
@@ -241,6 +245,10 @@
     }
 }
 
+- (void)setVerbose:(BOOL)verbose {
+    _player->setVerbose(verbose);
+}
+
 - (void)setConfig:(WebMPlayerConfig *)config {
     _player->setConfig([config toCppConfig]);
 }
@@ -396,6 +404,11 @@
 
 @implementation WebMAlphaMetalPlayerView
 
+- (void)setVerbose:(BOOL)verbose {
+    _verbose = verbose;
+    [self.player setVerbose:verbose];
+}
+
 - (instancetype)initWithFrame:(CGRect)frame {
     return [self initWithFrame:frame config:[WebMPlayerConfig defaultConfig]];
 }
@@ -509,7 +522,7 @@
                                                        options:nil 
                                                          error:&error];
     if (error) {
-        NSLog(@"❌ WebMAlphaMetalPlayerView shader compile error: %@", error);
+        NSLog(@"WebMAlphaMetalPlayerView shader compile error: %@", error);
         return;
     }
     
@@ -530,7 +543,7 @@
     
     _pipelineState = [_metalDevice newRenderPipelineStateWithDescriptor:pipelineDesc error:&error];
     if (error) {
-        NSLog(@"❌ WebMAlphaMetalPlayerView pipeline error: %@", error);
+        NSLog(@"WebMAlphaMetalPlayerView pipeline error: %@", error);
         return;
     }
     
@@ -546,7 +559,7 @@
                                               length:sizeof(vertices)
                                              options:MTLResourceStorageModeShared];
     
-    NSLog(@"✅ WebMAlphaMetalPlayerView Metal setup complete");
+    WEBM_VLOG(@"WebMAlphaMetalPlayerView Metal setup complete");
 }
 
 - (void)createTexturesForWidth:(int)width height:(int)height {
@@ -594,7 +607,7 @@
     _vTextures = vTexs;
     _aTextures = aTexs;
     
-    NSLog(@"📐 Created triple-buffered textures %dx%d (UV: %dx%d)", width, height, uvWidth, uvHeight);
+    WEBM_VLOG(@"Created triple-buffered textures %dx%d (UV: %dx%d)", width, height, uvWidth, uvHeight);
 }
 
 - (BOOL)loadFromPath:(NSString *)path {
@@ -626,7 +639,7 @@
 
 - (void)renderFrame:(WebMFrame *)frame {
     if (!frame || !_pipelineState || !_frameSemaphore) {
-        NSLog(@"❌ renderFrame early return: frame=%@, pipeline=%@, semaphore=%@",
+        NSLog(@"renderFrame early return: frame=%@, pipeline=%@, semaphore=%@",
               frame ? @"YES" : @"NO", _pipelineState ? @"YES" : @"NO", _frameSemaphore ? @"YES" : @"NO");
         return;
     }
@@ -634,14 +647,14 @@
     // Debug: log render attempts
     static int renderLogCount = 0;
     if (renderLogCount++ < 20 || renderLogCount % 30 == 0) {
-        NSLog(@"🎨 renderFrame called: frame=%d, size=%dx%d", frame.frameIndex, frame.width, frame.height);
+        WEBM_VLOG(@"renderFrame called: frame=%d, size=%dx%d", frame.frameIndex, frame.width, frame.height);
     }
     
     // Wait for a texture set to become available (max 3 in flight)
     // Use a short timeout to avoid blocking the main thread too long
     if (dispatch_semaphore_wait(_frameSemaphore, dispatch_time(DISPATCH_TIME_NOW, 16 * NSEC_PER_MSEC)) != 0) {
         // Timeout - skip this frame to avoid blocking
-        if (renderLogCount < 10) NSLog(@"⏱️ renderFrame timeout waiting for semaphore");
+        if (renderLogCount < 10) NSLog(@"renderFrame timeout waiting for semaphore");
         return;
     }
     
@@ -700,7 +713,7 @@
     if (!drawable) {
         static int noDrawableCount = 0;
         if (noDrawableCount++ < 10) {
-            NSLog(@"⚠️ renderFrame: no drawable available (view size: %.0fx%.0f)", 
+            NSLog(@"renderFrame: no drawable available (view size: %.0fx%.0f)", 
                   self.bounds.size.width, self.bounds.size.height);
         }
         dispatch_semaphore_signal(_frameSemaphore);
@@ -709,7 +722,7 @@
     
     static int drawableSuccessCount = 0;
     if (drawableSuccessCount++ < 3) {
-        NSLog(@"✅ Got drawable: %@ texture size: %lux%lu", drawable, 
+        WEBM_VLOG(@"Got drawable: %@ texture size: %lux%lu", drawable, 
               (unsigned long)drawable.texture.width, (unsigned long)drawable.texture.height);
     }
     
@@ -750,7 +763,7 @@
     // Debug: log successful render
     static int commitCount = 0;
     if (commitCount++ < 20 || commitCount % 30 == 0) {
-        NSLog(@"✅ Frame %d committed to GPU", frame.frameIndex);
+        WEBM_VLOG(@"Frame %d committed to GPU", frame.frameIndex);
     }
 }
 
@@ -775,7 +788,7 @@
     // Debug: log that we're being called
     static int callCount = 0;
     if (callCount++ < 10) {
-        NSLog(@"🔄 drawInMTKView called #%d! isAnimating=%d, isLoaded=%d, paused=%d, bounds=%.0fx%.0f, window=%@", 
+        WEBM_VLOG(@"drawInMTKView called #%d! isAnimating=%d, isLoaded=%d, paused=%d, bounds=%.0fx%.0f, window=%@", 
               callCount, _isAnimating, _player.isLoaded, self.paused, 
               self.bounds.size.width, self.bounds.size.height, self.window);
     }
@@ -793,7 +806,7 @@
     // Debug log periodically
     static int debugCounter = 0;
     if (debugCounter++ % 30 == 0) {
-        NSLog(@"🎞️ drawInMTKView: frame=%d, lastRendered=%d, isPlaying=%d, isAnimating=%d", 
+        WEBM_VLOG(@"drawInMTKView: frame=%d, lastRendered=%d, isPlaying=%d, isAnimating=%d", 
               currentFrame, _lastRenderedFrame, _player.isPlaying, _isAnimating);
     }
     
@@ -807,7 +820,7 @@
         // Debug: log cache retrieval
         static int cacheLogCount = 0;
         if (cacheLogCount++ < 20 || cacheLogCount % 60 == 0) {
-            NSLog(@"📦 getCachedFrame(%d): %@ (lastRendered=%d)", 
+            WEBM_VLOG(@"getCachedFrame(%d): %@ (lastRendered=%d)", 
                   frameToGet, frame ? @"GOT FRAME" : @"NIL!", _lastRenderedFrame);
         }
         
@@ -817,7 +830,7 @@
             [self renderFrame:frame];
         } else {
             // Frame not in cache - this shouldn't happen if preload worked
-            NSLog(@"⚠️ Frame %d not in cache!", frameToGet);
+            NSLog(@"Frame %d not in cache!", frameToGet);
         }
     }
 }
@@ -825,7 +838,7 @@
 #pragma mark - WebMAlphaPlayerDelegate
 
 - (void)playerDidLoad:(int)totalFrames width:(int)width height:(int)height {
-    NSLog(@"🎬 WebMAlphaMetalPlayerView loaded: %d frames, %dx%d", totalFrames, width, height);
+    WEBM_VLOG(@"WebMAlphaMetalPlayerView loaded: %d frames, %dx%d", totalFrames, width, height);
     
     // Update config from player settings
     WebMPlayerConfig *config = [_player getConfig];
@@ -836,21 +849,21 @@
     // Render first frame
     WebMFrame *firstFrame = [_player getFrame:0];
     if (firstFrame) {
-        NSLog(@"🔍 First frame details: w=%d h=%d yStride=%d uvStride=%d aStride=%d",
+        WEBM_VLOG(@"First frame details: w=%d h=%d yStride=%d uvStride=%d aStride=%d",
               firstFrame.width, firstFrame.height, 
               firstFrame.yStride, firstFrame.uvStride, firstFrame.aStride);
         
         // Check alpha plane - sample first few bytes
         const uint8_t *aPtr = firstFrame.aPlanePtr;
         if (aPtr) {
-            NSLog(@"🔍 Alpha plane first 8 bytes: %02x %02x %02x %02x %02x %02x %02x %02x",
+            WEBM_VLOG(@"Alpha plane first 8 bytes: %02x %02x %02x %02x %02x %02x %02x %02x",
                   aPtr[0], aPtr[1], aPtr[2], aPtr[3], aPtr[4], aPtr[5], aPtr[6], aPtr[7]);
         }
         
         self.latestFrame = firstFrame;
         [self renderFrame:firstFrame];
         _lastRenderedFrame = 0;
-        NSLog(@"🚀 First frame rendered via C++ → Metal GPU pipeline");
+        WEBM_VLOG(@"First frame rendered via C++ → Metal GPU pipeline");
     }
     
     if (_autoplay) {
@@ -858,7 +871,7 @@
         // Start MTKView's continuous rendering loop
         self.paused = NO;
         _isAnimating = YES;
-        NSLog(@"▶️ MTKView rendering started for animation (paused=%d, bounds=%.0fx%.0f, delegate=%@)", 
+        WEBM_VLOG(@"MTKView rendering started for animation (paused=%d, bounds=%.0fx%.0f, delegate=%@)", 
               self.paused, self.bounds.size.width, self.bounds.size.height, self.delegate);
     }
     
@@ -882,7 +895,7 @@
     // Start MTKView's continuous rendering loop
     self.paused = NO;
     _isAnimating = YES;
-    NSLog(@"▶️ MTKView rendering started (playerDidStartPlaying)");
+    WEBM_VLOG(@"MTKView rendering started (playerDidStartPlaying)");
     
     if ([_playerDelegate respondsToSelector:@selector(playerDidStartPlaying)]) {
         [_playerDelegate playerDidStartPlaying];
@@ -893,7 +906,7 @@
     // Pause MTKView's rendering loop
     self.paused = YES;
     _isAnimating = NO;
-    NSLog(@"⏸️ MTKView rendering paused");
+    WEBM_VLOG(@"MTKView rendering paused");
     
     if ([_playerDelegate respondsToSelector:@selector(playerDidPause)]) {
         [_playerDelegate playerDidPause];
@@ -925,7 +938,7 @@
     _isAnimating = NO;
     _lastRenderedFrame = -1;
     self.latestFrame = nil;
-    NSLog(@"⏹️ MTKView rendering stopped (playback ended)");
+    WEBM_VLOG(@"MTKView rendering stopped (playback ended)");
     
     if ([_playerDelegate respondsToSelector:@selector(playerDidEnd)]) {
         [_playerDelegate playerDidEnd];
@@ -933,17 +946,140 @@
 }
 
 - (void)playerDidEncounterError:(NSString *)error {
-    NSLog(@"❌ WebMAlphaMetalPlayerView error: %@", error);
+    NSLog(@"WebMAlphaMetalPlayerView error: %@", error);
     if ([_playerDelegate respondsToSelector:@selector(playerDidEncounterError:)]) {
         [_playerDelegate playerDidEncounterError:error];
     }
 }
 
 - (void)playerPreloadComplete:(int)totalFrames timeMs:(double)timeMs {
-    NSLog(@"✅ Preload complete: %d frames in %.1fms (C++ core)", totalFrames, timeMs);
+    WEBM_VLOG(@"Preload complete: %d frames in %.1fms (C++ core)", totalFrames, timeMs);
     if ([_playerDelegate respondsToSelector:@selector(playerPreloadComplete:timeMs:)]) {
         [_playerDelegate playerPreloadComplete:totalFrames timeMs:timeMs];
     }
+}
+
+@end
+
+//==============================================================================
+// WebMSourceResolver Implementation
+//==============================================================================
+
+static NSString *WebMSHA256Hex(NSString *text) {
+    NSData *data = [text dataUsingEncoding:NSUTF8StringEncoding];
+    unsigned char digest[CC_SHA256_DIGEST_LENGTH];
+    CC_SHA256(data.bytes, (CC_LONG)data.length, digest);
+    NSMutableString *hex = [NSMutableString stringWithCapacity:CC_SHA256_DIGEST_LENGTH * 2];
+    for (int i = 0; i < CC_SHA256_DIGEST_LENGTH; i++) {
+        [hex appendFormat:@"%02x", digest[i]];
+    }
+    return hex;
+}
+
+static BOOL WebMFileHasData(NSString *path) {
+    NSDictionary *attributes = [[NSFileManager defaultManager] attributesOfItemAtPath:path error:nil];
+    return attributes != nil && attributes.fileSize > 0;
+}
+
+@implementation WebMSourceResolver
+
++ (void)resolveSource:(NSString *)uri
+             cacheKey:(NSString *)cacheKey
+           completion:(void (^)(NSString *path, NSString *error))completion {
+    void (^finish)(NSString *, NSString *) = ^(NSString *path, NSString *error) {
+        dispatch_async(dispatch_get_main_queue(), ^{
+            completion(path, error);
+        });
+    };
+
+    if ([uri hasPrefix:@"https://"] || [uri hasPrefix:@"http://"]) {
+        [self download:uri cacheKey:cacheKey finish:finish];
+        return;
+    }
+
+    NSString *path = [self localPathForSource:uri];
+    if (!path) {
+        finish(nil, [NSString stringWithFormat:@"Unsupported source '%@'. Use https://, file://, an absolute path or asset://", uri]);
+    } else if (![[NSFileManager defaultManager] fileExistsAtPath:path]) {
+        finish(nil, [NSString stringWithFormat:@"File not found: %@", uri]);
+    } else {
+        finish(path, nil);
+    }
+}
+
++ (nullable NSString *)localPathForSource:(NSString *)uri {
+    if ([uri hasPrefix:@"asset://"]) {
+        NSString *relative = [uri substringFromIndex:@"asset://".length];
+        relative = [relative stringByRemovingPercentEncoding] ?: relative;
+        while ([relative hasPrefix:@"/"]) {
+            relative = [relative substringFromIndex:1];
+        }
+        return relative.length > 0 ? [[NSBundle mainBundle].resourcePath stringByAppendingPathComponent:relative] : nil;
+    }
+    if ([uri hasPrefix:@"file://"]) {
+        NSURL *url = [NSURL URLWithString:uri];
+        return url.isFileURL ? url.path : [uri substringFromIndex:@"file://".length];
+    }
+    if ([uri hasPrefix:@"/"]) {
+        return uri;
+    }
+    return nil;
+}
+
++ (void)download:(NSString *)urlString
+        cacheKey:(NSString *)cacheKey
+          finish:(void (^)(NSString *, NSString *))finish {
+    NSURL *url = [NSURL URLWithString:urlString];
+    if (!url) {
+        finish(nil, [NSString stringWithFormat:@"Invalid URL: %@", urlString]);
+        return;
+    }
+
+    NSString *cacheDir = [NSSearchPathForDirectoriesInDomains(NSCachesDirectory, NSUserDomainMask, YES).firstObject
+                          stringByStandardizingPath];
+    NSString *cachePath;
+    if (cacheKey.length > 0) {
+        cachePath = [[cacheDir stringByAppendingPathComponent:cacheKey] stringByStandardizingPath];
+        if (![cachePath hasPrefix:[cacheDir stringByAppendingString:@"/"]]) {
+            finish(nil, [NSString stringWithFormat:@"cacheKey must stay inside the cache directory: %@", cacheKey]);
+            return;
+        }
+    } else {
+        cachePath = [cacheDir stringByAppendingPathComponent:
+                     [NSString stringWithFormat:@"webm_%@.webm", WebMSHA256Hex(urlString)]];
+    }
+
+    if (WebMFileHasData(cachePath)) {
+        finish(cachePath, nil);
+        return;
+    }
+
+    NSURLSessionDownloadTask *task = [[NSURLSession sharedSession] downloadTaskWithURL:url
+        completionHandler:^(NSURL *location, NSURLResponse *response, NSError *error) {
+        if (error || !location) {
+            finish(nil, [NSString stringWithFormat:@"Download failed: %@", error.localizedDescription ?: @"unknown error"]);
+            return;
+        }
+        NSInteger status = [response isKindOfClass:[NSHTTPURLResponse class]]
+            ? ((NSHTTPURLResponse *)response).statusCode : 200;
+        if (status != 200) {
+            finish(nil, [NSString stringWithFormat:@"Download failed: HTTP %ld for %@", (long)status, urlString]);
+            return;
+        }
+
+        // The temporary file is deleted when this handler returns, so move it now. Another view
+        // may have finished the same download first, in which case its file is used.
+        NSFileManager *fileManager = [NSFileManager defaultManager];
+        [fileManager createDirectoryAtPath:[cachePath stringByDeletingLastPathComponent]
+               withIntermediateDirectories:YES attributes:nil error:nil];
+        NSError *moveError = nil;
+        if (![fileManager moveItemAtPath:location.path toPath:cachePath error:&moveError] && !WebMFileHasData(cachePath)) {
+            finish(nil, [NSString stringWithFormat:@"Cannot write cache file: %@", moveError.localizedDescription]);
+            return;
+        }
+        finish(cachePath, nil);
+    }];
+    [task resume];
 }
 
 @end

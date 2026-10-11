@@ -118,6 +118,8 @@ NS_ASSUME_NONNULL_BEGIN
 // Configuration
 - (void)setConfig:(WebMPlayerConfig *)config;
 - (WebMPlayerConfig *)getConfig;
+// C++ core info logging; errors are always logged
+- (void)setVerbose:(BOOL)verbose;
 
 // Loading
 - (BOOL)loadFromFile:(NSString *)path;
@@ -173,6 +175,9 @@ NS_ASSUME_NONNULL_BEGIN
 @property (nonatomic) BOOL loop;
 @property (nonatomic) double playbackSpeed;
 
+// Log lifecycle and per-frame events; errors and warnings are always logged
+@property (nonatomic) BOOL verbose;
+
 // Initialization
 - (instancetype)initWithFrame:(CGRect)frame;
 - (instancetype)initWithFrame:(CGRect)frame config:(WebMPlayerConfig *)config;
@@ -192,6 +197,23 @@ NS_ASSUME_NONNULL_BEGIN
 // Rendering
 - (void)renderFrame:(WebMFrame *)frame;
 - (void)renderCurrentFrame;
+
+@end
+
+/**
+ * Turns a source URI into a local file the player can open.
+ *
+ * - https:// and http:// are downloaded into Caches, named by cacheKey (which may include
+ *   subfolders) or by a hash of the URL, and reused on later calls
+ * - asset://relative/path is a file inside the app bundle
+ * - file:// URLs and absolute paths are used as they are
+ */
+@interface WebMSourceResolver : NSObject
+
+/** The completion runs on the main queue with either a path or an error message. */
++ (void)resolveSource:(NSString *)uri
+             cacheKey:(nullable NSString *)cacheKey
+           completion:(void (^)(NSString * _Nullable path, NSString * _Nullable error))completion;
 
 @end
 

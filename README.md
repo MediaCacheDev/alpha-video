@@ -157,10 +157,13 @@ console.log(info);
 
 ## Supported Source Types
 
-- **HTTP/HTTPS URLs**: `{ uri: 'https://example.com/video.webm' }`
-- **Local Files**: `{ uri: 'file:///path/to/video.webm' }`
-- **Asset Bundle (iOS)**: `{ uri: 'asset://video.webm' }`
-- **Android Assets**: `{ uri: 'asset://video.webm' }`
+- **HTTP/HTTPS URLs**: `{ uri: 'https://example.com/video.webm' }`. Downloaded once into the app's cache directory and played from there. The file is named by `cacheKey` if you give one (it may include subfolders), otherwise by a hash of the URL.
+- **Local files**: `{ uri: 'file:///path/to/video.webm' }` or an absolute path.
+- **Bundled files**: `{ uri: 'asset://videos/glow.webm' }`. On Android this is `android/app/src/main/assets/videos/glow.webm`. On iOS it is `videos/glow.webm` inside the app bundle.
+- **Android `content://` URIs**, for example from a document picker.
+- **`require()`**: pass `Image.resolveAssetSource(require('./glow.webm')).uri`. In debug builds this is a Metro `http://localhost:8081` URL. In release builds it is a file path on iOS and a `res/raw` resource name on Android.
+
+Nothing is copied. Android reads `asset://` files and `res/raw` resources directly from the APK, so they must be stored uncompressed. `.webm` and `.mkv` are uncompressed by default. For other extensions, add them to `android.androidResources.noCompress` in the app's `build.gradle`.
 
 ## Architecture Overview
 

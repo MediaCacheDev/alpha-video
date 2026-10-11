@@ -7,6 +7,7 @@
  */
 
 #include "WebMAlphaPlayer.h"
+#include "FileRangeIO.h"
 
 extern "C" {
 #include <libavcodec/avcodec.h>
@@ -53,6 +54,16 @@ extern "C" {
 #endif
 #if !defined(LOGE)
 #define LOGE(...) fprintf(stderr, __VA_ARGS__); fprintf(stderr, "\n")
+#endif
+
+// Player lifecycle and stats; only when the player's verbose flag is on. Errors always log.
+#define VLOGI(...) do { if (verbose_) LOGI(__VA_ARGS__); } while (0)
+
+// Frame/cache debugging dumps, compiled in only with WEBM_DEBUG_LOGS
+#if defined(WEBM_DEBUG_LOGS)
+#define DLOGI(...) LOGI(__VA_ARGS__)
+#else
+#define DLOGI(...) do {} while (0)
 #endif
 
 namespace webm {
@@ -223,7 +234,7 @@ void YUVAFrame::copyFromAVFrame(AVFrame* colorFrame, AVFrame* alphaFrame) {
     // Log the pixel format for debugging (first frame only)
     bool shouldLog = (copyFrameLogCount++ == 0);
     if (shouldLog) {
-        LOGI("copyFromAVFrame: format=%d (YUVA420P=%d, YUV420P=%d), linesize[0]=%d, linesize[1]=%d, linesize[2]=%d, linesize[3]=%d, w=%d, h=%d",
+        DLOGI("copyFromAVFrame: format=%d (YUVA420P=%d, YUV420P=%d), linesize[0]=%d, linesize[1]=%d, linesize[2]=%d, linesize[3]=%d, w=%d, h=%d",
              colorFrame->format, AV_PIX_FMT_YUVA420P, AV_PIX_FMT_YUV420P,
              colorFrame->linesize[0], colorFrame->linesize[1], colorFrame->linesize[2], colorFrame->linesize[3],
              colorFrame->width, colorFrame->height);
@@ -267,18 +278,18 @@ void YUVAFrame::copyFromAVFrame(AVFrame* colorFrame, AVFrame* alphaFrame) {
     if (hasBuiltInAlpha) {
         // YUVA420P - alpha is in the same frame's data[3]
         if (shouldLog) {
-            LOGI("Using built-in alpha from YUVA420P frame, linesize[3]=%d, aStride=%d, copyW=%d, copyH=%d", 
+            DLOGI("Using built-in alpha from YUVA420P frame, linesize[3]=%d, aStride=%d, copyW=%d, copyH=%d", 
                  colorFrame->linesize[3], aStride, copyW, copyH);
             // Log first row of alpha from source
             uint8_t* srcAlpha = colorFrame->data[3];
-            LOGI("Source alpha row 0 bytes 0-7: %02x %02x %02x %02x %02x %02x %02x %02x",
+            DLOGI("Source alpha row 0 bytes 0-7: %02x %02x %02x %02x %02x %02x %02x %02x",
                  srcAlpha[0], srcAlpha[1], srcAlpha[2], srcAlpha[3],
                  srcAlpha[4], srcAlpha[5], srcAlpha[6], srcAlpha[7]);
             // Log middle of frame (where glow should be visible)
             int midRow = copyH / 2;
             int midCol = copyW / 2;
             uint8_t* midAlpha = colorFrame->data[3] + midRow * colorFrame->linesize[3] + midCol;
-            LOGI("Source alpha center (row %d, col %d): %02x %02x %02x %02x",
+            DLOGI("Source alpha center (row %d, col %d): %02x %02x %02x %02x",
                  midRow, midCol, midAlpha[0], midAlpha[1], midAlpha[2], midAlpha[3]);
         }
         for (int y = 0; y < copyH; ++y) {
@@ -313,7 +324,7 @@ double YUVAFrame::getDurationMs() const {
 //==============================================================================
 
 FrameCache::FrameCache(size_t maxFrames) : maxSize_(maxFrames) {
-    LOGI("🗄️ FrameCache created with maxSize=%zu", maxSize_);
+    DLOGI("🗄️ FrameCache created with maxSize=%zu", maxSize_);
 }
 
 void FrameCache::put(const std::string& key, std::shared_ptr<YUVAFrame> frame) {
@@ -339,7 +350,7 @@ void FrameCache::put(const std::string& key, std::shared_ptr<YUVAFrame> frame) {
         
         // Log cache size periodically during preload
         if (cache_.size() % 50 == 0) {
-            LOGI("📊 Cache now has %zu frames (max=%zu)", cache_.size(), maxSize_);
+            DLOGI("📊 Cache now has %zu frames (max=%zu)", cache_.size(), maxSize_);
         }
     }
 }
@@ -503,7 +514,7 @@ WebMAlphaPlayer::~WebMAlphaPlayer() {
 
 void WebMAlphaPlayer::setConfig(const PlayerConfig& config) {
     std::lock_guard<std::mutex> lock(configMutex_);
-    LOGI("⚙️ setConfig called: cacheSize=%d, preloadAllFrames=%d", config.cacheSize, config.preloadAllFrames);
+    VLOGI("⚙️ setConfig called: cacheSize=%d, preloadAllFrames=%d", config.cacheSize, config.preloadAllFrames);
     
     // Check if cache size is actually changing
     size_t oldCacheSize = config_.cacheSize;
@@ -518,9 +529,9 @@ void WebMAlphaPlayer::setConfig(const PlayerConfig& config) {
     if (frameCache_) {
         size_t currentCacheFrames = frameCache_->size();
         if (currentCacheFrames > 0) {
-            LOGI("⚙️ Preserving existing cache with %zu frames (not recreating)", currentCacheFrames);
+            VLOGI("⚙️ Preserving existing cache with %zu frames (not recreating)", currentCacheFrames);
         } else if (config_.cacheSize != oldCacheSize) {
-            LOGI("⚙️ Recreating empty cache: %zu -> %d", oldCacheSize, config_.cacheSize);
+            VLOGI("⚙️ Recreating empty cache: %zu -> %d", oldCacheSize, config_.cacheSize);
             frameCache_ = std::make_unique<FrameCache>(config_.cacheSize);
         }
     }
@@ -554,6 +565,41 @@ bool WebMAlphaPlayer::loadFromFile(const std::string& path) {
         return false;
     }
     
+    return finishLoad();
+}
+
+bool WebMAlphaPlayer::loadFromFileRange(int fd, int64_t offset, int64_t length) {
+    unload();
+    
+    // Reset stop flag so decodeAllFrames doesn't exit immediately
+    shouldStop_ = false;
+    
+    rangeIO_ = openFileRangeIO(fd, offset, length);
+    if (!rangeIO_) {
+        emitEvent("error", "Failed to open file range");
+        return false;
+    }
+    
+    formatCtx_ = avformat_alloc_context();
+    if (!formatCtx_) {
+        emitEvent("error", "Failed to allocate format context");
+        return false;
+    }
+    formatCtx_->pb = rangeIO_;
+    formatCtx_->flags |= AVFMT_FLAG_CUSTOM_IO;
+    
+    int ret = avformat_open_input(&formatCtx_, nullptr, nullptr, nullptr);
+    if (ret < 0) {
+        char err[AV_ERROR_MAX_STRING_SIZE];
+        av_strerror(ret, err, sizeof(err));
+        emitEvent("error", std::string("Failed to open video: ") + err);
+        return false;
+    }
+    
+    return finishLoad();
+}
+
+bool WebMAlphaPlayer::finishLoad() {
     if (!openStreams()) {
         return false;
     }
@@ -573,7 +619,7 @@ bool WebMAlphaPlayer::loadFromFile(const std::string& path) {
         // Stream mode: use smaller cache, sequential background decode, evict old frames
         int streamCacheSize = config_.streamCacheSize > 0 ? config_.streamCacheSize : 30;
         frameCache_->setMaxSize(streamCacheSize);
-        LOGI("📺 Stream mode enabled: cacheSize=%d, prefetchAhead=%d", 
+        VLOGI("📺 Stream mode enabled: cacheSize=%d, prefetchAhead=%d", 
              streamCacheSize, config_.streamPrefetchAhead);
         
         // Reset streaming decode position
@@ -591,17 +637,17 @@ bool WebMAlphaPlayer::loadFromFile(const std::string& path) {
             auto elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(
                 std::chrono::high_resolution_clock::now() - startWait);
             if (elapsed.count() > 500) {
-                LOGI("📺 Initial decode timeout after 500ms, continuing with %d frames", 
+                VLOGI("📺 Initial decode timeout after 500ms, continuing with %d frames", 
                      streamDecodePos_.load());
                 break;
             }
         }
-        LOGI("📺 Initial decode ready: %d frames", streamDecodePos_.load());
+        VLOGI("📺 Initial decode ready: %d frames", streamDecodePos_.load());
     } else if (config_.mode == PlaybackMode::StreamAndPreload) {
         // StreamAndPreload (hybrid) mode: start playing immediately, cache ALL frames
         // After first pass completes, loop from cache without re-decoding
         frameCache_->setMaxSize(totalFrames_ + 10);  // Cache all frames
-        LOGI("📺 StreamAndPreload mode enabled: cacheSize=%d (all frames), prefetchAhead=%d", 
+        VLOGI("📺 StreamAndPreload mode enabled: cacheSize=%d (all frames), prefetchAhead=%d", 
              totalFrames_ + 10, config_.streamPrefetchAhead);
         
         // Reset streaming decode position
@@ -614,7 +660,7 @@ bool WebMAlphaPlayer::loadFromFile(const std::string& path) {
         // DON'T wait for initial frames here - return immediately to avoid blocking
         // the global decode queue when multiple players are spawned simultaneously.
         // The playback loop will handle frame-not-ready gracefully by waiting/retrying.
-        LOGI("📺 StreamAndPreload started (non-blocking), decode thread running in background");
+        VLOGI("📺 StreamAndPreload started (non-blocking), decode thread running in background");
     } else {
         // Preload mode (default): decode all frames upfront before playback
         decodeAllFrames();
@@ -687,17 +733,7 @@ bool WebMAlphaPlayer::loadFromMemory(const uint8_t* data, size_t size) {
         return false;
     }
     
-    if (!openStreams() || !initCodecs()) {
-        return false;
-    }
-    
-    loaded_ = true;
-    
-    if (config_.preloadAllFrames) {
-        decodeAllFrames();
-    }
-    
-    return true;
+    return finishLoad();
 }
 
 bool WebMAlphaPlayer::loadFromUrl(const std::string& url) {
@@ -758,7 +794,7 @@ void WebMAlphaPlayer::unload() {
         // Try to acquire lock with 500ms timeout - enough for normal operations,
         // but short enough to not cause ANR (5 second threshold)
         if (!decodeMutex_.try_lock_for(std::chrono::milliseconds(500))) {
-            LOGI("unload: decodeMutex_ acquisition timed out after 500ms - proceeding anyway");
+            VLOGI("unload: decodeMutex_ acquisition timed out after 500ms - proceeding anyway");
             // shouldStop_ is already set, decodeAllFrames will exit when it checks
         } else {
             // Lock acquired normally - immediately release since we just needed to wait
@@ -828,6 +864,8 @@ void WebMAlphaPlayer::cleanupIO() {
         delete static_cast<MemoryBufferContext*>(bufferCtx_);
         bufferCtx_ = nullptr;
     }
+    
+    closeFileRangeIO(&rangeIO_);
 }
 
 bool WebMAlphaPlayer::openStreams() {
@@ -838,15 +876,15 @@ bool WebMAlphaPlayer::openStreams() {
     }
     
     // Log stream info
-    LOGI("Found %d streams in file", formatCtx_->nb_streams);
+    VLOGI("Found %d streams in file", formatCtx_->nb_streams);
     
     // Find video streams (WebM alpha might have 2 video streams, or 1 YUVA420P stream)
     for (unsigned i = 0; i < formatCtx_->nb_streams; ++i) {
         AVStream* stream = formatCtx_->streams[i];
-        LOGI("Stream %d: type=%d (video=%d), codec_id=%d", 
+        VLOGI("Stream %d: type=%d (video=%d), codec_id=%d", 
              i, stream->codecpar->codec_type, AVMEDIA_TYPE_VIDEO, stream->codecpar->codec_id);
         if (stream->codecpar->codec_type == AVMEDIA_TYPE_VIDEO) {
-            LOGI("  -> Video stream %d: codec_id=%d, pix_fmt=%d, %dx%d", 
+            VLOGI("  -> Video stream %d: codec_id=%d, pix_fmt=%d, %dx%d", 
                  i, stream->codecpar->codec_id, stream->codecpar->format,
                  stream->codecpar->width, stream->codecpar->height);
             if (colorStreamIndex_ < 0) {
@@ -862,13 +900,13 @@ bool WebMAlphaPlayer::openStreams() {
         return false;
     }
     
-    LOGI("Using colorStreamIndex=%d, alphaStreamIndex=%d", colorStreamIndex_, alphaStreamIndex_);
+    VLOGI("Using colorStreamIndex=%d, alphaStreamIndex=%d", colorStreamIndex_, alphaStreamIndex_);
     
     // Check for alpha side data in the stream
     AVStream* colorStream = formatCtx_->streams[colorStreamIndex_];
     
     // Log codec parameters
-    LOGI("Codec params: codec_id=%d, format=%d, profile=%d, level=%d",
+    VLOGI("Codec params: codec_id=%d, format=%d, profile=%d, level=%d",
          colorStream->codecpar->codec_id,
          colorStream->codecpar->format,
          colorStream->codecpar->profile,
@@ -878,14 +916,14 @@ bool WebMAlphaPlayer::openStreams() {
     // VP9 Profile 1 or 3 can have alpha
     bool mayHaveAlpha = (colorStream->codecpar->codec_id == AV_CODEC_ID_VP9);
     if (mayHaveAlpha) {
-        LOGI("VP9 detected - checking for alpha capability");
-        LOGI("VP9 profile=%d (profile 1/3 support alpha in theory)", colorStream->codecpar->profile);
+        VLOGI("VP9 detected - checking for alpha capability");
+        VLOGI("VP9 profile=%d (profile 1/3 support alpha in theory)", colorStream->codecpar->profile);
     }
     
     // Check stream side data for alpha indication
     for (int i = 0; i < colorStream->nb_side_data; i++) {
         AVPacketSideData sd = colorStream->side_data[i];
-        LOGI("Stream side_data[%d]: type=%d, size=%d", i, sd.type, (int)sd.size);
+        VLOGI("Stream side_data[%d]: type=%d, size=%d", i, sd.type, (int)sd.size);
     }
     width_ = colorStream->codecpar->width;
     height_ = colorStream->codecpar->height;
@@ -922,10 +960,10 @@ bool WebMAlphaPlayer::initCodecs() {
     // Find VP9 decoder (prefer libvpx-vp9 for alpha support)
     const AVCodec* vp9Codec = avcodec_find_decoder_by_name("libvpx-vp9");
     if (!vp9Codec) {
-        LOGI("libvpx-vp9 not found, falling back to generic VP9 decoder");
+        VLOGI("libvpx-vp9 not found, falling back to generic VP9 decoder");
         vp9Codec = avcodec_find_decoder(AV_CODEC_ID_VP9);
     } else {
-        LOGI("Using libvpx-vp9 decoder (supports alpha)");
+        VLOGI("Using libvpx-vp9 decoder (supports alpha)");
     }
     
     if (!vp9Codec) {
@@ -933,18 +971,18 @@ bool WebMAlphaPlayer::initCodecs() {
         return false;
     }
     
-    LOGI("VP9 decoder: name=%s, id=%d, capabilities=0x%x", 
+    VLOGI("VP9 decoder: name=%s, id=%d, capabilities=0x%x", 
          vp9Codec->name, vp9Codec->id, vp9Codec->capabilities);
     
     // List supported pixel formats for the decoder
     if (vp9Codec->pix_fmts) {
-        LOGI("VP9 decoder supported pixel formats:");
+        VLOGI("VP9 decoder supported pixel formats:");
         for (int i = 0; vp9Codec->pix_fmts[i] != AV_PIX_FMT_NONE; i++) {
-            LOGI("  pix_fmt[%d] = %d (YUVA420P=%d, YUV420P=%d)", 
+            VLOGI("  pix_fmt[%d] = %d (YUVA420P=%d, YUV420P=%d)", 
                  i, vp9Codec->pix_fmts[i], AV_PIX_FMT_YUVA420P, AV_PIX_FMT_YUV420P);
         }
     } else {
-        LOGI("VP9 decoder has no pix_fmts list (accepts any)");
+        VLOGI("VP9 decoder has no pix_fmts list (accepts any)");
     }
     
     // Init color codec
@@ -972,7 +1010,7 @@ bool WebMAlphaPlayer::initCodecs() {
     }
     
     // Log the pixel format the codec will output
-    LOGI("Codec opened - pix_fmt=%d (YUVA420P=%d, YUV420P=%d)", 
+    VLOGI("Codec opened - pix_fmt=%d (YUVA420P=%d, YUV420P=%d)", 
          colorCodecCtx_->pix_fmt, AV_PIX_FMT_YUVA420P, AV_PIX_FMT_YUV420P);
     
     // Note: We don't create swscale context here anymore.
@@ -1126,7 +1164,7 @@ void WebMAlphaPlayer::decodeAllFrames() {
     
     // Check if we should stop before starting (unload might have been called)
     if (shouldStop_) {
-        LOGI("decodeAllFrames: Aborted - shouldStop_ already set");
+        VLOGI("decodeAllFrames: Aborted - shouldStop_ already set");
         return;
     }
     
@@ -1134,7 +1172,7 @@ void WebMAlphaPlayer::decodeAllFrames() {
     
     // Ensure cache can hold all frames
     if (totalFrames_ > config_.cacheSize) {
-        LOGI("Resizing frame cache from %d to %d to fit all frames", config_.cacheSize, totalFrames_ + 10);
+        VLOGI("Resizing frame cache from %d to %d to fit all frames", config_.cacheSize, totalFrames_ + 10);
         config_.cacheSize = totalFrames_ + 10;
         frameCache_ = std::make_unique<FrameCache>(config_.cacheSize);
     }
@@ -1203,14 +1241,14 @@ void WebMAlphaPlayer::decodeAllFrames() {
         if (packet->stream_index == colorStreamIndex_) {
             // Log packet side data for first packet only
             if (frameIndex == 0) {
-                LOGI("Packet %d: size=%d, side_data_elems=%d", frameIndex, packet->size, packet->side_data_elems);
+                VLOGI("Packet %d: size=%d, side_data_elems=%d", frameIndex, packet->size, packet->side_data_elems);
                 for (int sd = 0; sd < packet->side_data_elems; sd++) {
-                    LOGI("  Packet side_data[%d]: type=%d (BLOCKADDITIONAL=%d), size=%d", 
+                    VLOGI("  Packet side_data[%d]: type=%d (BLOCKADDITIONAL=%d), size=%d", 
                          sd, packet->side_data[sd].type, 
                          AV_PKT_DATA_MATROSKA_BLOCKADDITIONAL,
                          (int)packet->side_data[sd].size);
                     if (packet->side_data[sd].type == AV_PKT_DATA_MATROSKA_BLOCKADDITIONAL) {
-                        LOGI("  -> Found VP9 alpha block additional data!");
+                        VLOGI("  -> Found VP9 alpha block additional data!");
                     }
                 }
             }
@@ -1224,7 +1262,7 @@ void WebMAlphaPlayer::decodeAllFrames() {
                     
                     // Log first frame's pixel format
                     if (frameIndex == 0) {
-                        LOGI("First decoded frame: format=%d (YUVA420P=%d), linesize=[%d,%d,%d,%d], data[3]=%p, hasAlpha=%s",
+                        VLOGI("First decoded frame: format=%d (YUVA420P=%d), linesize=[%d,%d,%d,%d], data[3]=%p, hasAlpha=%s",
                              colorFrame->format, AV_PIX_FMT_YUVA420P,
                              colorFrame->linesize[0], colorFrame->linesize[1], 
                              colorFrame->linesize[2], colorFrame->linesize[3],
@@ -1269,7 +1307,7 @@ void WebMAlphaPlayer::decodeAllFrames() {
                 while (avcodec_receive_frame(alphaCodecCtx_, alphaFrame) >= 0 && !shouldStop_) {
                     // Log first alpha frame
                     if (alphaFrameIndex == 0) {
-                        LOGI("First alpha frame decoded: %dx%d, linesize[0]=%d, format=%d, data[0]=%p",
+                        VLOGI("First alpha frame decoded: %dx%d, linesize[0]=%d, format=%d, data[0]=%p",
                              alphaFrame->width, alphaFrame->height, 
                              alphaFrame->linesize[0], alphaFrame->format,
                              (void*)alphaFrame->data[0]);
@@ -1290,7 +1328,7 @@ void WebMAlphaPlayer::decodeAllFrames() {
                         
                         // Log stride mismatch if any
                         if (alphaFrameIndex == 0) {
-                            LOGI("Copying alpha: src linesize=%d, dst stride=%d, copying %dx%d",
+                            VLOGI("Copying alpha: src linesize=%d, dst stride=%d, copying %dx%d",
                                  alphaFrame->linesize[0], existingFrame->aStride, alphaW, alphaH);
                         }
                         
@@ -1300,7 +1338,7 @@ void WebMAlphaPlayer::decodeAllFrames() {
                                    alphaW);
                         }
                     } else if (alphaFrameIndex < 3) {
-                        LOGI("WARNING: No color frame found for alpha frame %d", alphaFrameIndex);
+                        VLOGI("WARNING: No color frame found for alpha frame %d", alphaFrameIndex);
                     }
                     alphaFrameIndex++;
                 }
@@ -1322,14 +1360,14 @@ void WebMAlphaPlayer::decodeAllFrames() {
     
     // Log final cache stats (check frameCache_ not destroyed)
     if (frameCache_ && !shouldStop_) {
-        LOGI("📊 Preload finished: decoded %d frames, cache size=%zu (max=%d)", 
+        VLOGI("📊 Preload finished: decoded %d frames, cache size=%zu (max=%d)", 
              frameIndex, frameCache_->size(), config_.cacheSize);
         
         emitEvent("preload_complete", 
                   std::to_string(frameIndex) + " frames in " + 
                   std::to_string(duration.count()) + "ms");
     } else {
-        LOGI("📊 Preload interrupted: decoded %d frames before stop", frameIndex);
+        VLOGI("📊 Preload interrupted: decoded %d frames before stop", frameIndex);
     }
 }
 
@@ -1382,7 +1420,7 @@ void WebMAlphaPlayer::setPlaybackSpeed(double speed) {
     const double clamped = speed > 0.01 ? speed : 0.01;
     playbackSpeed_ = clamped;
     config_.playbackSpeed = clamped;
-    LOGI("🎬 Playback speed set to %.3f", clamped);
+    VLOGI("🎬 Playback speed set to %.3f", clamped);
 }
 
 double WebMAlphaPlayer::getPlaybackSpeed() const {
@@ -1405,7 +1443,7 @@ void WebMAlphaPlayer::seekToFrame(int frameIndex) {
 void WebMAlphaPlayer::playbackLoop() {
     auto lastFrameTime = std::chrono::high_resolution_clock::now();
     
-    LOGI("🎬 Playback loop started: frameRate=%.2f, speed=%.2f", 
+    VLOGI("🎬 Playback loop started: frameRate=%.2f, speed=%.2f", 
          frameRate_, playbackSpeed_.load());
     
     int framesEmitted = 0;
@@ -1442,12 +1480,12 @@ void WebMAlphaPlayer::playbackLoop() {
                 if (framesEmitted % 30 == 0) {
                     auto totalElapsed = std::chrono::duration<double>(now - loopStartTime).count();
                     double actualFps = framesEmitted / totalElapsed;
-                    LOGI("🎬 Playback stats: frame=%d, emitted=%d, actualFPS=%.1f, targetFPS=%.1f",
+                    VLOGI("🎬 Playback stats: frame=%d, emitted=%d, actualFPS=%.1f, targetFPS=%.1f",
                          frameIdx, framesEmitted, actualFps, frameRate_);
                 }
             } else if (config_.mode == PlaybackMode::Stream || config_.mode == PlaybackMode::StreamAndPreload) {
                 // In streaming modes, frame not ready yet - don't advance, wait for prefetch
-                LOGI("🎬 Frame %d not ready, waiting for prefetch (decode at %d)", frameIdx, streamDecodePos_.load());
+                VLOGI("🎬 Frame %d not ready, waiting for prefetch (decode at %d)", frameIdx, streamDecodePos_.load());
                 std::this_thread::sleep_for(std::chrono::milliseconds(5));
                 continue;  // Try again without advancing frame
             }
@@ -1492,7 +1530,7 @@ void WebMAlphaPlayer::playbackLoop() {
         }
     }
     
-    LOGI("🎬 Playback loop ended: shouldStop=%d, loaded=%d", shouldStop_.load(), loaded_.load());
+    VLOGI("🎬 Playback loop ended: shouldStop=%d, loaded=%d", shouldStop_.load(), loaded_.load());
 }
 
 void WebMAlphaPlayer::streamingPrefetch(int currentFrame) {
@@ -1559,7 +1597,7 @@ void WebMAlphaPlayer::requestPrefetch(int currentFrame) {
 }
 
 void WebMAlphaPlayer::prefetchLoop() {
-    LOGI("📺 Prefetch thread started (sequential decode): shouldStop=%d, loaded=%d, mode=%d", 
+    VLOGI("📺 Prefetch thread started (sequential decode): shouldStop=%d, loaded=%d, mode=%d", 
          shouldStop_.load(), loaded_.load(), static_cast<int>(config_.mode));
     
     // Acquire decode mutex - we'll hold it for sequential decoding
@@ -1573,7 +1611,7 @@ void WebMAlphaPlayer::prefetchLoop() {
     int prefetchAhead = config_.streamPrefetchAhead > 0 ? config_.streamPrefetchAhead : 15;
     bool isHybridMode = (config_.mode == PlaybackMode::StreamAndPreload);
     
-    LOGI("📺 Starting sequential decode from frame %d, prefetchAhead=%d, hybrid=%d", 
+    VLOGI("📺 Starting sequential decode from frame %d, prefetchAhead=%d, hybrid=%d", 
          frameIndex, prefetchAhead, isHybridMode);
     
     while (!shouldStop_ && loaded_) {
@@ -1612,7 +1650,7 @@ void WebMAlphaPlayer::prefetchLoop() {
         if (isHybridMode && frameIndex >= totalFrames_) {
             if (!firstPassComplete_) {
                 firstPassComplete_ = true;
-                LOGI("📺 StreamAndPreload: First pass complete! All %d frames cached", totalFrames_);
+                VLOGI("📺 StreamAndPreload: First pass complete! All %d frames cached", totalFrames_);
                 emitEvent("preload_complete", std::to_string(totalFrames_) + " frames");
             }
             std::this_thread::sleep_for(std::chrono::milliseconds(50));
@@ -1630,7 +1668,7 @@ void WebMAlphaPlayer::prefetchLoop() {
                 }
                 frameIndex = 0;
                 streamDecodePos_ = 0;
-                LOGI("📺 Prefetch reached EOF, looping back to frame 0 (cache preserved for playback)");
+                VLOGI("📺 Prefetch reached EOF, looping back to frame 0 (cache preserved for playback)");
             } else {
                 // Not looping, wait for playback to end
                 std::this_thread::sleep_for(std::chrono::milliseconds(16));
@@ -1650,7 +1688,7 @@ void WebMAlphaPlayer::prefetchLoop() {
                 }
                 frameIndex = 0;
                 streamDecodePos_ = 0;
-                LOGI("📺 av_read_frame EOF, looping back to frame 0 (cache preserved)");
+                VLOGI("📺 av_read_frame EOF, looping back to frame 0 (cache preserved)");
             }
             continue;
         }
@@ -1685,7 +1723,7 @@ void WebMAlphaPlayer::prefetchLoop() {
                     
                     // Log progress periodically
                     if (frameIndex % 30 == 0) {
-                        LOGI("📺 Decoded frame %d, playback at %d, cache size=%zu", 
+                        VLOGI("📺 Decoded frame %d, playback at %d, cache size=%zu", 
                              frameIndex, playbackPos, frameCache_ ? frameCache_->size() : 0);
                     }
                 }
@@ -1702,7 +1740,7 @@ void WebMAlphaPlayer::prefetchLoop() {
     av_frame_free(&colorFrame);
     av_frame_free(&alphaFrame);
     
-    LOGI("📺 Prefetch thread stopped at frame %d", frameIndex);
+    VLOGI("📺 Prefetch thread stopped at frame %d", frameIndex);
 }
 
 std::shared_ptr<YUVAFrame> WebMAlphaPlayer::getFrame(int index) {

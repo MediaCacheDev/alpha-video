@@ -1,6 +1,7 @@
 package com.danielkpl2.webmalphaplayer;
 
 import android.content.Context;
+import android.content.res.AssetFileDescriptor;
 import android.graphics.SurfaceTexture;
 import android.opengl.EGL14;
 import android.opengl.EGLConfig;
@@ -13,11 +14,8 @@ import android.util.AttributeSet;
 import android.util.Log;
 import android.view.TextureView;
 
-import com.facebook.react.bridge.Arguments;
-import com.facebook.react.bridge.ReactContext;
-import com.facebook.react.bridge.WritableMap;
-import com.facebook.react.uimanager.events.RCTEventEmitter;
-
+import java.io.File;
+import java.io.IOException;
 import java.nio.ByteBuffer;
 import java.nio.ByteOrder;
 import java.nio.FloatBuffer;
@@ -77,6 +75,7 @@ public class WebMAlphaTextureView extends TextureView implements
     // Surface state
     private SurfaceTexture surfaceTexture;
     private final AtomicBoolean surfaceAvailable = new AtomicBoolean(false);
+    private boolean glReady = false;  // Main thread: EGL is set up for the current surface
     private int surfaceWidth, surfaceHeight;
     
     // Current frame data (protected by frameDataLock)
@@ -128,16 +127,29 @@ public class WebMAlphaTextureView extends TextureView implements
     private Future<?> currentLoadTask;
     private volatile Future<?> softReleaseTask;  // Track soft release for synchronization
     
-    // Store pending source for re-load after reattach
-    private String pendingSourcePath = null;
-    private boolean pendingSourceIsUrl = false;
+    // Downloads are shared by all views; decoding is not, so they never queue behind a decode.
+    private static final ExecutorService downloadExecutor = Executors.newFixedThreadPool(4, r -> {
+        Thread t = new Thread(r, "WebMDownload");
+        t.setDaemon(true);
+        return t;
+    });
+    
+    // Source as given (may be remote), and the local source to load once a surface exists
+    // and again after reattach. Main thread only.
+    private String sourceUri = null;
+    private String localSource = null;
+    private String cacheKey = null;
+    // Bumped on every setSource so a slow download can't load over a newer source.
+    private int sourceGeneration = 0;
     
     // Callbacks
     private PlayerCallback callback;
     
+    /** Called on the main thread. */
     public interface PlayerCallback {
         void onLoad(int totalFrames, int width, int height);
         void onError(String error);
+        void onEnd();
         void onPreloadComplete(int frames, double timeMs);
     }
     
@@ -158,7 +170,7 @@ public class WebMAlphaTextureView extends TextureView implements
         // Create executors lazily - only render thread is created now
         // Native player creation is deferred to onSurfaceTextureAvailable
         // to prevent resource flooding when many views are created at once
-        Log.i(TAG, "TextureView initialized (player creation deferred)");
+        logV("TextureView initialized (player creation deferred)");
     }
     
     /**
@@ -167,7 +179,7 @@ public class WebMAlphaTextureView extends TextureView implements
      */
     private void initializePlayer() {
         if (playerId != 0) {
-            Log.d(TAG, "Player already initialized: " + playerId);
+            logV("Player already initialized: " + playerId);
             return;
         }
         
@@ -182,16 +194,17 @@ public class WebMAlphaTextureView extends TextureView implements
         // Create C++ player
         // preloadAllFrames should be false for stream mode, true for preload/streamAndPreload
         boolean preloadAllFrames = !MODE_STREAM.equals(mode);
-        Log.i(TAG, "🎛️ Creating player with mode=" + mode + ", preloadAllFrames=" + preloadAllFrames + 
+        logV("Creating player with mode=" + mode + ", preloadAllFrames=" + preloadAllFrames + 
               ", streamCacheSize=" + streamCacheSize);
         playerId = WebMAlphaPlayerNative.nativeCreate(
             decodeThreads, cacheSize, preloadAllFrames, loop, playbackSpeed,
             mode, streamCacheSize, streamPrefetchAhead
         );
         WebMAlphaPlayerNative.nativeSetListener(playerId, this);
+        WebMAlphaPlayerNative.nativeSetVerbose(playerId, verbose);
         isReleased = false;
         
-        Log.i(TAG, "Created TextureView player: " + playerId + 
+        logV("Created TextureView player: " + playerId + 
               ", FFmpeg: " + WebMAlphaPlayerNative.nativeGetFFmpegVersion());
     }
     
@@ -211,28 +224,17 @@ public class WebMAlphaTextureView extends TextureView implements
         });
     }
     
-    //------------------------------------------------------------------------------
-    // React Native Event Dispatch
-    //------------------------------------------------------------------------------
-    
-    private void sendEvent(String eventName, WritableMap params) {
-        ReactContext reactContext = (ReactContext) getContext();
-        reactContext.getJSModule(RCTEventEmitter.class)
-            .receiveEvent(getId(), eventName, params);
+    /** Main thread only. */
+    private void reportError(String error) {
+        Log.e(TAG, error);
+        if (callback != null && !isReleased) {
+            callback.onError(error);
+        }
     }
     
-    private void dispatchOnLoad(int totalFrames, int width, int height) {
-        WritableMap event = Arguments.createMap();
-        event.putInt("totalFrames", totalFrames);
-        event.putInt("width", width);
-        event.putInt("height", height);
-        sendEvent("onLoad", event);
-    }
-    
-    private void dispatchOnError(String error) {
-        WritableMap event = Arguments.createMap();
-        event.putString("error", error);
-        sendEvent("onError", event);
+    /** Lifecycle chatter, only with the verbose prop. Warnings and errors always log. */
+    private void logV(String message) {
+        if (verbose) Log.i(TAG, message);
     }
     
     //------------------------------------------------------------------------------
@@ -286,7 +288,7 @@ public class WebMAlphaTextureView extends TextureView implements
         } else {
             this.mode = MODE_PRELOAD; // Default
         }
-        Log.i(TAG, "🎛️ setMode called: " + oldMode + " -> " + this.mode + " (playerId=" + playerId + ")");
+        logV("setMode called: " + oldMode + " -> " + this.mode + " (playerId=" + playerId + ")");
     }
     
     /**
@@ -324,14 +326,17 @@ public class WebMAlphaTextureView extends TextureView implements
     
     /**
      * Enable/disable verbose per-frame logging.
-     * When true: logs every frame queue, release, and render event.
-     * When false (default): only lifecycle events and periodic performance stats.
+     * When true: logs lifecycle events, performance stats, and every frame queue/release/render.
+     * When false (default): only warnings and errors.
      */
     public void setVerbose(boolean verbose) {
         this.verbose = verbose;
         // Propagate to active dual-stream player if it exists
         if (bufferedPlayer != null) {
             bufferedPlayer.setVerbose(verbose);
+        }
+        if (playerId != 0 && !isReleased) {
+            WebMAlphaPlayerNative.nativeSetVerbose(playerId, verbose);
         }
     }
     
@@ -343,39 +348,92 @@ public class WebMAlphaTextureView extends TextureView implements
         }
     }
     
-    public void loadFromFile(String path) {
-        pendingSourcePath = path;
-        pendingSourceIsUrl = false;
-        
-        // If surface isn't available yet, just store the path - it will be loaded when surface is ready
-        if (!surfaceAvailable.get()) {
-            Log.i(TAG, "📋 Storing source for deferred load (no surface): " + path);
+    /** Used for http(s) sources; set it before or together with the source. */
+    public void setCacheKey(String cacheKey) {
+        this.cacheKey = cacheKey;
+    }
+    
+    /**
+     * Sets the video: {@code https://} (downloaded to the cache), {@code file://}, an absolute
+     * path, {@code asset://} (read from the APK in place) or {@code content://}.
+     */
+    public void setSource(String uri) {
+        final int generation = ++sourceGeneration;
+        sourceUri = uri;
+        localSource = null;
+        // Props arriving in the same update (cacheKey, mode, ...) are applied after this one.
+        post(() -> {
+            if (generation == sourceGeneration) resolveSource(uri, generation);
+        });
+    }
+    
+    private void resolveSource(String uri, int generation) {
+        if (!WebMDownloader.isRemote(uri)) {
+            showLocalSource(uri);
             return;
         }
         
-        // Check if this is a dual-stream file (2 VP9/AV1 video streams)
-        // Use MediaCodec hardware decoder for dual-stream, software for single-stream
-        boolean isDualStream = BufferedDualStreamPlayer.nativeIsDualStream(path);
-        Log.i(TAG, "🔍 File " + path + " isDualStream=" + isDualStream);
+        final String key = cacheKey;
+        final Context appContext = getContext().getApplicationContext();
+        downloadExecutor.execute(() -> {
+            try {
+                File file = WebMDownloader.fetch(appContext, uri, key);
+                post(() -> {
+                    if (generation == sourceGeneration) showLocalSource(file.getAbsolutePath());
+                });
+            } catch (IOException e) {
+                post(() -> {
+                    if (generation == sourceGeneration) reportError("Download failed: " + e.getMessage());
+                });
+            }
+        });
+    }
+    
+    private void showLocalSource(String uri) {
+        localSource = uri;
+        loadLocalSource();
+    }
+    
+    /** Loads {@link #localSource} if there is one and the surface is ready; otherwise waits for it. */
+    private void loadLocalSource() {
+        String uri = localSource;
+        if (uri == null) return;
+        if (!glReady) {
+            logV("Deferring load until the surface is ready: " + uri);
+            return;
+        }
+        
+        final WebMSource source;
+        final boolean isDualStream;
+        try {
+            source = WebMSource.parse(uri);
+            try (AssetFileDescriptor afd = source.open(getContext())) {
+                // 2 VP9/AV1 video streams decode on MediaCodec; one with alpha on the software decoder
+                isDualStream = BufferedDualStreamPlayer.nativeIsDualStream(
+                    afd.getParcelFileDescriptor().getFd(), afd.getStartOffset(), afd.getLength());
+            }
+        } catch (IllegalArgumentException | IOException e) {
+            reportError(e.getMessage());
+            return;
+        }
+        logV("Source " + source + " isDualStream=" + isDualStream);
         
         boolean hasHwDecoder = SurfaceTextureVideoDecoder.isVp9HardwareDecoderAvailable() ||
                                SurfaceTextureVideoDecoder.isAv1HardwareDecoderAvailable();
         
         if (isDualStream && hasHwDecoder) {
-            // Use MediaCodec hardware decoder for dual-stream
-            loadDualStreamFile(path);
+            loadDualStream(source);
         } else {
-            // Use software decoder for single-stream or if no hardware decoder
-            loadSingleStreamFile(path);
+            loadSingleStream(source);
         }
     }
     
     /**
-     * Load a dual-stream WebM file using MediaCodec hardware decoding.
+     * Load a dual-stream WebM using MediaCodec hardware decoding.
      * Uses direct OES texture compositing — no FBO ring buffer.
      */
-    private void loadDualStreamFile(String path) {
-        Log.i(TAG, "🎬 Loading dual-stream file with direct OES pipeline: " + path);
+    private void loadDualStream(WebMSource source) {
+        logV("Loading dual-stream source with direct OES pipeline: " + source);
         
         isDualStreamMode = true;
         
@@ -392,7 +450,6 @@ public class WebMAlphaTextureView extends TextureView implements
         }
         
         // Create player — must be done on GL thread for OES texture creation
-        final String finalPath = path;
         renderThread.execute(() -> {
             if (isReleased) return;
             
@@ -413,12 +470,9 @@ public class WebMAlphaTextureView extends TextureView implements
             bufferedPlayer.setEventCallback(new BufferedDualStreamPlayer.EventCallback() {
                 @Override
                 public void onLoaded(int totalFrames, int width, int height, double fps, double duration) {
-                    Log.i(TAG, "🎬 Dual-stream loaded (OES): " + totalFrames + " frames, " + 
+                    logV("Dual-stream loaded (OES): " + totalFrames + " frames, " + 
                           width + "x" + height + " @ " + String.format("%.1f", fps) + " fps");
                     post(() -> {
-                        if (!isReleased) {
-                            dispatchOnLoad(totalFrames, width, height);
-                        }
                         if (callback != null && !isReleased) {
                             callback.onLoad(totalFrames, width, height);
                         }
@@ -430,25 +484,21 @@ public class WebMAlphaTextureView extends TextureView implements
                 
                 @Override
                 public void onError(String error) {
-                    Log.e(TAG, "Dual-stream player error: " + error);
-                    post(() -> {
-                        if (!isReleased) {
-                            dispatchOnError(error);
-                        }
-                        if (callback != null && !isReleased) {
-                            callback.onError(error);
-                        }
-                    });
+                    post(() -> reportError(error));
                 }
                 
                 @Override
                 public void onLooped() {
-                    Log.d(TAG, "Dual-stream player looped");
+                    logV("Dual-stream player looped");
                 }
                 
                 @Override
                 public void onEnded() {
-                    Log.d(TAG, "Dual-stream player ended");
+                    post(() -> {
+                        if (callback != null && !isReleased) {
+                            callback.onEnd();
+                        }
+                    });
                 }
             });
             
@@ -459,22 +509,24 @@ public class WebMAlphaTextureView extends TextureView implements
             });
             
             // Load the file (creates OES textures in this GL context)
-            if (!bufferedPlayer.loadFromFile(finalPath)) {
-                Log.e(TAG, "Failed to load dual-stream file");
-                post(() -> {
-                    if (callback != null && !isReleased) {
-                        callback.onError("Failed to load dual-stream file");
-                    }
-                });
+            boolean loaded;
+            try (AssetFileDescriptor afd = source.open(getContext())) {
+                loaded = bufferedPlayer.loadFromFd(
+                    afd.getParcelFileDescriptor().getFd(), afd.getStartOffset(), afd.getLength());
+            } catch (IOException e) {
+                loaded = false;
+            }
+            if (!loaded) {
+                post(() -> reportError("Failed to load dual-stream video " + source));
             }
         });
     }
     
     /**
-     * Load a single-stream WebM file using software decoding (existing behavior).
+     * Load a single-stream WebM (VP9 with alpha) using software decoding.
      */
-    private void loadSingleStreamFile(String path) {
-        Log.i(TAG, "🎬 Loading single-stream file with software decoder: " + path);
+    private void loadSingleStream(WebMSource source) {
+        logV("Loading single-stream source with software decoder: " + source);
         
         isDualStreamMode = false;
         
@@ -494,44 +546,26 @@ public class WebMAlphaTextureView extends TextureView implements
             return;
         }
         
-        enqueueNativeLoad(() -> WebMAlphaPlayerNative.nativeLoadFromFile(playerId, path),
-            "from file");
+        final Context context = getContext();
+        enqueueNativeLoad(() -> {
+            try (AssetFileDescriptor afd = source.open(context)) {
+                return WebMAlphaPlayerNative.nativeLoadFromFd(playerId,
+                    afd.getParcelFileDescriptor().getFd(), afd.getStartOffset(), afd.getLength());
+            }
+        });
     }
     
     public void loadFromBytes(byte[] data) {
-        pendingSourcePath = null;
+        ++sourceGeneration;
+        sourceUri = null;
+        localSource = null;
         
         if (isReleased || playerId == 0) {
             Log.w(TAG, "Cannot load from bytes before player is initialized");
             return;
         }
         
-        enqueueNativeLoad(() -> WebMAlphaPlayerNative.nativeLoadFromBytes(playerId, data),
-            "from bytes");
-    }
-    
-    public void loadFromUrl(String url) {
-        pendingSourcePath = url;
-        pendingSourceIsUrl = true;
-        
-        // If surface isn't available yet, just store the URL - it will be loaded when surface is ready
-        if (!surfaceAvailable.get()) {
-            Log.i(TAG, "📋 Storing URL for deferred load (no surface): " + url);
-            return;
-        }
-        
-        // Initialize player if needed - by now all React props should be set
-        if (playerId == 0 && !isReleased) {
-            initializePlayer();
-        }
-        
-        if (isReleased || playerId == 0) {
-            Log.w(TAG, "Cannot load URL - player not initialized");
-            return;
-        }
-        
-        enqueueNativeLoad(() -> WebMAlphaPlayerNative.nativeLoadFromUrl(playerId, url),
-            "from url");
+        enqueueNativeLoad(() -> WebMAlphaPlayerNative.nativeLoadFromBytes(playerId, data));
     }
     
     public void play() {
@@ -630,7 +664,7 @@ public class WebMAlphaTextureView extends TextureView implements
     
     @Override
     public void onSurfaceTextureAvailable(SurfaceTexture surface, int width, int height) {
-        Log.i(TAG, "🎨 Surface available: " + width + "x" + height);
+        logV("Surface available: " + width + "x" + height);
         this.surfaceTexture = surface;
         this.surfaceWidth = width;
         this.surfaceHeight = height;
@@ -652,28 +686,20 @@ public class WebMAlphaTextureView extends TextureView implements
         renderThread.execute(() -> {
             initEGL();
             
-            if (pendingSourcePath != null) {
-                Log.i(TAG, "🔄 Loading deferred source: " + pendingSourcePath);
-                final String path = pendingSourcePath;
-                final boolean isUrl = pendingSourceIsUrl;
-                // loadFromFile/loadFromUrl dispatch to renderThread internally,
-                // so post to main thread to avoid deadlocking the single-threaded executor
-                post(() -> {
-                    if (isReleased) return;
-                    waitForSoftRelease();
-                    if (isUrl) {
-                        loadFromUrl(path);
-                    } else {
-                        loadFromFile(path);
-                    }
-                });
-            }
+            // Loading dispatches to renderThread internally, so post to the main thread
+            // to avoid deadlocking the single-threaded executor
+            post(() -> {
+                glReady = true;
+                if (isReleased || localSource == null) return;
+                waitForSoftRelease();
+                loadLocalSource();
+            });
         });
     }
     
     @Override
     public void onSurfaceTextureSizeChanged(SurfaceTexture surface, int width, int height) {
-        Log.i(TAG, "🔄 Surface size changed: " + width + "x" + height);
+        logV("Surface size changed: " + width + "x" + height);
         this.surfaceWidth = width;
         this.surfaceHeight = height;
         
@@ -688,8 +714,9 @@ public class WebMAlphaTextureView extends TextureView implements
     
     @Override
     public boolean onSurfaceTextureDestroyed(SurfaceTexture surface) {
-        Log.i(TAG, "🗑️ Surface destroyed");
+        logV("Surface destroyed");
         surfaceAvailable.set(false);
+        glReady = false;
         
         // Store reference before nulling so we can release it async
         final SurfaceTexture surfaceToRelease = this.surfaceTexture;
@@ -720,7 +747,7 @@ public class WebMAlphaTextureView extends TextureView implements
     //------------------------------------------------------------------------------
     
     private void initEGL() {
-        Log.i(TAG, "🔧 Initializing EGL");
+        logV("Initializing EGL");
         
         // Get display
         eglDisplay = EGL14.eglGetDisplay(EGL14.EGL_DEFAULT_DISPLAY);
@@ -778,11 +805,11 @@ public class WebMAlphaTextureView extends TextureView implements
         makeCurrent();
         initGL();
         
-        Log.i(TAG, "✅ EGL initialized successfully");
+        logV("EGL initialized successfully");
     }
     
     private void destroyEGL() {
-        Log.i(TAG, "🗑️ Destroying EGL");
+        logV("Destroying EGL");
         
         if (eglDisplay != null) {
             EGL14.eglMakeCurrent(eglDisplay, EGL14.EGL_NO_SURFACE, EGL14.EGL_NO_SURFACE, EGL14.EGL_NO_CONTEXT);
@@ -884,7 +911,7 @@ public class WebMAlphaTextureView extends TextureView implements
         if (oesProgramId == 0) {
             Log.w(TAG, "OES shader creation failed - Surface mode will not work");
         } else {
-            Log.i(TAG, "✅ OES shader created (GPU-accelerated compositing)");
+            logV("OES shader created (GPU-accelerated compositing)");
         }
         
         // Create textures for YUVA mode
@@ -933,7 +960,7 @@ public class WebMAlphaTextureView extends TextureView implements
         // Set viewport
         GLES20.glViewport(0, 0, surfaceWidth, surfaceHeight);
         
-        Log.i(TAG, "✅ OpenGL initialized");
+        logV("OpenGL initialized");
     }
     
     private int createProgram(String vertexSource, String fragmentSource) {
@@ -1191,12 +1218,10 @@ public class WebMAlphaTextureView extends TextureView implements
     public void onLoad(int totalFrames, int width, int height) {
         if (isReleased) return;
         
-        Log.i(TAG, "🎬 Loaded: " + totalFrames + " frames, " + width + "x" + height);
+        logV("Loaded: " + totalFrames + " frames, " + width + "x" + height);
         
         post(() -> {
             if (isReleased) return;
-            
-            dispatchOnLoad(totalFrames, width, height);
             
             if (callback != null) {
                 callback.onLoad(totalFrames, width, height);
@@ -1224,7 +1249,7 @@ public class WebMAlphaTextureView extends TextureView implements
                     }
                     if (!isReleased) {
                         requestRender();
-                        Log.i(TAG, "🚀 First frame rendered via TextureView pipeline");
+                        logV("First frame rendered via TextureView pipeline");
                     }
                 }
             }
@@ -1283,48 +1308,47 @@ public class WebMAlphaTextureView extends TextureView implements
     @Override
     public void onPlay() {
         if (isReleased) return;
-        Log.d(TAG, "Playing");
+        logV("Playing");
     }
     
     @Override
     public void onPause() {
         if (isReleased) return;
-        Log.d(TAG, "Paused");
+        logV("Paused");
     }
     
     @Override
     public void onStop() {
         if (isReleased) return;
-        Log.d(TAG, "Stopped");
+        logV("Stopped");
     }
     
     @Override
     public void onLoop() {
         if (isReleased) return;
-        Log.d(TAG, "Looped");
+        logV("Looped");
     }
     
     @Override
     public void onEnd() {
         if (isReleased) return;
-        Log.d(TAG, "Ended");
-    }
-    
-    @Override
-    public void onError(String error) {
-        if (isReleased) return;
-        Log.e(TAG, "Error: " + error);
         post(() -> {
             if (callback != null && !isReleased) {
-                callback.onError(error);
+                callback.onEnd();
             }
         });
     }
     
     @Override
+    public void onError(String error) {
+        if (isReleased) return;
+        post(() -> reportError(error));
+    }
+    
+    @Override
     public void onPreloadComplete(int totalFrames, double timeMs) {
         if (isReleased) return;
-        Log.i(TAG, "✅ Preload complete: " + totalFrames + " frames in " + timeMs + "ms");
+        logV("Preload complete: " + totalFrames + " frames in " + timeMs + "ms");
         post(() -> {
             if (callback != null && !isReleased) {
                 callback.onPreloadComplete(totalFrames, timeMs);
@@ -1337,7 +1361,7 @@ public class WebMAlphaTextureView extends TextureView implements
     //------------------------------------------------------------------------------
     
     public void release() {
-        Log.i(TAG, "🗑️ Full release of player " + playerId + " (dualStream=" + isDualStreamMode + ")");
+        logV("Full release of player " + playerId + " (dualStream=" + isDualStreamMode + ")");
         
         final long pid = playerId;
         playerId = 0;
@@ -1359,13 +1383,13 @@ public class WebMAlphaTextureView extends TextureView implements
                 if (nativeLoadExecutor != null && !nativeLoadExecutor.isShutdown()) {
                     nativeLoadExecutor.submit(() -> {
                         WebMAlphaPlayerNative.nativeDestroy(pid);
-                        Log.i(TAG, "🗑️ Native player destroyed: " + pid);
+                        logV("Native player destroyed: " + pid);
                     });
                     nativeLoadExecutor.shutdown();
                 } else {
                     new Thread(() -> {
                         WebMAlphaPlayerNative.nativeDestroy(pid);
-                        Log.i(TAG, "🗑️ Native player destroyed (bg): " + pid);
+                        logV("Native player destroyed (bg): " + pid);
                     }, "WebMDestroy").start();
                 }
             }
@@ -1378,7 +1402,7 @@ public class WebMAlphaTextureView extends TextureView implements
     }
     
     private void softRelease() {
-        Log.i(TAG, "📦 Soft release of player " + playerId + " (dualStream=" + isDualStreamMode + ")");
+        logV("Soft release of player " + playerId + " (dualStream=" + isDualStreamMode + ")");
         
         cancelNativeLoad();
         
@@ -1395,7 +1419,7 @@ public class WebMAlphaTextureView extends TextureView implements
             bufferedPlayer.stop();
             bufferedPlayer.unload();
             bufferedPlayer = null;
-            Log.i(TAG, "📦 Soft release cleanup complete for buffered dual-stream player");
+            logV("Soft release cleanup complete for buffered dual-stream player");
         }
         
         final long pid = playerId;
@@ -1408,7 +1432,7 @@ public class WebMAlphaTextureView extends TextureView implements
                 softReleaseTask = nativeLoadExecutor.submit(() -> {
                     WebMAlphaPlayerNative.nativeStop(pid);
                     WebMAlphaPlayerNative.nativeUnload(pid);
-                    Log.i(TAG, "📦 Soft release cleanup complete for player " + pid);
+                    logV("Soft release cleanup complete for player " + pid);
                 });
             }
         }
@@ -1422,11 +1446,11 @@ public class WebMAlphaTextureView extends TextureView implements
         Future<?> task = softReleaseTask;
         if (task != null && !task.isDone()) {
             try {
-                Log.d(TAG, "⏳ Waiting for soft release to complete...");
+                logV("Waiting for soft release to complete...");
                 task.get(1000, java.util.concurrent.TimeUnit.MILLISECONDS);
-                Log.d(TAG, "✅ Soft release completed");
+                logV("Soft release completed");
             } catch (Exception e) {
-                Log.w(TAG, "⚠️ Soft release wait interrupted or timed out: " + e.getMessage());
+                Log.w(TAG, "Soft release wait interrupted or timed out: " + e.getMessage());
             }
         }
         softReleaseTask = null;
@@ -1435,13 +1459,13 @@ public class WebMAlphaTextureView extends TextureView implements
     @Override
     protected void onAttachedToWindow() {
         super.onAttachedToWindow();
-        Log.i(TAG, "🔄 View attached (isReleased=" + isReleased + ", playerId=" + playerId +
+        logV("View attached (isReleased=" + isReleased + ", playerId=" + playerId +
               ", dualStream=" + isDualStreamMode + ")");
         
         // If we were previously released, reset the flag so the surface callback can re-load.
         // This covers both software decode (playerId != 0) and dual-stream (isDualStreamMode)
         // re-attach after z-index reordering.
-        if (isReleased && (playerId != 0 || isDualStreamMode || pendingSourcePath != null)) {
+        if (isReleased && (playerId != 0 || isDualStreamMode || sourceUri != null)) {
             isReleased = false;
             
             if (renderThread == null || renderThread.isShutdown()) {
@@ -1453,7 +1477,7 @@ public class WebMAlphaTextureView extends TextureView implements
     @Override
     protected void onDetachedFromWindow() {
         super.onDetachedFromWindow();
-        Log.i(TAG, "📤 View detached");
+        logV("View detached");
         softRelease();
     }
     
@@ -1461,8 +1485,9 @@ public class WebMAlphaTextureView extends TextureView implements
     // Helpers
     //------------------------------------------------------------------------------
     
+    /** Native load failures report themselves through {@link #onError}; only I/O errors are thrown. */
     private interface NativeLoadCommand {
-        boolean run();
+        boolean run() throws IOException;
     }
     
     /**
@@ -1477,7 +1502,6 @@ public class WebMAlphaTextureView extends TextureView implements
                     t.setPriority(Thread.NORM_PRIORITY);
                     return t;
                 });
-                Log.i(TAG, "🔧 Created global decode queue");
             }
             globalDecodeQueueRefCount++;
             return globalDecodeQueue;
@@ -1492,7 +1516,6 @@ public class WebMAlphaTextureView extends TextureView implements
         synchronized (globalDecodeQueueLock) {
             globalDecodeQueueRefCount--;
             if (globalDecodeQueueRefCount <= 0 && globalDecodeQueue != null) {
-                Log.i(TAG, "🗑️ Shutting down global decode queue (no more references)");
                 globalDecodeQueue.shutdown();
                 globalDecodeQueue = null;
                 globalDecodeQueueRefCount = 0;
@@ -1500,7 +1523,7 @@ public class WebMAlphaTextureView extends TextureView implements
         }
     }
     
-    private void enqueueNativeLoad(NativeLoadCommand command, String label) {
+    private void enqueueNativeLoad(NativeLoadCommand command) {
         synchronized (nativeLoadLock) {
             if (isReleased || playerId == 0) {
                 Log.w(TAG, "Ignoring load - player released");
@@ -1516,7 +1539,6 @@ public class WebMAlphaTextureView extends TextureView implements
             
             if (usingGlobalQueue) {
                 executor = getGlobalDecodeQueue();
-                Log.d(TAG, "📋 Using global decode queue for " + label);
             } else {
                 if (nativeLoadExecutor == null || nativeLoadExecutor.isShutdown()) {
                     nativeLoadExecutor = createLoadExecutor();
@@ -1533,15 +1555,9 @@ public class WebMAlphaTextureView extends TextureView implements
                         Log.w(TAG, "Load aborted - player released or changed");
                         return;
                     }
-                    boolean success = command.run();
-                    if (!success && !isReleased) {
-                        Log.e(TAG, "Failed to load video " + label);
-                        post(() -> {
-                            if (callback != null && !isReleased) {
-                                callback.onError("Failed to load video " + label);
-                            }
-                        });
-                    }
+                    command.run();
+                } catch (IOException e) {
+                    post(() -> reportError(e.getMessage()));
                 } finally {
                     // Release global queue reference when done
                     if (usedGlobalQueue) {
