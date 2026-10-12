@@ -138,6 +138,20 @@ function toWebUrl(uri: string | undefined): string | undefined {
   return uri?.startsWith('asset://') ? '/' + uri.slice('asset://'.length).replace(/^\/+/, '') : uri;
 }
 
+/** The browser doesn't expose the frame rate. */
+const WEB_FPS = 30;
+
+/** Clamped to the clip; ignored until its duration is known. */
+function seekVideoToFrame(video: VideoElement | null, frame: number) {
+  if (!video || !(video.duration > 0)) return;
+  const lastFrame = Math.max(0, Math.floor(video.duration * WEB_FPS) - 1);
+  const target = Math.min(Math.max(0, Math.floor(frame) || 0), lastFrame);
+  // Chrome moves a second seek into the last frame to the very end, which wraps a looping clip to 0
+  if (Math.floor(video.currentTime * WEB_FPS + 1e-6) === target && !video.seeking) return;
+  // The middle of the frame, so rounding in the browser can't land on the one before
+  video.currentTime = (target + 0.5) / WEB_FPS;
+}
+
 const WebVideoPlayer = forwardRef<AlphaVideoViewRef, AlphaVideoViewProps>(
   (props, ref) => {
     const { source, autoPlay = true, loop = true, paused = false, playbackSpeed = 1.0, style, onLoad, onError, onEnd } = props;
@@ -157,18 +171,9 @@ const WebVideoPlayer = forwardRef<AlphaVideoViewRef, AlphaVideoViewProps>(
           videoRef.current.currentTime = 0;
         }
       },
-      seekToFrame: (frame: number) => {
-        if (videoRef.current) {
-          const fps = 30;
-          // The middle of the frame, so rounding in the browser can't land on the one before
-          videoRef.current.currentTime = (Math.max(0, frame) + 0.5) / fps;
-        }
-      },
-      seekToTime: (seconds: number) => {
-        if (videoRef.current) {
-          videoRef.current.currentTime = seconds > 0 ? seconds : 0;
-        }
-      },
+      seekToFrame: (frame: number) => seekVideoToFrame(videoRef.current, frame),
+      seekToTime: (seconds: number) =>
+        seekVideoToFrame(videoRef.current, Math.floor((seconds > 0 ? seconds : 0) * WEB_FPS + 1e-6)),
     }));
 
     useEffect(() => {
@@ -198,8 +203,7 @@ const WebVideoPlayer = forwardRef<AlphaVideoViewRef, AlphaVideoViewProps>(
       // source change, so a non-default rate has to be put back here.
       video.playbackRate = playbackSpeed;
 
-      const fps = 30;
-      const totalFrames = Math.floor(video.duration * fps);
+      const totalFrames = Math.floor(video.duration * WEB_FPS);
       
       onLoad?.({
         totalFrames,
