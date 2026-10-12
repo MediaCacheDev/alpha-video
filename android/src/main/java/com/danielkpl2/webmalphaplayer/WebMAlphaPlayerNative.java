@@ -48,6 +48,8 @@ public class WebMAlphaPlayerNative {
     public static native boolean nativeLoadFromFile(long playerId, String path);
     /** Bytes [offset, offset + length) of fd; length -1 means to end of file. fd is duplicated. */
     public static native boolean nativeLoadFromFd(long playerId, int fd, long offset, long length);
+    /** A {@link WebMDownloader} cache file, read as it downloads. Use with the stream modes. */
+    public static native boolean nativeLoadFromDownload(long playerId, String path);
     public static native boolean nativeLoadFromBytes(long playerId, byte[] data);
     public static native boolean nativeLoadFromUrl(long playerId, String url);
     public static native void nativeUnload(long playerId);

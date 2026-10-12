@@ -123,6 +123,9 @@ NS_ASSUME_NONNULL_BEGIN
 
 // Loading
 - (BOOL)loadFromFile:(NSString *)path;
+// A WebMSourceResolver cache file that may still be downloading; reads wait for the rest.
+// Use with the stream modes (preload's first seek waits for the whole file).
+- (BOOL)loadFromDownload:(NSString *)path;
 - (BOOL)loadFromData:(NSData *)data;
 - (BOOL)loadFromURL:(NSURL *)url;
 - (void)unload;
@@ -184,6 +187,7 @@ NS_ASSUME_NONNULL_BEGIN
 
 // Loading
 - (BOOL)loadFromPath:(NSString *)path;
+- (BOOL)loadFromDownloadPath:(NSString *)path;  // See -[WebMAlphaPlayerWrapper loadFromDownload:]
 - (BOOL)loadFromURL:(NSURL *)url;
 - (void)unloadVideo;
 
@@ -204,16 +208,27 @@ NS_ASSUME_NONNULL_BEGIN
  * Turns a source URI into a local file the player can open.
  *
  * - https:// and http:// are downloaded into Caches, named by cacheKey (which may include
- *   subfolders) or by a hash of the URL, and reused on later calls
+ *   subfolders) or by a hash of the URL, and reused on later calls. Views asking for the same
+ *   file while it downloads share one download.
  * - asset://relative/path is a file inside the app bundle
  * - file:// URLs and absolute paths are used as they are
  */
 @interface WebMSourceResolver : NSObject
 
-/** The completion runs on the main queue with either a path or an error message. */
+/**
+ * Both blocks run on the main queue.
+ *
+ * `ready` runs once with the file to load. For an http(s) source with `whileDownloading`, that is
+ * as soon as the download starts, with `downloading` YES: load it with `loadFromDownload:`, which
+ * waits for the bytes still to come. Otherwise it runs when the file is complete.
+ *
+ * `failed` runs if the source can't be resolved, and also after `ready` if a download breaks off.
+ */
 + (void)resolveSource:(NSString *)uri
              cacheKey:(nullable NSString *)cacheKey
-           completion:(void (^)(NSString * _Nullable path, NSString * _Nullable error))completion;
+     whileDownloading:(BOOL)whileDownloading
+                ready:(void (^)(NSString *path, BOOL downloading))ready
+               failed:(void (^)(NSString *error))failed;
 
 @end
 

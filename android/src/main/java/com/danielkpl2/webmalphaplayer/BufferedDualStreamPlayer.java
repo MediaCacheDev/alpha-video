@@ -160,10 +160,23 @@ public class BufferedDualStreamPlayer implements SurfaceTextureVideoDecoder.Fram
         if (isLoaded.get()) {
             unload();
         }
-        
+        return load(nativeCreateDemuxer(fd, offset, length));
+    }
+    
+    /**
+     * Load a {@link WebMDownloader} cache file, reading it as it downloads.
+     * MUST be called from GL thread so OES textures are created in correct EGL context.
+     */
+    public boolean loadFromDownload(String path) {
+        if (isLoaded.get()) {
+            unload();
+        }
+        return load(nativeCreateDemuxerFromDownload(path));
+    }
+    
+    private boolean load(long demuxerPtr) {
         try {
-            // Create native demuxer
-            nativeDemuxerPtr = nativeCreateDemuxer(fd, offset, length);
+            nativeDemuxerPtr = demuxerPtr;
             if (nativeDemuxerPtr == 0) {
                 Log.e(TAG, "Failed to create demuxer");
                 return false;
@@ -766,6 +779,7 @@ public class BufferedDualStreamPlayer implements SurfaceTextureVideoDecoder.Fram
     // -------------------------------------------------------------------------
     
     private static native long nativeCreateDemuxer(int fd, long offset, long length);
+    private static native long nativeCreateDemuxerFromDownload(String path);
     private static native void nativeDestroyDemuxer(long ptr);
     private static native int[] nativeGetVideoInfo(long ptr);
     private static native Object[] nativeReadPacket(long ptr);
@@ -775,6 +789,9 @@ public class BufferedDualStreamPlayer implements SurfaceTextureVideoDecoder.Fram
      * Check if bytes [offset, offset + length) of fd hold dual video streams (VP9 or AV1, color + alpha).
      */
     public static native boolean nativeIsDualStream(int fd, long offset, long length);
+    
+    /** The same for a {@link WebMDownloader} cache file; waits for its first bytes if still downloading. */
+    public static native boolean nativeIsDualStreamDownload(String path);
     
     static {
         System.loadLibrary("webmalphaplayer");

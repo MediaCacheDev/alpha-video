@@ -574,11 +574,30 @@ bool WebMAlphaPlayer::loadFromFileRange(int fd, int64_t offset, int64_t length) 
     // Reset stop flag so decodeAllFrames doesn't exit immediately
     shouldStop_ = false;
     
-    rangeIO_ = openFileRangeIO(fd, offset, length);
-    if (!rangeIO_) {
+    AVIOContext* io = openFileRangeIO(fd, offset, length);
+    if (!io) {
         emitEvent("error", "Failed to open file range");
         return false;
     }
+    return openCustomInput(io) && finishLoad();
+}
+
+bool WebMAlphaPlayer::loadFromDownload(const std::string& path) {
+    unload();
+    
+    shouldStop_ = false;
+    ioAbort_ = false;
+    
+    AVIOContext* io = openDownloadIO(path, &ioAbort_);
+    if (!io) {
+        emitEvent("error", "Failed to open " + path);
+        return false;
+    }
+    return openCustomInput(io) && finishLoad();
+}
+
+bool WebMAlphaPlayer::openCustomInput(AVIOContext* io) {
+    rangeIO_ = io;
     
     formatCtx_ = avformat_alloc_context();
     if (!formatCtx_) {
@@ -595,8 +614,7 @@ bool WebMAlphaPlayer::loadFromFileRange(int fd, int64_t offset, int64_t length) 
         emitEvent("error", std::string("Failed to open video: ") + err);
         return false;
     }
-    
-    return finishLoad();
+    return true;
 }
 
 bool WebMAlphaPlayer::finishLoad() {
@@ -782,6 +800,7 @@ void WebMAlphaPlayer::unload() {
     // Protect against concurrent unload calls (e.g., during view detach/reattach)
     std::lock_guard<std::mutex> unloadLock(unloadMutex_);
     
+    ioAbort_ = true;
     stop();
     
     // Signal prefetch thread to stop
@@ -1679,6 +1698,15 @@ void WebMAlphaPlayer::prefetchLoop() {
         // Read and decode next frame sequentially (no seeking!)
         int ret = av_read_frame(formatCtx_, packet);
         if (ret < 0) {
+            if (shouldStop_ || ioAbort_) break;
+            // The input itself failed, e.g. a download broke off: looping would replay only the
+            // part that arrived, so stop decoding instead.
+            if (formatCtx_->pb && formatCtx_->pb->error < 0) {
+                char err[AV_ERROR_MAX_STRING_SIZE];
+                av_strerror(formatCtx_->pb->error, err, sizeof(err));
+                LOGE("📺 Read failed at frame %d, stopping decode: %s", frameIndex, err);
+                break;
+            }
             // End of file - handle loop or stop
             if (config_.loopPlayback) {
                 av_seek_frame(formatCtx_, colorStreamIndex_, 0, AVSEEK_FLAG_BACKWARD);

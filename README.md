@@ -157,13 +157,22 @@ console.log(info);
 
 ## Supported Source Types
 
-- **HTTP/HTTPS URLs**: `{ uri: 'https://example.com/video.webm' }`. Downloaded once into the app's cache directory and played from there. The file is named by `cacheKey` if you give one (it may include subfolders), otherwise by a hash of the URL.
+- **HTTP/HTTPS URLs**: `{ uri: 'https://example.com/video.webm' }`. Downloaded once into the app's cache directory by the platform's HTTP stack (`HttpURLConnection` on Android, `NSURLSession` on iOS) and played from there. The file is named by `cacheKey` if you give one (it may include subfolders), otherwise by a hash of the URL. See [Playing while downloading](#playing-while-downloading).
 - **Local files**: `{ uri: 'file:///path/to/video.webm' }` or an absolute path.
 - **Bundled files**: `{ uri: 'asset://videos/glow.webm' }`. On Android this is `android/app/src/main/assets/videos/glow.webm`. On iOS it is `videos/glow.webm` inside the app bundle. On web it is `/videos/glow.webm` from the site root.
 - **Android `content://` URIs**, for example from a document picker.
 - **`require()`**: pass `Image.resolveAssetSource(require('./glow.webm')).uri`. In debug builds this is a Metro `http://localhost:8081` URL. In release builds it is a file path on iOS and a `res/raw` resource name on Android.
 
 Nothing is copied. Android reads `asset://` files and `res/raw` resources directly from the APK, so they must be stored uncompressed. `.webm` and `.mkv` are uncompressed by default. For other extensions, add them to `android.androidResources.noCompress` in the app's `build.gradle`.
+
+### Playing while downloading
+
+In `stream` and `streamAndPreload` mode (and on the Android hardware path in those modes), an http(s) clip starts playing as soon as its first bytes arrive: the decoder reads the cache file while it is still being written. `preload` waits for the whole file, since it decodes every frame before showing one.
+
+- Views that ask for the same URL at the same time share one download. Once it is complete, later views play the cached file without a request.
+- A download that fails, including one cut off part way, is reported through `onError` as `Download failed: …`. The player stops at the last frame that arrived instead of looping over a partial file. Nothing is cached, so the next load starts over.
+- If the network is slower than the clip's bitrate, playback waits for frames on the software path. On the Android hardware path its clock can run ahead during the stall and catch up quickly afterwards.
+- `seekToFrame` during a download waits until the file is complete, because a WebM file keeps its seek index (Cues) at the end. Looping back to the start only happens after the end has arrived, so it isn't affected.
 
 ## Architecture Overview
 
@@ -241,6 +250,8 @@ The `mode` prop controls the software decode path. The hardware dual-stream path
 | `preload` | Wait for full decode | High (all frames) | Seamless | Short loops, many simultaneous players |
 | `stream` | Immediate | Low (cache only) | Re-decode | Long videos, memory-constrained |
 | `streamAndPreload` | Immediate | High (after 1st pass) | Seamless | Fast start + smooth loops |
+
+For http(s) sources, "Immediate" means as soon as the first bytes have downloaded, and `preload` also waits for the download ([Playing while downloading](#playing-while-downloading)).
 
 **Key insight**: `preload` mode has **zero CPU cost during playback** since all frames are already decoded. This means 20+ preloaded animations can play simultaneously with minimal CPU impact (only GPU rendering).
 

@@ -10,6 +10,7 @@
 
 #include "WebMAlphaPlayer.h"
 #include "FileRangeIO.h"
+#include "GrowingFile.h"
 #include <memory>
 #include <unordered_map>
 #include <unordered_set>
@@ -78,6 +79,13 @@ JNIEnv* getJNIEnv(JavaVM* jvm) {
         return nullptr;
     }
     return env;
+}
+
+std::string stringFromJava(JNIEnv* env, jstring value) {
+    const char* chars = env->GetStringUTFChars(value, nullptr);
+    std::string result(chars);
+    env->ReleaseStringUTFChars(value, chars);
+    return result;
 }
 
 } // anonymous namespace
@@ -488,6 +496,88 @@ Java_com_danielkpl2_webmalphaplayer_WebMAlphaPlayerNative_nativeLoadFromFd(
     
     bool result = player->loadFromFileRange(fd, offset, length);
     return result ? JNI_TRUE : JNI_FALSE;
+}
+
+JNIEXPORT jboolean JNICALL
+Java_com_danielkpl2_webmalphaplayer_WebMAlphaPlayerNative_nativeLoadFromDownload(
+    JNIEnv* env,
+    jclass clazz,
+    jlong playerId,
+    jstring path
+) {
+    {
+        std::lock_guard<std::mutex> dlock(destroyedMutex);
+        if (destroyedPlayers.count(playerId)) return JNI_FALSE;
+    }
+    
+    {
+        std::lock_guard<std::mutex> slock(stoppedMutex);
+        stoppedPlayers.erase(playerId);
+    }
+    
+    std::shared_ptr<webm::WebMAlphaPlayer> player;
+    {
+        std::lock_guard<std::mutex> lock(playersMutex);
+        auto it = players.find(playerId);
+        if (it == players.end()) return JNI_FALSE;
+        player = it->second;
+    }
+    
+    std::string pathCopy = stringFromJava(env, path);
+    
+    {
+        std::lock_guard<std::mutex> dlock(destroyedMutex);
+        if (destroyedPlayers.count(playerId)) {
+            LOGI("LoadFromDownload aborted - player %lld destroyed", playerId);
+            return JNI_FALSE;
+        }
+    }
+    
+    bool result = player->loadFromDownload(pathCopy);
+    return result ? JNI_TRUE : JNI_FALSE;
+}
+
+//==============================================================================
+// Downloads into the cache (WebMDownloader), readable while they run
+//==============================================================================
+
+JNIEXPORT jlong JNICALL
+Java_com_danielkpl2_webmalphaplayer_WebMDownloader_nativeBegin(
+    JNIEnv* env,
+    jclass clazz,
+    jstring path,
+    jstring partPath,
+    jlong expectedSize
+) {
+    auto file = webm::GrowingFile::begin(stringFromJava(env, path), stringFromJava(env, partPath), expectedSize);
+    if (!file) return 0;
+    return reinterpret_cast<jlong>(new std::shared_ptr<webm::GrowingFile>(std::move(file)));
+}
+
+JNIEXPORT void JNICALL
+Java_com_danielkpl2_webmalphaplayer_WebMDownloader_nativeSetWritten(
+    JNIEnv* env,
+    jclass clazz,
+    jlong handle,
+    jlong bytes
+) {
+    (*reinterpret_cast<std::shared_ptr<webm::GrowingFile>*>(handle))->setWritten(bytes);
+}
+
+JNIEXPORT void JNICALL
+Java_com_danielkpl2_webmalphaplayer_WebMDownloader_nativeEnd(
+    JNIEnv* env,
+    jclass clazz,
+    jlong handle,
+    jboolean finished
+) {
+    auto* file = reinterpret_cast<std::shared_ptr<webm::GrowingFile>*>(handle);
+    if (finished) {
+        (*file)->finish();
+    } else {
+        (*file)->fail();
+    }
+    delete file;
 }
 
 JNIEXPORT jboolean JNICALL
@@ -914,6 +1004,8 @@ struct DualStreamDemuxer {
     int alphaFrameIndex = 0;
     
     AVIOContext* io = nullptr;  // Owned; must outlive formatCtx
+    // Set on destroy so a read waiting on a download returns
+    std::atomic<bool> aborted{false};
     
     ~DualStreamDemuxer() {
         if (formatCtx) {
@@ -923,14 +1015,8 @@ struct DualStreamDemuxer {
     }
 };
 
-// Opens bytes [offset, offset + length) of fd as a demuxer input. On failure nothing is left to free.
-static bool openRangeInput(int fd, jlong offset, jlong length, AVFormatContext** formatCtx, AVIOContext** io) {
-    *io = webm::openFileRangeIO(fd, offset, length);
-    if (!*io) {
-        LOGE("Failed to open fd %d range (offset %lld, length %lld)", fd, (long long)offset, (long long)length);
-        return false;
-    }
-    
+// Opens *io (already created) as a demuxer input. On failure *io is closed and nothing is left to free.
+static bool openInput(AVFormatContext** formatCtx, AVIOContext** io) {
     *formatCtx = avformat_alloc_context();
     if (!*formatCtx) {
         webm::closeFileRangeIO(io);
@@ -950,67 +1036,60 @@ static bool openRangeInput(int fd, jlong offset, jlong length, AVFormatContext**
     return true;
 }
 
-std::unordered_map<jlong, std::unique_ptr<DualStreamDemuxer>> demuxers;
+// Opens bytes [offset, offset + length) of fd as a demuxer input. On failure nothing is left to free.
+static bool openRangeInput(int fd, jlong offset, jlong length, AVFormatContext** formatCtx, AVIOContext** io) {
+    *io = webm::openFileRangeIO(fd, offset, length);
+    if (!*io) {
+        LOGE("Failed to open fd %d range (offset %lld, length %lld)", fd, (long long)offset, (long long)length);
+        return false;
+    }
+    return openInput(formatCtx, io);
+}
+
+// Opens a cache file that may still be downloading. On failure nothing is left to free.
+static bool openDownloadInput(const std::string& path, const std::atomic<bool>* abort,
+                              AVFormatContext** formatCtx, AVIOContext** io) {
+    *io = webm::openDownloadIO(path, abort);
+    if (!*io) {
+        LOGE("Failed to open %s", path.c_str());
+        return false;
+    }
+    return openInput(formatCtx, io);
+}
+
+// Whether the opened input holds 2+ VP9/AV1 video streams. Closes the input.
+static bool hasDualVideoStreams(AVFormatContext* formatCtx, AVIOContext* io) {
+    bool dual = false;
+    if (avformat_find_stream_info(formatCtx, nullptr) >= 0) {
+        int videoStreamCount = 0;
+        for (unsigned i = 0; i < formatCtx->nb_streams; i++) {
+            AVStream* stream = formatCtx->streams[i];
+            if (stream->codecpar->codec_type == AVMEDIA_TYPE_VIDEO &&
+                isSupportedVideoCodec(stream->codecpar->codec_id)) {
+                videoStreamCount++;
+            }
+        }
+        dual = videoStreamCount >= 2;
+    }
+    avformat_close_input(&formatCtx);
+    webm::closeFileRangeIO(&io);
+    return dual;
+}
+
+// Shared so that destroying a demuxer while its demux thread waits on a download can't free it
+// under that read; the read's own reference frees it once it returns.
+std::unordered_map<jlong, std::shared_ptr<DualStreamDemuxer>> demuxers;
 std::mutex demuxersMutex;
 jlong nextDemuxerId = 1;
 
-} // anonymous namespace
-
-JNIEXPORT jboolean JNICALL
-Java_com_danielkpl2_webmalphaplayer_BufferedDualStreamPlayer_nativeIsDualStream(
-    JNIEnv* env,
-    jclass clazz,
-    jint fd,
-    jlong offset,
-    jlong length
-) {
-    AVFormatContext* formatCtx = nullptr;
-    AVIOContext* io = nullptr;
-    if (!openRangeInput(fd, offset, length, &formatCtx, &io)) {
-        return JNI_FALSE;
-    }
-    
-    if (avformat_find_stream_info(formatCtx, nullptr) < 0) {
-        avformat_close_input(&formatCtx);
-        webm::closeFileRangeIO(&io);
-        return JNI_FALSE;
-    }
-    
-    // Count supported video streams (VP9 or AV1)
-    int videoStreamCount = 0;
-    for (unsigned i = 0; i < formatCtx->nb_streams; i++) {
-        AVStream* stream = formatCtx->streams[i];
-        if (stream->codecpar->codec_type == AVMEDIA_TYPE_VIDEO &&
-            isSupportedVideoCodec(stream->codecpar->codec_id)) {
-            videoStreamCount++;
-        }
-    }
-    
-    avformat_close_input(&formatCtx);
-    webm::closeFileRangeIO(&io);
-    
-    return (videoStreamCount >= 2) ? JNI_TRUE : JNI_FALSE;
+std::shared_ptr<DualStreamDemuxer> findDemuxer(jlong demuxerId) {
+    std::lock_guard<std::mutex> lock(demuxersMutex);
+    auto it = demuxers.find(demuxerId);
+    return it == demuxers.end() ? nullptr : it->second;
 }
 
-// ============================================================================
-// BufferedDualStreamPlayer JNI bindings (FBO ring buffer player)
-// These reuse the same demuxer infrastructure
-// ============================================================================
-
-JNIEXPORT jlong JNICALL
-Java_com_danielkpl2_webmalphaplayer_BufferedDualStreamPlayer_nativeCreateDemuxer(
-    JNIEnv* env,
-    jclass clazz,
-    jint fd,
-    jlong offset,
-    jlong length
-) {
-    auto demuxer = std::make_unique<DualStreamDemuxer>();
-    
-    if (!openRangeInput(fd, offset, length, &demuxer->formatCtx, &demuxer->io)) {
-        return 0;
-    }
-    
+// Reads the stream layout of an opened demuxer and registers it. Returns its id, or 0.
+jlong registerDemuxer(std::shared_ptr<DualStreamDemuxer> demuxer) {
     int ret = avformat_find_stream_info(demuxer->formatCtx, nullptr);
     if (ret < 0) {
         LOGE("[Buffered] Failed to find stream info");
@@ -1065,14 +1144,86 @@ Java_com_danielkpl2_webmalphaplayer_BufferedDualStreamPlayer_nativeCreateDemuxer
     return id;
 }
 
+} // anonymous namespace
+
+JNIEXPORT jboolean JNICALL
+Java_com_danielkpl2_webmalphaplayer_BufferedDualStreamPlayer_nativeIsDualStream(
+    JNIEnv* env,
+    jclass clazz,
+    jint fd,
+    jlong offset,
+    jlong length
+) {
+    AVFormatContext* formatCtx = nullptr;
+    AVIOContext* io = nullptr;
+    if (!openRangeInput(fd, offset, length, &formatCtx, &io)) {
+        return JNI_FALSE;
+    }
+    return hasDualVideoStreams(formatCtx, io) ? JNI_TRUE : JNI_FALSE;
+}
+
+JNIEXPORT jboolean JNICALL
+Java_com_danielkpl2_webmalphaplayer_BufferedDualStreamPlayer_nativeIsDualStreamDownload(
+    JNIEnv* env,
+    jclass clazz,
+    jstring path
+) {
+    AVFormatContext* formatCtx = nullptr;
+    AVIOContext* io = nullptr;
+    if (!openDownloadInput(stringFromJava(env, path), nullptr, &formatCtx, &io)) {
+        return JNI_FALSE;
+    }
+    return hasDualVideoStreams(formatCtx, io) ? JNI_TRUE : JNI_FALSE;
+}
+
+// ============================================================================
+// BufferedDualStreamPlayer JNI bindings (FBO ring buffer player)
+// These reuse the same demuxer infrastructure
+// ============================================================================
+
+JNIEXPORT jlong JNICALL
+Java_com_danielkpl2_webmalphaplayer_BufferedDualStreamPlayer_nativeCreateDemuxer(
+    JNIEnv* env,
+    jclass clazz,
+    jint fd,
+    jlong offset,
+    jlong length
+) {
+    auto demuxer = std::make_shared<DualStreamDemuxer>();
+    if (!openRangeInput(fd, offset, length, &demuxer->formatCtx, &demuxer->io)) {
+        return 0;
+    }
+    return registerDemuxer(std::move(demuxer));
+}
+
+JNIEXPORT jlong JNICALL
+Java_com_danielkpl2_webmalphaplayer_BufferedDualStreamPlayer_nativeCreateDemuxerFromDownload(
+    JNIEnv* env,
+    jclass clazz,
+    jstring path
+) {
+    auto demuxer = std::make_shared<DualStreamDemuxer>();
+    if (!openDownloadInput(stringFromJava(env, path), &demuxer->aborted, &demuxer->formatCtx, &demuxer->io)) {
+        return 0;
+    }
+    return registerDemuxer(std::move(demuxer));
+}
+
 JNIEXPORT void JNICALL
 Java_com_danielkpl2_webmalphaplayer_BufferedDualStreamPlayer_nativeDestroyDemuxer(
     JNIEnv* env,
     jclass clazz,
     jlong demuxerId
 ) {
-    std::lock_guard<std::mutex> lock(demuxersMutex);
-    demuxers.erase(demuxerId);
+    std::shared_ptr<DualStreamDemuxer> demuxer;
+    {
+        std::lock_guard<std::mutex> lock(demuxersMutex);
+        auto it = demuxers.find(demuxerId);
+        if (it == demuxers.end()) return;
+        demuxer = std::move(it->second);
+        demuxers.erase(it);
+    }
+    demuxer->aborted = true;
     LOGI("[Buffered] Demuxer %lld destroyed", demuxerId);
 }
 
@@ -1111,13 +1262,8 @@ Java_com_danielkpl2_webmalphaplayer_BufferedDualStreamPlayer_nativeReadPacket(
     jlong demuxerId
 ) {
     // Returns Object[] with: [Integer streamIndex, ByteBuffer data, Integer size, Long pts, Integer frameIndex]
-    DualStreamDemuxer* demuxer = nullptr;
-    {
-        std::lock_guard<std::mutex> lock(demuxersMutex);
-        auto it = demuxers.find(demuxerId);
-        if (it == demuxers.end()) return nullptr;
-        demuxer = it->second.get();
-    }
+    std::shared_ptr<DualStreamDemuxer> demuxer = findDemuxer(demuxerId);
+    if (!demuxer) return nullptr;
     
     AVPacket* packet = av_packet_alloc();
     if (!packet) return nullptr;
@@ -1196,11 +1342,10 @@ Java_com_danielkpl2_webmalphaplayer_BufferedDualStreamPlayer_nativeSeekToStart(
     jclass clazz,
     jlong demuxerId
 ) {
-    std::lock_guard<std::mutex> lock(demuxersMutex);
-    auto it = demuxers.find(demuxerId);
-    if (it == demuxers.end()) return;
+    // Not under demuxersMutex: on a download the seek reads the Cues, which may still be arriving
+    std::shared_ptr<DualStreamDemuxer> demuxer = findDemuxer(demuxerId);
+    if (!demuxer) return;
     
-    auto& demuxer = it->second;
     av_seek_frame(demuxer->formatCtx, demuxer->colorStreamIndex, 0, AVSEEK_FLAG_BACKWARD);
     demuxer->colorFrameIndex = 0;
     demuxer->alphaFrameIndex = 0;

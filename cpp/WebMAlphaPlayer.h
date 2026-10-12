@@ -227,6 +227,10 @@ public:
     // Reads bytes [offset, offset + length) of fd in place (APK assets, content:// streams).
     // fd is duplicated; the caller keeps ownership. A negative length means "to end of file".
     bool loadFromFileRange(int fd, int64_t offset, int64_t length);
+    // A cache file that may still be downloading (GrowingFile): reads wait for bytes that haven't
+    // arrived, so playback starts with the first frames. Use with Stream or StreamAndPreload;
+    // Preload's first seek reads the Cues, usually at the end, so it waits for the whole file.
+    bool loadFromDownload(const std::string& path);
     bool loadFromUrl(const std::string& url);  // Network loading
     void unload();
     
@@ -321,6 +325,7 @@ private:
     std::condition_variable decodeCV_;
     std::condition_variable_any prefetchCV_;  // Signal prefetch thread
     std::atomic<bool> shouldStop_{false};
+    std::atomic<bool> ioAbort_{false};  // Set by unload() so reads waiting on a download return
     std::atomic<int> prefetchTarget_{-1};  // Target frame for prefetch thread
     std::atomic<int> streamDecodePos_{0};  // Current sequential decode position for streaming
     std::atomic<bool> firstPassComplete_{false};  // For streamAndPreload: all frames cached after first pass
@@ -370,7 +375,8 @@ private:
     struct AVIOContext* avioCtx_ = nullptr;
     void* bufferCtx_ = nullptr;    // Opaque context for memory buffer
     uint8_t* avioBuffer_ = nullptr; // I/O buffer (must be freed separately)
-    struct AVIOContext* rangeIO_ = nullptr;  // loadFromFileRange reader (FileRangeIO)
+    struct AVIOContext* rangeIO_ = nullptr;  // loadFromFileRange / loadFromDownload reader (FileRangeIO)
+    bool openCustomInput(struct AVIOContext* io);  // Takes ownership of io as rangeIO_
     
     // Swscale context for YUVA420P conversion
     SwsContext* swsCtx_ = nullptr;

@@ -215,22 +215,30 @@ static void releaseGlobalDecodeQueue(void) {
     
     WEBM_VLOG(@"RNWebMAlphaWrapper loading: %@ (mode=%@, useDecodeQueue=%d)", sourceUri, _mode, _useDecodeQueue);
     
+    // The stream modes start on the first bytes. Preload decodes the whole clip before showing
+    // anything, and would hold the global decode queue for the whole download.
+    BOOL whileDownloading = ![_mode isEqualToString:@"preload"];
     __weak WebMAlphaWrapper *weakSelf = self;
-    [WebMSourceResolver resolveSource:sourceUri cacheKey:self.cacheKey completion:^(NSString *path, NSString *error) {
+    [WebMSourceResolver resolveSource:sourceUri
+                             cacheKey:self.cacheKey
+                     whileDownloading:whileDownloading
+                                ready:^(NSString *path, BOOL downloading) {
         WebMAlphaWrapper *strongSelf = weakSelf;
         if (!strongSelf || ![sourceUri isEqualToString:strongSelf.currentSourceUri]) return;
-        if (error) {
-            [strongSelf playerDidEncounterError:error];
-            return;
-        }
-        [strongSelf loadFromPathWithQueue:path];
+        [strongSelf loadFromPathWithQueue:path downloading:downloading];
+    }
+                               failed:^(NSString *error) {
+        WebMAlphaWrapper *strongSelf = weakSelf;
+        if (!strongSelf || ![sourceUri isEqualToString:strongSelf.currentSourceUri]) return;
+        [strongSelf playerDidEncounterError:error];
     }];
 }
 
 /**
- * Load from path, optionally using global decode queue for preload/streamAndPreload modes
+ * Load from path, optionally using global decode queue for preload/streamAndPreload modes.
+ * `downloading`: the file may still be arriving (WebMSourceResolver), so load it as a download.
  */
-- (void)loadFromPathWithQueue:(NSString *)path {
+- (void)loadFromPathWithQueue:(NSString *)path downloading:(BOOL)downloading {
     // Stream mode: load directly (streaming is already lightweight)
     // Preload/StreamAndPreload + useDecodeQueue: use global queue to serialize decoding
     // Preload/StreamAndPreload + !useDecodeQueue: load directly
@@ -248,11 +256,19 @@ static void releaseGlobalDecodeQueue(void) {
             }
             
             // Load on the queue (this blocks until decodeAllFrames completes)
-            [strongSelf.metalView loadFromPath:path];
+            [strongSelf loadPath:path downloading:downloading];
             
             // Release queue reference when done
             releaseGlobalDecodeQueue();
         });
+    } else {
+        [self loadPath:path downloading:downloading];
+    }
+}
+
+- (void)loadPath:(NSString *)path downloading:(BOOL)downloading {
+    if (downloading) {
+        [self.metalView loadFromDownloadPath:path];
     } else {
         [self.metalView loadFromPath:path];
     }

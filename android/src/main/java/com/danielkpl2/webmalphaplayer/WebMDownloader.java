@@ -12,12 +12,42 @@ import java.net.URL;
 import java.nio.charset.StandardCharsets;
 import java.security.MessageDigest;
 import java.security.NoSuchAlgorithmException;
+import java.util.ArrayList;
+import java.util.HashMap;
+import java.util.List;
+import java.util.Map;
+import java.util.concurrent.Executor;
 
 /**
  * Downloads remote videos into the app's cache directory. FFmpeg here is built without network
  * protocols, so http(s) sources are always played from a cached file.
+ *
+ * A download can be read while it runs: native code registers it (GrowingFile) under the cache
+ * file's path, and the {@code ...Download} native loaders wait for bytes that haven't arrived yet.
+ * Every view asking for the same file while it downloads shares one download.
  */
 final class WebMDownloader {
+
+    static {
+        System.loadLibrary("webmalphaplayer");
+    }
+
+    /** Called on a download thread, or on the calling thread if the file is already cached. */
+    interface Listener {
+        /**
+         * The file can be opened with the native {@code ...Download} loaders, which read it as it
+         * arrives. Called once, before {@link #onComplete} or {@link #onError}.
+         */
+        void onReadable(File cacheFile);
+
+        /** The whole file is in the cache. */
+        void onComplete(File cacheFile);
+
+        /** The download failed, before or after {@link #onReadable}. */
+        void onError(String message);
+    }
+
+    private static final Map<String, Download> downloads = new HashMap<>();
 
     private WebMDownloader() {}
 
@@ -26,50 +56,156 @@ final class WebMDownloader {
     }
 
     /**
-     * Returns the cached file for {@code url}, downloading it first if needed.
+     * Reports the cached file for {@code url} to {@code listener}, downloading it first if needed.
      *
      * @param cacheKey optional file name (may include subfolders) under the cache directory; when
      *                 empty, the name is derived from the URL
+     * @param executor runs a new download; it blocks for as long as the download takes
      */
-    static File fetch(Context context, String url, String cacheKey) throws IOException {
-        File cacheFile = cacheFileFor(context.getCacheDir(), url, cacheKey);
-        if (cacheFile.length() > 0) return cacheFile;
-
-        File dir = cacheFile.getParentFile();
-        if (dir != null && !dir.isDirectory() && !dir.mkdirs()) {
-            throw new IOException("Cannot create cache directory " + dir);
+    static void fetch(Context context, String url, String cacheKey, Executor executor, Listener listener) {
+        File cacheFile;
+        try {
+            cacheFile = cacheFileFor(context.getCacheDir(), url, cacheKey);
+        } catch (IOException e) {
+            listener.onError(e.getMessage());
+            return;
         }
 
-        HttpURLConnection connection = (HttpURLConnection) new URL(url).openConnection();
-        File tempFile = null;
-        try {
-            connection.setConnectTimeout(15000);
-            connection.setReadTimeout(30000);
-            connection.setRequestProperty("User-Agent", "WebMAlphaPlayer/1.0");
-
-            int status = connection.getResponseCode();
-            if (status != HttpURLConnection.HTTP_OK) {
-                throw new IOException("HTTP " + status + " for " + url);
+        Download download;
+        boolean start = false;
+        synchronized (downloads) {
+            download = downloads.get(cacheFile.getPath());
+            if (download == null && cacheFile.length() == 0) {
+                download = new Download(url, cacheFile);
+                downloads.put(cacheFile.getPath(), download);
+                start = true;
             }
+        }
+        if (download == null) {
+            // Already in the cache
+            listener.onReadable(cacheFile);
+            listener.onComplete(cacheFile);
+            return;
+        }
+        download.addListener(listener);
+        if (start) executor.execute(download::run);
+    }
 
-            // Several views may fetch the same URL at once; each writes its own temp file and the
-            // rename makes whichever finishes first visible as a complete file.
-            tempFile = File.createTempFile("download", ".part", dir);
-            try (InputStream in = connection.getInputStream();
-                 OutputStream out = new FileOutputStream(tempFile)) {
-                byte[] buffer = new byte[64 * 1024];
-                int n;
-                while ((n = in.read(buffer)) != -1) {
-                    out.write(buffer, 0, n);
+    private static final class Download {
+        private final String url;
+        private final File cacheFile;
+
+        // Guarded by this
+        private final List<Listener> listeners = new ArrayList<>();
+        private boolean readable = false;
+        private boolean ended = false;
+        private String error = null;
+
+        Download(String url, File cacheFile) {
+            this.url = url;
+            this.cacheFile = cacheFile;
+        }
+
+        /** Replays whatever has already happened, so a late listener sees the same sequence. */
+        void addListener(Listener listener) {
+            boolean wasReadable;
+            boolean wasEnded;
+            String endError;
+            synchronized (this) {
+                if (!ended) listeners.add(listener);
+                wasReadable = readable;
+                wasEnded = ended;
+                endError = error;
+            }
+            if (wasReadable) listener.onReadable(cacheFile);
+            if (wasEnded) {
+                if (endError == null) listener.onComplete(cacheFile);
+                else listener.onError(endError);
+            }
+        }
+
+        void run() {
+            long handle = 0;
+            File partFile = null;
+            HttpURLConnection connection = null;
+            try {
+                File dir = cacheFile.getParentFile();
+                if (dir != null && !dir.isDirectory() && !dir.mkdirs()) {
+                    throw new IOException("Cannot create cache directory " + dir);
                 }
+
+                connection = (HttpURLConnection) new URL(url).openConnection();
+                connection.setConnectTimeout(15000);
+                connection.setReadTimeout(30000);
+                connection.setRequestProperty("User-Agent", "WebMAlphaPlayer/1.0");
+
+                int status = connection.getResponseCode();
+                if (status != HttpURLConnection.HTTP_OK) {
+                    throw new IOException("HTTP " + status + " for " + url);
+                }
+                long expectedSize = connection.getContentLengthLong();
+
+                // Readers open the cache path; while this runs, native code points them at the
+                // part file. The rename at the end makes the finished file visible as complete.
+                partFile = File.createTempFile("download", ".part", dir);
+                try (InputStream in = connection.getInputStream();
+                     OutputStream out = new FileOutputStream(partFile)) {
+                    handle = nativeBegin(cacheFile.getPath(), partFile.getPath(), expectedSize);
+                    if (handle == 0) throw new IOException("Cannot read " + partFile);
+                    markReadable();
+
+                    byte[] buffer = new byte[64 * 1024];
+                    long written = 0;
+                    int n;
+                    while ((n = in.read(buffer)) != -1) {
+                        out.write(buffer, 0, n);
+                        written += n;
+                        nativeSetWritten(handle, written);
+                    }
+                    if (expectedSize >= 0 && written != expectedSize) {
+                        throw new IOException("Connection closed after " + written + " of " + expectedSize + " bytes");
+                    }
+                }
+                if (!partFile.renameTo(cacheFile) && cacheFile.length() == 0) {
+                    throw new IOException("Cannot write " + cacheFile);
+                }
+                end(handle, null);
+            } catch (IOException e) {
+                end(handle, e.getMessage() != null ? e.getMessage() : e.toString());
+            } finally {
+                if (connection != null) connection.disconnect();
+                if (partFile != null) partFile.delete();
             }
-            if (!tempFile.renameTo(cacheFile) && cacheFile.length() == 0) {
-                throw new IOException("Cannot write " + cacheFile);
+        }
+
+        private void markReadable() {
+            List<Listener> toNotify;
+            synchronized (this) {
+                readable = true;
+                toNotify = new ArrayList<>(listeners);
             }
-            return cacheFile;
-        } finally {
-            connection.disconnect();
-            if (tempFile != null) tempFile.delete();
+            for (Listener listener : toNotify) listener.onReadable(cacheFile);
+        }
+
+        private void end(long handle, String endError) {
+            // Unregister first, so a view arriving from now on finds the finished file (or
+            // starts over after a failure) instead of joining a download that is over.
+            synchronized (downloads) {
+                downloads.remove(cacheFile.getPath());
+            }
+            if (handle != 0) nativeEnd(handle, endError == null);
+
+            List<Listener> toNotify;
+            synchronized (this) {
+                ended = true;
+                error = endError;
+                toNotify = new ArrayList<>(listeners);
+                listeners.clear();
+            }
+            for (Listener listener : toNotify) {
+                if (endError == null) listener.onComplete(cacheFile);
+                else listener.onError(endError);
+            }
         }
     }
 
@@ -96,4 +232,10 @@ final class WebMDownloader {
             throw new IllegalStateException(e);
         }
     }
+
+    /** Registers the download with native readers; 0 if the part file can't be opened. */
+    private static native long nativeBegin(String path, String partPath, long expectedSize);
+    private static native void nativeSetWritten(long handle, long bytes);
+    /** Unregisters and frees the handle; readers then see end of file, or an error if not finished. */
+    private static native void nativeEnd(long handle, boolean finished);
 }

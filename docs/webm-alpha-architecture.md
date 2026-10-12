@@ -24,12 +24,12 @@ React (JS) WebMAlphaView props
    │  source {uri|path}, cacheKey?, autoPlay, loop, paused, mode, verbose
    │
    ├─ Android: RNWebMAlphaViewManager → WebMAlphaTextureView (TextureView)
-   │      ├─ download/cache (HTTP→cache dir, cacheKey-aware) → loadFromFile
+   │      ├─ download/cache (WebMDownloader, cacheKey-aware) → load, or loadFromDownload while it runs
    │      ├─ if dual-stream + HW decoder → BufferedDualStreamPlayer (MediaCodec)
    │      └─ if single-stream or no HW   → WebMAlphaPlayer (C++/FFmpeg)
    │
    ├─ iOS: RNWebMAlphaViewManager → WebMAlphaWrapper → WebMAlphaMetalPlayerView
-   │      └─ download/cache (NSURLSession→Caches) → loadFromPath → WebMAlphaPlayer (C++)
+   │      └─ download/cache (WebMDownload, NSURLSession→Caches) → loadFromPath / loadFromDownloadPath → WebMAlphaPlayer (C++)
    │
    └─ Web: HTML5 <video> element fallback
 ```
@@ -53,7 +53,7 @@ React (JS) WebMAlphaView props
 ### iOS (Objective-C++)
 
 - **`RNWebMAlphaViewManager`** — Creates `WebMAlphaWrapper` holding `WebMAlphaMetalPlayerView`.
-- Source download via `NSURLSession`, cached to `Caches` (subdirs from `cacheKey`).
+- Source download via `NSURLSession` (`WebMDownload` in `WebMAlphaPlayerBridge.mm`), cached to `Caches` (subdirs from `cacheKey`).
 - Exposes play/pause/stop/seek via `RCT_EXPORT_METHOD`. Delegate callbacks bridge events to JS.
 
 ### C++ Core (cross-platform, software path)
@@ -65,6 +65,7 @@ React (JS) WebMAlphaView props
   - `FrameCache` (LRU, mutex-protected) for decoded frames
   - Playback loop clocking frames at target FPS
   - `PlayerConfig`: cache size, `preloadAllFrames`, playback speed
+- **`GrowingFile`** — A download in progress, registered under its cache path. The platform downloader reports each chunk it writes to a part file; `openDownloadIO` (in `FileRangeIO`) gives FFmpeg an AVIO context that waits for bytes not yet written, instead of hitting EOF.
 
 ## Threading Model
 
@@ -208,7 +209,7 @@ React Native may detach and re-attach the view during z-index changes:
 ## Data Paths
 
 1. **Asset acquisition**
-   - HTTP: downloaded to cache (cacheKey → subpath). Reuses cached file if present.
+   - HTTP: downloaded to cache (cacheKey → subpath). Reuses cached file if present. One download per cache path, shared by every view asking for it. In `stream`/`streamAndPreload` mode the view loads as soon as the first bytes are written and reads the part file through `GrowingFile`; `preload` loads the finished file.
    - Local: `file://` or bundle asset resolved directly.
 2. **Decode**
    - Software: C++ opens file, finds color + alpha streams, initializes codecs. Frames decoded to YUVA.
@@ -223,12 +224,11 @@ React Native may detach and re-attach the view during z-index changes:
 ## Cache Key Behavior
 
 - JS `cacheKey` defines subpath under platform cache dir. Example: `videos/org/collection/asset/glows/hash-60x60.webm`.
-- Android: directories auto-created; temp file uses hashed suffix; rename to final cache file.
-- iOS: parent directories created; file saved atomically to final cache path.
+- Both platforms: directories auto-created; the download goes to a `.part` file in the same directory, renamed to the final cache path when complete and deleted if it fails. Readers hold their own fd, so the rename doesn't disturb a view that is already playing it.
 
 ## Error and Event Flow
 
-- Download errors → `onError` (JS) with message.
+- Download errors → `onError` (JS) with message, also when playback had already started. Reads past the last byte of a failed download return `EIO`, and the C++ decode loop stops instead of looping over the partial file.
 - Decode errors → C++ delegate / Java callback → `onError`.
 - Successful load → `onLoad` (totalFrames, width, height).
 - Playback end → `onEnd`.

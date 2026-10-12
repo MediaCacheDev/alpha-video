@@ -5,8 +5,13 @@
 
 #import "WebMAlphaPlayerBridge.h"
 #import <CommonCrypto/CommonDigest.h>
+#include "GrowingFile.h"
 #include "WebMAlphaPlayer.h"
+#include <cerrno>
+#include <cstring>
+#include <fcntl.h>
 #include <memory>
+#include <unistd.h>
 
 // Lifecycle and per-frame logging inside WebMAlphaMetalPlayerView, only with its verbose flag
 #define WEBM_VLOG(...) do { if (self.verbose) NSLog(__VA_ARGS__); } while (0)
@@ -282,6 +287,10 @@
 
 - (BOOL)loadFromFile:(NSString *)path {
     return _player->loadFromFile([path UTF8String]);
+}
+
+- (BOOL)loadFromDownload:(NSString *)path {
+    return _player->loadFromDownload([path UTF8String]);
 }
 
 - (BOOL)loadFromData:(NSData *)data {
@@ -615,6 +624,11 @@
     return [_player loadFromFile:path];
 }
 
+- (BOOL)loadFromDownloadPath:(NSString *)path {
+    _sourcePath = path;
+    return [_player loadFromDownload:path];
+}
+
 - (BOOL)loadFromURL:(NSURL *)url {
     _sourceURL = url;
     return [_player loadFromURL:url];
@@ -800,38 +814,20 @@
     // Even if not "animating", we should render if we have a frame
     // This ensures the first frame shows up
     
-    // Poll the current frame index from C++ player
-    int currentFrame = _player.currentFrame;
-    
-    // Debug log periodically
+    // Draw the last frame the C++ clock emitted. Its frame index has already moved on to the
+    // next frame, which in the stream modes may not be decoded yet (a slow download, a slow
+    // device), so looking that one up in the cache would mostly miss and show nothing new.
+    WebMFrame *frame = self.latestFrame;
+
     static int debugCounter = 0;
     if (debugCounter++ % 30 == 0) {
-        WEBM_VLOG(@"drawInMTKView: frame=%d, lastRendered=%d, isPlaying=%d, isAnimating=%d", 
-              currentFrame, _lastRenderedFrame, _player.isPlaying, _isAnimating);
+        WEBM_VLOG(@"drawInMTKView: latest=%d, lastRendered=%d, isPlaying=%d, isAnimating=%d",
+              frame ? frame.frameIndex : -1, _lastRenderedFrame, _player.isPlaying, _isAnimating);
     }
-    
-    // Render if frame changed OR if we haven't rendered anything yet
-    if ((currentFrame != _lastRenderedFrame && currentFrame >= 0) || _lastRenderedFrame == -1) {
-        int frameToGet = currentFrame >= 0 ? currentFrame : 0;
-        
-        // Get frame from cache (thread-safe, no decoding)
-        WebMFrame *frame = [_player getCachedFrame:frameToGet];
-        
-        // Debug: log cache retrieval
-        static int cacheLogCount = 0;
-        if (cacheLogCount++ < 20 || cacheLogCount % 60 == 0) {
-            WEBM_VLOG(@"getCachedFrame(%d): %@ (lastRendered=%d)", 
-                  frameToGet, frame ? @"GOT FRAME" : @"NIL!", _lastRenderedFrame);
-        }
-        
-        if (frame) {
-            _lastRenderedFrame = currentFrame >= 0 ? currentFrame : 0;
-            self.latestFrame = frame;
-            [self renderFrame:frame];
-        } else {
-            // Frame not in cache - this shouldn't happen if preload worked
-            NSLog(@"Frame %d not in cache!", frameToGet);
-        }
+
+    if (frame && (frame.frameIndex != _lastRenderedFrame || _lastRenderedFrame == -1)) {
+        _lastRenderedFrame = frame.frameIndex;
+        [self renderFrame:frame];
     }
 }
 
@@ -988,30 +984,273 @@ static BOOL WebMFileHasData(NSString *path) {
     return attributes != nil && attributes.fileSize > 0;
 }
 
+//==============================================================================
+// WebMDownload: one download into Caches, readable while it runs
+//==============================================================================
+
+/** Callbacks run on the download's delegate queue, or on the caller's thread if already cached. */
+@interface WebMDownloadListener : NSObject
+@property (nonatomic, copy) void (^readable)(void);
+@property (nonatomic, copy) void (^complete)(void);
+@property (nonatomic, copy) void (^failed)(NSString *error);
+@end
+
+@implementation WebMDownloadListener
+@end
+
+/**
+ * Writes the response into a part file next to the cache file and reports each chunk to a C++
+ * GrowingFile registered under the cache path, so loadFromDownload: can read it as it arrives.
+ * The part file is renamed into place at the end. Shared by everyone asking for the same path.
+ */
+@interface WebMDownload : NSObject <NSURLSessionDataDelegate>
++ (void)fetch:(NSURL *)url cachePath:(NSString *)cachePath listener:(WebMDownloadListener *)listener;
+@end
+
+static NSMutableDictionary<NSString *, WebMDownload *> *WebMActiveDownloads(void) {
+    static NSMutableDictionary<NSString *, WebMDownload *> *downloads;
+    static dispatch_once_t once;
+    dispatch_once(&once, ^{
+        downloads = [NSMutableDictionary dictionary];
+    });
+    return downloads;
+}
+
+@implementation WebMDownload {
+    NSString *_cachePath;
+    // Delegate queue only
+    NSString *_partPath;
+    int _fd;
+    int64_t _expectedSize;
+    int64_t _written;
+    std::shared_ptr<webm::GrowingFile> _file;
+    BOOL _ending;
+    // @synchronized (self)
+    NSMutableArray<WebMDownloadListener *> *_listeners;
+    BOOL _readable;
+    BOOL _ended;
+    NSString *_error;
+}
+
++ (void)fetch:(NSURL *)url cachePath:(NSString *)cachePath listener:(WebMDownloadListener *)listener {
+    WebMDownload *download;
+    BOOL start = NO;
+    @synchronized (WebMActiveDownloads()) {
+        download = WebMActiveDownloads()[cachePath];
+        if (!download && !WebMFileHasData(cachePath)) {
+            download = [[WebMDownload alloc] initWithCachePath:cachePath];
+            WebMActiveDownloads()[cachePath] = download;
+            start = YES;
+        }
+    }
+    if (!download) {
+        // Already in the cache
+        listener.readable();
+        listener.complete();
+        return;
+    }
+    [download addListener:listener];
+    if (start) [download start:url];
+}
+
+- (instancetype)initWithCachePath:(NSString *)cachePath {
+    if ((self = [super init])) {
+        _cachePath = [cachePath copy];
+        _fd = -1;
+        _expectedSize = -1;
+        _listeners = [NSMutableArray array];
+    }
+    return self;
+}
+
+- (void)start:(NSURL *)url {
+    NSURLSessionConfiguration *configuration = [NSURLSessionConfiguration defaultSessionConfiguration];
+    configuration.URLCache = nil;  // The cache file is the cache
+    NSURLSession *session = [NSURLSession sessionWithConfiguration:configuration delegate:self delegateQueue:nil];
+    [[session dataTaskWithURL:url] resume];
+    // Releases the session, and with it this delegate, once the task ends
+    [session finishTasksAndInvalidate];
+}
+
+/** Replays whatever has already happened, so a late listener sees the same sequence. */
+- (void)addListener:(WebMDownloadListener *)listener {
+    BOOL wasReadable, wasEnded;
+    NSString *endError;
+    @synchronized (self) {
+        if (!_ended) [_listeners addObject:listener];
+        wasReadable = _readable;
+        wasEnded = _ended;
+        endError = _error;
+    }
+    if (wasReadable) listener.readable();
+    if (wasEnded) {
+        if (endError) listener.failed(endError);
+        else listener.complete();
+    }
+}
+
+- (void)URLSession:(NSURLSession *)session
+          dataTask:(NSURLSessionDataTask *)dataTask
+didReceiveResponse:(NSURLResponse *)response
+ completionHandler:(void (^)(NSURLSessionResponseDisposition))completionHandler {
+    NSInteger status = [response isKindOfClass:[NSHTTPURLResponse class]]
+        ? ((NSHTTPURLResponse *)response).statusCode : 200;
+    NSString *error = status == 200
+        ? [self openPartFileFor:response]
+        : [NSString stringWithFormat:@"HTTP %ld for %@", (long)status, dataTask.originalRequest.URL.absoluteString];
+    if (error) {
+        [self endWithError:error];
+        completionHandler(NSURLSessionResponseCancel);
+        return;
+    }
+    [self markReadable];
+    completionHandler(NSURLSessionResponseAllow);
+}
+
+- (nullable NSString *)openPartFileFor:(NSURLResponse *)response {
+    NSString *dir = [_cachePath stringByDeletingLastPathComponent];
+    [[NSFileManager defaultManager] createDirectoryAtPath:dir withIntermediateDirectories:YES attributes:nil error:nil];
+    _partPath = [dir stringByAppendingPathComponent:
+                 [NSString stringWithFormat:@"download-%@.part", [NSUUID UUID].UUIDString]];
+    _fd = open(_partPath.fileSystemRepresentation, O_WRONLY | O_CREAT | O_TRUNC | O_CLOEXEC, 0600);
+    if (_fd < 0) {
+        return [NSString stringWithFormat:@"Cannot write %@: %s", _partPath, strerror(errno)];
+    }
+
+    // A compressed body arrives decompressed, so its Content-Length isn't the file's size.
+    NSString *encoding = [response isKindOfClass:[NSHTTPURLResponse class]]
+        ? [(NSHTTPURLResponse *)response valueForHTTPHeaderField:@"Content-Encoding"] : nil;
+    BOOL identity = encoding.length == 0 || [encoding caseInsensitiveCompare:@"identity"] == NSOrderedSame;
+    _expectedSize = identity && response.expectedContentLength >= 0 ? response.expectedContentLength : -1;
+
+    _file = webm::GrowingFile::begin(_cachePath.UTF8String, _partPath.UTF8String, _expectedSize);
+    if (!_file) {
+        return [NSString stringWithFormat:@"Cannot read %@", _partPath];
+    }
+    return nil;
+}
+
+- (void)URLSession:(NSURLSession *)session dataTask:(NSURLSessionDataTask *)dataTask didReceiveData:(NSData *)data {
+    if (_ending || !_file) return;
+
+    __block int writeErrno = 0;
+    const int fd = _fd;
+    [data enumerateByteRangesUsingBlock:^(const void *bytes, NSRange range, BOOL *stop) {
+        const uint8_t *p = static_cast<const uint8_t *>(bytes);
+        size_t left = range.length;
+        while (left > 0) {
+            ssize_t n = write(fd, p, left);
+            if (n < 0) {
+                if (errno == EINTR) continue;
+                writeErrno = errno;
+                *stop = YES;
+                return;
+            }
+            p += n;
+            left -= static_cast<size_t>(n);
+        }
+    }];
+    if (writeErrno != 0) {
+        [self endWithError:[NSString stringWithFormat:@"Cannot write %@: %s", _partPath, strerror(writeErrno)]];
+        [dataTask cancel];
+        return;
+    }
+    _written += static_cast<int64_t>(data.length);
+    _file->setWritten(_written);
+}
+
+- (void)URLSession:(NSURLSession *)session task:(NSURLSessionTask *)task didCompleteWithError:(NSError *)error {
+    if (error) {
+        [self endWithError:error.localizedDescription ?: @"unknown error"];
+        return;
+    }
+    if (!_file) {
+        [self endWithError:@"No response"];
+        return;
+    }
+    if (_expectedSize >= 0 && _written != _expectedSize) {
+        [self endWithError:[NSString stringWithFormat:@"Connection closed after %lld of %lld bytes",
+                            (long long)_written, (long long)_expectedSize]];
+        return;
+    }
+    close(_fd);
+    _fd = -1;
+    int renameErrno = rename(_partPath.fileSystemRepresentation, _cachePath.fileSystemRepresentation) == 0 ? 0 : errno;
+    if (renameErrno != 0 && !WebMFileHasData(_cachePath)) {
+        [self endWithError:[NSString stringWithFormat:@"Cannot write cache file: %s", strerror(renameErrno)]];
+        return;
+    }
+    [self endWithError:nil];
+}
+
+- (void)markReadable {
+    NSArray<WebMDownloadListener *> *listeners;
+    @synchronized (self) {
+        _readable = YES;
+        listeners = [_listeners copy];
+    }
+    for (WebMDownloadListener *listener in listeners) listener.readable();
+}
+
+/** nil means finished. Only the first call counts. */
+- (void)endWithError:(nullable NSString *)error {
+    if (_ending) return;
+    _ending = YES;
+
+    // Unregister first, so a view asking from now on finds the finished file (or starts over
+    // after a failure) instead of joining a download that is over.
+    @synchronized (WebMActiveDownloads()) {
+        [WebMActiveDownloads() removeObjectForKey:_cachePath];
+    }
+    if (_file) {
+        if (error) _file->fail();
+        else _file->finish();
+        _file.reset();
+    }
+    if (_fd >= 0) {
+        close(_fd);
+        _fd = -1;
+    }
+    if (_partPath) unlink(_partPath.fileSystemRepresentation);
+
+    NSArray<WebMDownloadListener *> *listeners;
+    @synchronized (self) {
+        _ended = YES;
+        _error = [error copy];
+        listeners = [_listeners copy];
+        [_listeners removeAllObjects];
+    }
+    for (WebMDownloadListener *listener in listeners) {
+        if (error) listener.failed(error);
+        else listener.complete();
+    }
+}
+
+@end
+
 @implementation WebMSourceResolver
 
 + (void)resolveSource:(NSString *)uri
              cacheKey:(NSString *)cacheKey
-           completion:(void (^)(NSString *path, NSString *error))completion {
-    void (^finish)(NSString *, NSString *) = ^(NSString *path, NSString *error) {
-        dispatch_async(dispatch_get_main_queue(), ^{
-            completion(path, error);
-        });
-    };
-
+     whileDownloading:(BOOL)whileDownloading
+                ready:(void (^)(NSString *path, BOOL downloading))ready
+               failed:(void (^)(NSString *error))failed {
     if ([uri hasPrefix:@"https://"] || [uri hasPrefix:@"http://"]) {
-        [self download:uri cacheKey:cacheKey finish:finish];
+        [self download:uri cacheKey:cacheKey whileDownloading:whileDownloading ready:ready failed:failed];
         return;
     }
 
     NSString *path = [self localPathForSource:uri];
+    NSString *error = nil;
     if (!path) {
-        finish(nil, [NSString stringWithFormat:@"Unsupported source '%@'. Use https://, file://, an absolute path or asset://", uri]);
+        error = [NSString stringWithFormat:@"Unsupported source '%@'. Use https://, file://, an absolute path or asset://", uri];
     } else if (![[NSFileManager defaultManager] fileExistsAtPath:path]) {
-        finish(nil, [NSString stringWithFormat:@"File not found: %@", uri]);
-    } else {
-        finish(path, nil);
+        error = [NSString stringWithFormat:@"File not found: %@", uri];
     }
+    dispatch_async(dispatch_get_main_queue(), ^{
+        if (error) failed(error);
+        else ready(path, NO);
+    });
 }
 
 + (nullable NSString *)localPathForSource:(NSString *)uri {
@@ -1035,10 +1274,18 @@ static BOOL WebMFileHasData(NSString *path) {
 
 + (void)download:(NSString *)urlString
         cacheKey:(NSString *)cacheKey
-          finish:(void (^)(NSString *, NSString *))finish {
+whileDownloading:(BOOL)whileDownloading
+           ready:(void (^)(NSString *, BOOL))ready
+          failed:(void (^)(NSString *))failed {
+    void (^fail)(NSString *) = ^(NSString *error) {
+        dispatch_async(dispatch_get_main_queue(), ^{
+            failed(error);
+        });
+    };
+
     NSURL *url = [NSURL URLWithString:urlString];
     if (!url) {
-        finish(nil, [NSString stringWithFormat:@"Invalid URL: %@", urlString]);
+        fail([NSString stringWithFormat:@"Invalid URL: %@", urlString]);
         return;
     }
 
@@ -1048,7 +1295,7 @@ static BOOL WebMFileHasData(NSString *path) {
     if (cacheKey.length > 0) {
         cachePath = [[cacheDir stringByAppendingPathComponent:cacheKey] stringByStandardizingPath];
         if (![cachePath hasPrefix:[cacheDir stringByAppendingString:@"/"]]) {
-            finish(nil, [NSString stringWithFormat:@"cacheKey must stay inside the cache directory: %@", cacheKey]);
+            fail([NSString stringWithFormat:@"cacheKey must stay inside the cache directory: %@", cacheKey]);
             return;
         }
     } else {
@@ -1056,37 +1303,23 @@ static BOOL WebMFileHasData(NSString *path) {
                      [NSString stringWithFormat:@"webm_%@.webm", WebMSHA256Hex(urlString)]];
     }
 
-    if (WebMFileHasData(cachePath)) {
-        finish(cachePath, nil);
-        return;
-    }
-
-    NSURLSessionDownloadTask *task = [[NSURLSession sharedSession] downloadTaskWithURL:url
-        completionHandler:^(NSURL *location, NSURLResponse *response, NSError *error) {
-        if (error || !location) {
-            finish(nil, [NSString stringWithFormat:@"Download failed: %@", error.localizedDescription ?: @"unknown error"]);
-            return;
-        }
-        NSInteger status = [response isKindOfClass:[NSHTTPURLResponse class]]
-            ? ((NSHTTPURLResponse *)response).statusCode : 200;
-        if (status != 200) {
-            finish(nil, [NSString stringWithFormat:@"Download failed: HTTP %ld for %@", (long)status, urlString]);
-            return;
-        }
-
-        // The temporary file is deleted when this handler returns, so move it now. Another view
-        // may have finished the same download first, in which case its file is used.
-        NSFileManager *fileManager = [NSFileManager defaultManager];
-        [fileManager createDirectoryAtPath:[cachePath stringByDeletingLastPathComponent]
-               withIntermediateDirectories:YES attributes:nil error:nil];
-        NSError *moveError = nil;
-        if (![fileManager moveItemAtPath:location.path toPath:cachePath error:&moveError] && !WebMFileHasData(cachePath)) {
-            finish(nil, [NSString stringWithFormat:@"Cannot write cache file: %@", moveError.localizedDescription]);
-            return;
-        }
-        finish(cachePath, nil);
-    }];
-    [task resume];
+    WebMDownloadListener *listener = [WebMDownloadListener new];
+    listener.readable = ^{
+        if (!whileDownloading) return;
+        dispatch_async(dispatch_get_main_queue(), ^{
+            ready(cachePath, YES);
+        });
+    };
+    listener.complete = ^{
+        if (whileDownloading) return;
+        dispatch_async(dispatch_get_main_queue(), ^{
+            ready(cachePath, NO);
+        });
+    };
+    listener.failed = ^(NSString *error) {
+        fail([NSString stringWithFormat:@"Download failed: %@", error]);
+    };
+    [WebMDownload fetch:url cachePath:cachePath listener:listener];
 }
 
 @end

@@ -15,13 +15,14 @@ import java.util.regex.Pattern;
  * A local video the player can read in place: a file, an APK asset, a raw resource, or a
  * content:// URI.
  *
- * Every kind opens as an {@link AssetFileDescriptor} (descriptor + byte range), which native code
- * reads directly, so nothing is copied out first. Remote URLs are not sources; they are
- * downloaded by {@link WebMDownloader} and played as files.
+ * Every kind but a download opens as an {@link AssetFileDescriptor} (descriptor + byte range),
+ * which native code reads directly, so nothing is copied out first. Remote URLs are not sources;
+ * {@link WebMDownloader} fetches them into the cache, and the file is played as a download (read
+ * by native code as it arrives) or, once complete, as a plain file.
  */
 final class WebMSource {
 
-    private enum Kind { FILE, ASSET, RAW, CONTENT }
+    private enum Kind { FILE, ASSET, RAW, CONTENT, DOWNLOAD }
 
     private static final String ASSET_SCHEME = "asset://";
     // What Image.resolveAssetSource(require(...)) gives in a release build: a res/raw name
@@ -37,6 +38,20 @@ final class WebMSource {
 
     static WebMSource file(String path) {
         return new WebMSource(Kind.FILE, path);
+    }
+
+    /** A {@link WebMDownloader} cache file that may still be downloading. */
+    static WebMSource download(String path) {
+        return new WebMSource(Kind.DOWNLOAD, path);
+    }
+
+    /** Read it through the native {@code ...Download} loaders by {@link #path()}, not {@link #open}. */
+    boolean isDownload() {
+        return kind == Kind.DOWNLOAD;
+    }
+
+    String path() {
+        return location;
     }
 
     /**
@@ -77,6 +92,8 @@ final class WebMSource {
                 return openAsset(context);
             case RAW:
                 return openRawResource(context);
+            case DOWNLOAD:
+                throw new IllegalStateException("A download is read through the native download loaders: " + location);
             case CONTENT: {
                 AssetFileDescriptor afd = context.getContentResolver()
                     .openAssetFileDescriptor(Uri.parse(location), "r");

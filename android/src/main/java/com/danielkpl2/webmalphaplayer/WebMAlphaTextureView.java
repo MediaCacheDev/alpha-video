@@ -134,10 +134,19 @@ public class WebMAlphaTextureView extends TextureView implements
         return t;
     });
     
+    // Probing a file that is still downloading can wait for its first bytes, so not on the main thread.
+    private static final ExecutorService probeExecutor = Executors.newCachedThreadPool(r -> {
+        Thread t = new Thread(r, "WebMProbe");
+        t.setDaemon(true);
+        return t;
+    });
+    
     // Source as given (may be remote), and the local source to load once a surface exists
     // and again after reattach. Main thread only.
     private String sourceUri = null;
     private String localSource = null;
+    // localSource is a WebMDownloader cache file, read through the download loaders as it arrives
+    private boolean localSourceIsDownload = false;
     private String cacheKey = null;
     // Bumped on every setSource so a slow download can't load over a newer source.
     private int sourceGeneration = 0;
@@ -361,6 +370,7 @@ public class WebMAlphaTextureView extends TextureView implements
         final int generation = ++sourceGeneration;
         sourceUri = uri;
         localSource = null;
+        localSourceIsDownload = false;
         // Props arriving in the same update (cacheKey, mode, ...) are applied after this one.
         post(() -> {
             if (generation == sourceGeneration) resolveSource(uri, generation);
@@ -373,24 +383,45 @@ public class WebMAlphaTextureView extends TextureView implements
             return;
         }
         
-        final String key = cacheKey;
-        final Context appContext = getContext().getApplicationContext();
-        downloadExecutor.execute(() -> {
-            try {
-                File file = WebMDownloader.fetch(appContext, uri, key);
-                post(() -> {
-                    if (generation == sourceGeneration) showLocalSource(file.getAbsolutePath());
-                });
-            } catch (IOException e) {
-                post(() -> {
-                    if (generation == sourceGeneration) reportError("Download failed: " + e.getMessage());
-                });
-            }
-        });
+        // The stream modes start on the first bytes. Preload decodes the whole clip before
+        // showing anything, and would hold the global decode queue for the whole download.
+        final boolean playWhileDownloading = !MODE_PRELOAD.equals(mode);
+        WebMDownloader.fetch(getContext().getApplicationContext(), uri, cacheKey, downloadExecutor,
+            new WebMDownloader.Listener() {
+                @Override
+                public void onReadable(File cacheFile) {
+                    if (!playWhileDownloading) return;
+                    post(() -> {
+                        if (generation == sourceGeneration) showDownload(cacheFile.getPath());
+                    });
+                }
+                
+                @Override
+                public void onComplete(File cacheFile) {
+                    if (playWhileDownloading) return;
+                    post(() -> {
+                        if (generation == sourceGeneration) showLocalSource(cacheFile.getAbsolutePath());
+                    });
+                }
+                
+                @Override
+                public void onError(String message) {
+                    post(() -> {
+                        if (generation == sourceGeneration) reportError("Download failed: " + message);
+                    });
+                }
+            });
     }
     
     private void showLocalSource(String uri) {
         localSource = uri;
+        localSourceIsDownload = false;
+        loadLocalSource();
+    }
+    
+    private void showDownload(String path) {
+        localSource = path;
+        localSourceIsDownload = true;
         loadLocalSource();
     }
     
@@ -400,6 +431,10 @@ public class WebMAlphaTextureView extends TextureView implements
         if (uri == null) return;
         if (!glReady) {
             logV("Deferring load until the surface is ready: " + uri);
+            return;
+        }
+        if (localSourceIsDownload) {
+            probeDownload(uri);
             return;
         }
         
@@ -416,6 +451,21 @@ public class WebMAlphaTextureView extends TextureView implements
             reportError(e.getMessage());
             return;
         }
+        loadProbedSource(source, isDualStream);
+    }
+    
+    private void probeDownload(String path) {
+        final int generation = sourceGeneration;
+        probeExecutor.execute(() -> {
+            boolean isDualStream = BufferedDualStreamPlayer.nativeIsDualStreamDownload(path);
+            post(() -> {
+                if (generation != sourceGeneration || !path.equals(localSource) || isReleased || !glReady) return;
+                loadProbedSource(WebMSource.download(path), isDualStream);
+            });
+        });
+    }
+    
+    private void loadProbedSource(WebMSource source, boolean isDualStream) {
         logV("Source " + source + " isDualStream=" + isDualStream);
         
         boolean hasHwDecoder = SurfaceTextureVideoDecoder.isVp9HardwareDecoderAvailable() ||
@@ -510,11 +560,15 @@ public class WebMAlphaTextureView extends TextureView implements
             
             // Load the file (creates OES textures in this GL context)
             boolean loaded;
-            try (AssetFileDescriptor afd = source.open(getContext())) {
-                loaded = bufferedPlayer.loadFromFd(
-                    afd.getParcelFileDescriptor().getFd(), afd.getStartOffset(), afd.getLength());
-            } catch (IOException e) {
-                loaded = false;
+            if (source.isDownload()) {
+                loaded = bufferedPlayer.loadFromDownload(source.path());
+            } else {
+                try (AssetFileDescriptor afd = source.open(getContext())) {
+                    loaded = bufferedPlayer.loadFromFd(
+                        afd.getParcelFileDescriptor().getFd(), afd.getStartOffset(), afd.getLength());
+                } catch (IOException e) {
+                    loaded = false;
+                }
             }
             if (!loaded) {
                 post(() -> reportError("Failed to load dual-stream video " + source));
@@ -548,6 +602,9 @@ public class WebMAlphaTextureView extends TextureView implements
         
         final Context context = getContext();
         enqueueNativeLoad(() -> {
+            if (source.isDownload()) {
+                return WebMAlphaPlayerNative.nativeLoadFromDownload(playerId, source.path());
+            }
             try (AssetFileDescriptor afd = source.open(context)) {
                 return WebMAlphaPlayerNative.nativeLoadFromFd(playerId,
                     afd.getParcelFileDescriptor().getFd(), afd.getStartOffset(), afd.getLength());
