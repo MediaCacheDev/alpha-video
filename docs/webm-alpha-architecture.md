@@ -58,7 +58,7 @@ React (JS) WebMAlphaView props
 
 ### C++ Core (cross-platform, software path)
 
-- **`WebMAlphaPlayer`** — FFmpeg (avformat/avcodec/avutil/swscale) wrapper:
+- **`WebMAlphaPlayer`** — FFmpeg (avformat/avcodec/avutil) wrapper:
   - `openStreams`, `initCodecs`, `loadFromFile/loadFromMemory/loadFromFileRange/loadFromDownload`
   - `decodeAllFrames` (preload) and on-demand `decodeFrame`
   - YUVA frame extraction with alpha handling (embedded YUVA420P or separate alpha track)

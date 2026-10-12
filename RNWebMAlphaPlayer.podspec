@@ -54,13 +54,12 @@ Pod::Spec.new do |s|
   { 'iphoneos' => 'ios', 'iphonesimulator' => 'ios-simulator' }.each do |sdk, dir|
     lib_dir = "$(PODS_ROOT)/../#{pod_dir}/prebuilt/#{dir}/lib"
     user_target_xcconfig["LIBRARY_SEARCH_PATHS[sdk=#{sdk}*]"] = "$(inherited) \"#{lib_dir}\""
-    user_target_xcconfig["OTHER_LDFLAGS[sdk=#{sdk}*]"] = '$(inherited) ' +
-      %w[avcodec avformat avutil swscale swresample vpx].map { |lib| "-force_load \"#{lib_dir}/lib#{lib}.a\"" }.join(' ')
+    user_target_xcconfig["OTHER_LDFLAGS[sdk=#{sdk}*]"] = '$(inherited) -lavformat -lavcodec -lavutil -lvpx'
   end
   s.user_target_xcconfig = user_target_xcconfig
   
-  s.frameworks = ['Metal', 'MetalKit', 'AVFoundation', 'VideoToolbox', 'CoreMedia', 'CoreVideo', 'Security']
-  s.libraries = ['z', 'bz2', 'iconv', 'c++']
+  s.frameworks = ['Metal', 'MetalKit']
+  s.libraries = ['z', 'c++']
   
   s.dependency 'React-Core'
 end

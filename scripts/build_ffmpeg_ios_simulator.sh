@@ -20,7 +20,11 @@ IOS_MIN_VERSION="13.0"
 # Architectures to build for simulator
 ARCHS=("arm64" "x86_64")
 
-echo "�� Building FFmpeg $FFMPEG_VERSION for iOS Simulator (arm64 + x86_64)"
+# FFmpeg and libvpx embed their configure lines in the libraries, so installs are staged
+# with DESTDIR and libvpx is referenced by relative path; no local paths end up in them.
+INSTALL_PREFIX="/usr/local"
+
+echo "🔧 Building FFmpeg $FFMPEG_VERSION for iOS Simulator (arm64 + x86_64)"
 echo "   Build dir: $BUILD_DIR"
 echo "   Output dir: $OUTPUT_DIR"
 
@@ -57,9 +61,9 @@ build_libvpx_arch() {
     
     cd "$BUILD_DIR/libvpx-$LIBVPX_VERSION"
     
-    local PREFIX="$BUILD_DIR/libvpx-$ARCH-sim"
-    rm -rf "$PREFIX"
-    mkdir -p "$PREFIX"
+    local STAGE="$BUILD_DIR/libvpx-$ARCH-sim"
+    rm -rf "$STAGE"
+    mkdir -p "$STAGE"
     
     # Clean previous build
     make clean 2>/dev/null || true
@@ -83,7 +87,7 @@ build_libvpx_arch() {
     
     # Use generic-gnu target for libvpx cross-compile to simulator
     ./configure \
-        --prefix="$PREFIX" \
+        --prefix="$INSTALL_PREFIX" \
         --target=generic-gnu \
         --disable-examples \
         --disable-tools \
@@ -99,9 +103,9 @@ build_libvpx_arch() {
         --extra-cxxflags="$CFLAGS"
     
     make -j$(sysctl -n hw.ncpu)
-    make install
+    make install DESTDIR="$STAGE"
     
-    echo "✅ libvpx $ARCH simulator build complete: $PREFIX"
+    echo "✅ libvpx $ARCH simulator build complete: $STAGE"
 }
 
 # Build FFmpeg for a specific architecture
@@ -111,11 +115,16 @@ build_ffmpeg_arch() {
     
     cd "$BUILD_DIR/ffmpeg-$FFMPEG_VERSION"
     
-    local PREFIX="$BUILD_DIR/ffmpeg-$ARCH-sim"
-    local LIBVPX_PREFIX="$BUILD_DIR/libvpx-$ARCH-sim"
+    local STAGE="$BUILD_DIR/ffmpeg-$ARCH-sim"
+    # Relative to the FFmpeg source dir, where configure and make run.
+    local LIBVPX_DIR="../libvpx-$ARCH-sim$INSTALL_PREFIX"
+    # pkg-config must find the libvpx built above, never one installed on the host.
+    export PKG_CONFIG_PATH=""
+    export PKG_CONFIG_LIBDIR="$BUILD_DIR/libvpx-$ARCH-sim$INSTALL_PREFIX/lib/pkgconfig"
+    export PKG_CONFIG_SYSROOT_DIR="$BUILD_DIR/libvpx-$ARCH-sim"
     
-    rm -rf "$PREFIX"
-    mkdir -p "$PREFIX"
+    rm -rf "$STAGE"
+    mkdir -p "$STAGE"
     
     # Clean previous build
     make clean 2>/dev/null || true
@@ -127,20 +136,27 @@ build_ffmpeg_arch() {
     local LDFLAGS="-arch $ARCH -isysroot $SDK_PATH -target $ARCH-apple-ios$IOS_MIN_VERSION-simulator"
     
     ./configure \
-        --prefix="$PREFIX" \
+        --prefix="$INSTALL_PREFIX" \
         --enable-cross-compile \
         --target-os=darwin \
         --arch=$ARCH \
         --cc="$CC" \
         --sysroot="$SDK_PATH" \
-        --extra-cflags="$CFLAGS -I$LIBVPX_PREFIX/include" \
-        --extra-ldflags="$LDFLAGS -L$LIBVPX_PREFIX/lib" \
+        --extra-cflags="$CFLAGS -I$LIBVPX_DIR/include" \
+        --extra-ldflags="$LDFLAGS -L$LIBVPX_DIR/lib" \
         --disable-programs \
         --disable-doc \
         --disable-debug \
         --disable-network \
         --disable-gpl \
         --disable-everything \
+        --disable-autodetect \
+        --enable-zlib \
+        --enable-pthreads \
+        --disable-avdevice \
+        --disable-avfilter \
+        --disable-swresample \
+        --disable-swscale \
         --enable-demuxer=matroska,webm \
         --enable-decoder=vp9,libvpx_vp9 \
         --enable-parser=vp9 \
@@ -152,9 +168,9 @@ build_ffmpeg_arch() {
         --disable-asm
     
     make -j$(sysctl -n hw.ncpu)
-    make install
+    make install DESTDIR="$STAGE"
     
-    echo "✅ FFmpeg $ARCH simulator build complete: $PREFIX"
+    echo "✅ FFmpeg $ARCH simulator build complete: $STAGE"
 }
 
 # Create universal (fat) libraries using lipo
@@ -167,14 +183,14 @@ create_universal_libs() {
     
     # Get list of libraries from first arch
     local FIRST_ARCH="${ARCHS[0]}"
-    local FFMPEG_LIBS=$(ls "$BUILD_DIR/ffmpeg-$FIRST_ARCH-sim/lib/"*.a 2>/dev/null | xargs -n1 basename)
-    local VPX_LIBS=$(ls "$BUILD_DIR/libvpx-$FIRST_ARCH-sim/lib/"*.a 2>/dev/null | xargs -n1 basename)
+    local FFMPEG_LIBS=$(ls "$BUILD_DIR/ffmpeg-$FIRST_ARCH-sim$INSTALL_PREFIX/lib/"*.a 2>/dev/null | xargs -n1 basename)
+    local VPX_LIBS=$(ls "$BUILD_DIR/libvpx-$FIRST_ARCH-sim$INSTALL_PREFIX/lib/"*.a 2>/dev/null | xargs -n1 basename)
     
     # Create fat FFmpeg libraries
     for lib in $FFMPEG_LIBS; do
         local inputs=""
         for arch in "${ARCHS[@]}"; do
-            inputs="$inputs $BUILD_DIR/ffmpeg-$arch-sim/lib/$lib"
+            inputs="$inputs $BUILD_DIR/ffmpeg-$arch-sim$INSTALL_PREFIX/lib/$lib"
         done
         echo "   Creating universal $lib..."
         lipo -create $inputs -output "$OUTPUT_DIR/lib/$lib"
@@ -184,7 +200,7 @@ create_universal_libs() {
     for lib in $VPX_LIBS; do
         local inputs=""
         for arch in "${ARCHS[@]}"; do
-            inputs="$inputs $BUILD_DIR/libvpx-$arch-sim/lib/$lib"
+            inputs="$inputs $BUILD_DIR/libvpx-$arch-sim$INSTALL_PREFIX/lib/$lib"
         done
         echo "   Creating universal $lib..."
         lipo -create $inputs -output "$OUTPUT_DIR/lib/$lib"
@@ -193,8 +209,8 @@ create_universal_libs() {
     # Copy headers (same for all archs)
     rm -rf "$OUTPUT_DIR/include"
     mkdir -p "$OUTPUT_DIR/include"
-    cp -R "$BUILD_DIR/ffmpeg-$FIRST_ARCH-sim/include/"* "$OUTPUT_DIR/include/"
-    cp -R "$BUILD_DIR/libvpx-$FIRST_ARCH-sim/include/"* "$OUTPUT_DIR/include/"
+    cp -R "$BUILD_DIR/ffmpeg-$FIRST_ARCH-sim$INSTALL_PREFIX/include/"* "$OUTPUT_DIR/include/"
+    cp -R "$BUILD_DIR/libvpx-$FIRST_ARCH-sim$INSTALL_PREFIX/include/"* "$OUTPUT_DIR/include/"
     
     echo "📋 Universal libraries built:"
     for lib in "$OUTPUT_DIR/lib/"*.a; do

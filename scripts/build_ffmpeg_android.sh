@@ -16,7 +16,7 @@ OUTPUT_DIR="$PROJECT_DIR/prebuilt/android"
 
 # Android settings
 ANDROID_API=24
-NDK_PATH="${ANDROID_NDK_HOME:-$ANDROID_HOME/ndk/26.1.10909125}"
+NDK_PATH="${ANDROID_NDK_HOME:-$ANDROID_HOME/ndk/27.1.12297006}"
 
 if [ ! -d "$NDK_PATH" ]; then
     echo "❌ Android NDK not found at $NDK_PATH"
@@ -25,6 +25,10 @@ if [ ! -d "$NDK_PATH" ]; then
 fi
 
 TOOLCHAIN="$NDK_PATH/toolchains/llvm/prebuilt/$(uname -s | tr '[:upper:]' '[:lower:]')-x86_64"
+# Tools are called by name and installs are staged with DESTDIR, because FFmpeg and libvpx
+# embed their configure lines in the libraries; that way no local paths end up in them.
+export PATH="$TOOLCHAIN/bin:$PATH"
+INSTALL_PREFIX="/usr/local"
 
 echo "🔧 Building FFmpeg $FFMPEG_VERSION for Android"
 echo "   NDK: $NDK_PATH"
@@ -66,20 +70,20 @@ build_libvpx_android() {
     
     cd "$BUILD_DIR/libvpx-$LIBVPX_VERSION"
     
-    local PREFIX="$BUILD_DIR/libvpx-$ABI"
-    rm -rf "$PREFIX"
-    mkdir -p "$PREFIX"
+    local STAGE="$BUILD_DIR/libvpx-$ABI"
+    rm -rf "$STAGE"
+    mkdir -p "$STAGE"
     
     make clean 2>/dev/null || true
     
-    export CC="$TOOLCHAIN/bin/${TARGET}${ANDROID_API}-clang"
-    export CXX="$TOOLCHAIN/bin/${TARGET}${ANDROID_API}-clang++"
-    export AR="$TOOLCHAIN/bin/llvm-ar"
-    export RANLIB="$TOOLCHAIN/bin/llvm-ranlib"
-    export STRIP="$TOOLCHAIN/bin/llvm-strip"
-
+    export CC="${TARGET}${ANDROID_API}-clang"
+    export CXX="${TARGET}${ANDROID_API}-clang++"
+    export AR="llvm-ar"
+    export RANLIB="llvm-ranlib"
+    export STRIP="llvm-strip"
+    
     if [ "$ABI" = "arm64-v8a" ] || [ "$ABI" = "armeabi-v7a" ]; then
-        export AS="$TOOLCHAIN/bin/${TARGET}${ANDROID_API}-clang"
+        export AS="${TARGET}${ANDROID_API}-clang"
         export ASFLAGS="-c"
     else
         unset AS
@@ -98,7 +102,7 @@ build_libvpx_android() {
         elif command -v greadelf >/dev/null 2>&1; then
             export READELF="$(command -v greadelf)"
         else
-            echo "⚠️  readelf not found; install GNU binutils so libvpx can inspect NASM output."
+            export READELF="llvm-readelf"
         fi
     fi
     
@@ -116,7 +120,7 @@ build_libvpx_android() {
     esac
     
     ./configure \
-        --prefix="$PREFIX" \
+        --prefix="$INSTALL_PREFIX" \
         --target="$VPX_TARGET" \
         --disable-examples \
         --disable-tools \
@@ -131,7 +135,7 @@ build_libvpx_android() {
         --extra-cflags="-fPIC"
     
     make -j$(nproc 2>/dev/null || sysctl -n hw.ncpu)
-    make install
+    make install DESTDIR="$STAGE"
 }
 
 # Build FFmpeg for Android
@@ -145,20 +149,24 @@ build_ffmpeg_android() {
     
     cd "$BUILD_DIR/ffmpeg-$FFMPEG_VERSION"
     
-    local PREFIX="$BUILD_DIR/ffmpeg-$ABI"
-    local LIBVPX_PREFIX="$BUILD_DIR/libvpx-$ABI"
+    local STAGE="$BUILD_DIR/ffmpeg-$ABI"
+    # Relative to the FFmpeg source dir, where configure and make run.
+    local LIBVPX_DIR="../libvpx-$ABI$INSTALL_PREFIX"
+    # pkg-config must find the libvpx built above, never one installed on the host.
+    export PKG_CONFIG_PATH=""
+    export PKG_CONFIG_LIBDIR="$BUILD_DIR/libvpx-$ABI$INSTALL_PREFIX/lib/pkgconfig"
+    export PKG_CONFIG_SYSROOT_DIR="$BUILD_DIR/libvpx-$ABI"
     
-    rm -rf "$PREFIX"
-    mkdir -p "$PREFIX"
+    rm -rf "$STAGE"
+    mkdir -p "$STAGE"
     
     make clean 2>/dev/null || true
     
-    local CC="$TOOLCHAIN/bin/${TARGET}${ANDROID_API}-clang"
-    local CXX="$TOOLCHAIN/bin/${TARGET}${ANDROID_API}-clang++"
-    local SYSROOT="$TOOLCHAIN/sysroot"
+    local CC="${TARGET}${ANDROID_API}-clang"
+    local CXX="${TARGET}${ANDROID_API}-clang++"
     
-    local EXTRA_CFLAGS="-fPIC -I$LIBVPX_PREFIX/include"
-    local EXTRA_LDFLAGS="-L$LIBVPX_PREFIX/lib"
+    local EXTRA_CFLAGS="-fPIC -I$LIBVPX_DIR/include"
+    local EXTRA_LDFLAGS="-L$LIBVPX_DIR/lib"
     
     # Architecture-specific flags
     case $ABI in
@@ -171,14 +179,13 @@ build_ffmpeg_android() {
     esac
     
     ./configure \
-        --prefix="$PREFIX" \
+        --prefix="$INSTALL_PREFIX" \
         --enable-cross-compile \
-        --cross-prefix="$TOOLCHAIN/bin/llvm-" \
+        --cross-prefix="llvm-" \
         --target-os=android \
         --arch=$ARCH \
         --cc="$CC" \
         --cxx="$CXX" \
-        --sysroot="$SYSROOT" \
         --extra-cflags="$EXTRA_CFLAGS" \
         --extra-ldflags="$EXTRA_LDFLAGS" \
         --disable-programs \
@@ -187,6 +194,13 @@ build_ffmpeg_android() {
         --disable-network \
         --disable-gpl \
         --disable-everything \
+        --disable-autodetect \
+        --enable-zlib \
+        --enable-pthreads \
+        --disable-avdevice \
+        --disable-avfilter \
+        --disable-swresample \
+        --disable-swscale \
         --enable-demuxer=matroska,webm \
         --enable-decoder=vp9,libvpx_vp9 \
         --enable-parser=vp9 \
@@ -195,11 +209,10 @@ build_ffmpeg_android() {
         --enable-static \
         --disable-shared \
         --enable-pic \
-        --enable-jni \
         --disable-asm
     
     make -j$(nproc 2>/dev/null || sysctl -n hw.ncpu)
-    make install
+    make install DESTDIR="$STAGE"
 }
 
 # Copy outputs for each ABI
@@ -209,22 +222,21 @@ package_output() {
     echo "📦 Packaging $ABI..."
     
     local OUT="$OUTPUT_DIR/$ABI"
+    local FFMPEG_DIR="$BUILD_DIR/ffmpeg-$ABI$INSTALL_PREFIX"
+    local LIBVPX_DIR="$BUILD_DIR/libvpx-$ABI$INSTALL_PREFIX"
+    rm -rf "$OUT/lib"
     mkdir -p "$OUT/lib"
     
     # Copy static archives (.a)
-    if ls "$BUILD_DIR/ffmpeg-$ABI/lib"/*.a >/dev/null 2>&1; then
-        cp "$BUILD_DIR/ffmpeg-$ABI/lib/"*.a "$OUT/lib/"
-    fi
-    if ls "$BUILD_DIR/libvpx-$ABI/lib"/*.a >/dev/null 2>&1; then
-        cp "$BUILD_DIR/libvpx-$ABI/lib/"*.a "$OUT/lib/"
-    fi
+    cp "$FFMPEG_DIR/lib/"*.a "$OUT/lib/"
+    cp "$LIBVPX_DIR/lib/"*.a "$OUT/lib/"
     
     # Copy headers to common prebuilt/include (same for all platforms)
     local COMMON_INCLUDE="$PROJECT_DIR/prebuilt/include"
     if [ ! -d "$COMMON_INCLUDE/libavcodec" ]; then
         mkdir -p "$COMMON_INCLUDE"
-        cp -R "$BUILD_DIR/ffmpeg-$ABI/include/"* "$COMMON_INCLUDE/"
-        cp -R "$BUILD_DIR/libvpx-$ABI/include/"* "$COMMON_INCLUDE/"
+        cp -R "$FFMPEG_DIR/include/"* "$COMMON_INCLUDE/"
+        cp -R "$LIBVPX_DIR/include/"* "$COMMON_INCLUDE/"
     fi
 }
 

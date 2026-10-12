@@ -17,6 +17,10 @@ OUTPUT_DIR="$PROJECT_DIR/prebuilt/ios"
 # iOS deployment target
 IOS_MIN_VERSION="13.0"
 
+# FFmpeg and libvpx embed their configure lines in the libraries, so installs are staged
+# with DESTDIR and libvpx is referenced by relative path; no local paths end up in them.
+INSTALL_PREFIX="/usr/local"
+
 echo "🔧 Building FFmpeg $FFMPEG_VERSION for iOS Device (arm64)"
 echo "   Build dir: $BUILD_DIR"
 echo "   Output dir: $OUTPUT_DIR"
@@ -53,9 +57,9 @@ build_libvpx_device() {
     
     cd "$BUILD_DIR/libvpx-$LIBVPX_VERSION"
     
-    local PREFIX="$BUILD_DIR/libvpx-arm64"
-    rm -rf "$PREFIX"
-    mkdir -p "$PREFIX"
+    local STAGE="$BUILD_DIR/libvpx-arm64"
+    rm -rf "$STAGE"
+    mkdir -p "$STAGE"
     
     # Clean previous build
     make clean 2>/dev/null || true
@@ -80,7 +84,7 @@ build_libvpx_device() {
     export NM="$(xcrun --sdk iphoneos --find nm)"
     
     ./configure \
-        --prefix="$PREFIX" \
+        --prefix="$INSTALL_PREFIX" \
         --target=arm64-darwin-gcc \
         --disable-examples \
         --disable-tools \
@@ -94,9 +98,9 @@ build_libvpx_device() {
         --disable-shared
     
     make -j$(sysctl -n hw.ncpu)
-    make install
+    make install DESTDIR="$STAGE"
     
-    echo "✅ libvpx device build complete: $PREFIX"
+    echo "✅ libvpx device build complete: $STAGE"
 }
 
 # Build FFmpeg for iOS Device
@@ -105,11 +109,16 @@ build_ffmpeg_device() {
     
     cd "$BUILD_DIR/ffmpeg-$FFMPEG_VERSION"
     
-    local PREFIX="$BUILD_DIR/ffmpeg-arm64"
-    local LIBVPX_PREFIX="$BUILD_DIR/libvpx-arm64"
+    local STAGE="$BUILD_DIR/ffmpeg-arm64"
+    # Relative to the FFmpeg source dir, where configure and make run.
+    local LIBVPX_DIR="../libvpx-arm64$INSTALL_PREFIX"
+    # pkg-config must find the libvpx built above, never one installed on the host.
+    export PKG_CONFIG_PATH=""
+    export PKG_CONFIG_LIBDIR="$BUILD_DIR/libvpx-arm64$INSTALL_PREFIX/lib/pkgconfig"
+    export PKG_CONFIG_SYSROOT_DIR="$BUILD_DIR/libvpx-arm64"
     
-    rm -rf "$PREFIX"
-    mkdir -p "$PREFIX"
+    rm -rf "$STAGE"
+    mkdir -p "$STAGE"
     
     # Clean previous build
     make clean 2>/dev/null || true
@@ -121,20 +130,27 @@ build_ffmpeg_device() {
     local LDFLAGS="-arch arm64 -isysroot $SDK_PATH"
     
     ./configure \
-        --prefix="$PREFIX" \
+        --prefix="$INSTALL_PREFIX" \
         --enable-cross-compile \
         --target-os=darwin \
         --arch=arm64 \
         --cc="$CC" \
         --sysroot="$SDK_PATH" \
-        --extra-cflags="$CFLAGS -I$LIBVPX_PREFIX/include" \
-        --extra-ldflags="$LDFLAGS -L$LIBVPX_PREFIX/lib" \
+        --extra-cflags="$CFLAGS -I$LIBVPX_DIR/include" \
+        --extra-ldflags="$LDFLAGS -L$LIBVPX_DIR/lib" \
         --disable-programs \
         --disable-doc \
         --disable-debug \
         --disable-network \
         --disable-gpl \
         --disable-everything \
+        --disable-autodetect \
+        --enable-zlib \
+        --enable-pthreads \
+        --disable-avdevice \
+        --disable-avfilter \
+        --disable-swresample \
+        --disable-swscale \
         --enable-demuxer=matroska,webm \
         --enable-decoder=vp9,libvpx_vp9 \
         --enable-parser=vp9 \
@@ -146,17 +162,17 @@ build_ffmpeg_device() {
         --disable-asm
     
     make -j$(sysctl -n hw.ncpu)
-    make install
+    make install DESTDIR="$STAGE"
     
-    echo "✅ FFmpeg device build complete: $PREFIX"
+    echo "✅ FFmpeg device build complete: $STAGE"
 }
 
 # Copy outputs to final directory
 copy_outputs() {
     echo "📦 Copying libraries to output directory..."
     
-    local FFMPEG_PREFIX="$BUILD_DIR/ffmpeg-arm64"
-    local LIBVPX_PREFIX="$BUILD_DIR/libvpx-arm64"
+    local FFMPEG_PREFIX="$BUILD_DIR/ffmpeg-arm64$INSTALL_PREFIX"
+    local LIBVPX_PREFIX="$BUILD_DIR/libvpx-arm64$INSTALL_PREFIX"
     local COMMON_INCLUDE="$PROJECT_DIR/prebuilt/include"
     
     # Clear output lib dir

@@ -29,7 +29,6 @@ struct AVCodecContext;
 struct AVFrame;
 struct AVPacket;
 struct AVIOContext;
-struct SwsContext;
 
 namespace webm {
 
@@ -376,10 +375,6 @@ private:
     uint8_t* avioBuffer_ = nullptr; // I/O buffer (must be freed separately)
     struct AVIOContext* rangeIO_ = nullptr;  // loadFromFileRange / loadFromDownload reader (FileRangeIO)
     bool openCustomInput(struct AVIOContext* io);  // Takes ownership of io as rangeIO_
-    
-    // Swscale context for YUVA420P conversion
-    SwsContext* swsCtx_ = nullptr;
-    AVFrame* swsFrame_ = nullptr;  // Intermediate frame for sws_scale output
     
     void unmapFile();
     void cleanupIO();

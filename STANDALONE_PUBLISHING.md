@@ -171,7 +171,7 @@ webm-alpha-player-ios/
 
 ## Licensing Considerations
 
-All versions must maintain **LGPL v2.1+** licensing due to FFmpeg usage.
+The player code is MIT. Every artifact that contains the FFmpeg binaries (LGPL-2.1-or-later) must ship `THIRD_PARTY_NOTICES.md` and `licenses/`.
 
 ## Build Scripts
 

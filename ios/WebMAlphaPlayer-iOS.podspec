@@ -7,7 +7,7 @@ Pod::Spec.new do |s|
                    Features native C++ core with Metal GPU acceleration for smooth 30fps playback.
                    DESC
   s.homepage     = "https://github.com/danielkpl2/webm-alpha-player-ios"
-  s.license      = { :type => "LGPL-2.1", :file => "LICENSE" }
+  s.license      = { :type => "MIT", :file => "LICENSE" }
   s.author       = { "Daniel Kasprowicz" => "danielkpl2@gmail.com" }
   s.platform     = :ios, "12.0"
   s.source       = { :git => "https://github.com/danielkpl2/webm-alpha-player-ios.git", :tag => "#{s.version}" }
@@ -16,7 +16,7 @@ Pod::Spec.new do |s|
   s.public_header_files = "Sources/WebMAlphaPlayer/include/*.h"
 
   # FFmpeg static libraries
-  s.ios.vendored_libraries = "Libraries/ios/libavcodec.a", "Libraries/ios/libavformat.a", "Libraries/ios/libavutil.a", "Libraries/ios/libswscale.a", "Libraries/ios/libvpx.a"
+  s.ios.vendored_libraries = "Libraries/ios/libavcodec.a", "Libraries/ios/libavformat.a", "Libraries/ios/libavutil.a", "Libraries/ios/libvpx.a"
 
   # Metal framework
   s.frameworks = "Metal", "MetalKit", "CoreVideo"

@@ -370,7 +370,7 @@ ffprobe -v quiet -print_format json -show_streams output.webm
 
 ## FFmpeg Build
 
-The library ships with prebuilt FFmpeg 6.1 + libvpx 1.14.0 static libraries. To rebuild:
+The library ships with prebuilt FFmpeg 6.1 + libvpx 1.14.0 static libraries: only `libavformat`, `libavcodec`, `libavutil` and `libvpx`, configured for the WebM demuxer and the VP9 decoders. To rebuild:
 
 ```bash
 npm run build:ffmpeg:ios          # iOS (device + simulator)
@@ -378,25 +378,19 @@ npm run build:ffmpeg:android      # Android (arm64-v8a, armeabi-v7a, x86_64)
 npm run build:ffmpeg:all          # All platforms
 ```
 
+The Android script uses the NDK in `ANDROID_NDK_HOME` (default `$ANDROID_HOME/ndk/27.1.12297006`) and needs `nasm` for x86_64.
+
 | Platform | Output Directory | Architecture |
 |----------|-----------------|-------------|
 | iOS Device | `prebuilt/ios/` | arm64 |
-| iOS Simulator | `prebuilt/ios-simulator/` | arm64 (Apple Silicon) |
+| iOS Simulator | `prebuilt/ios-simulator/` | arm64 + x86_64 |
 | Android | `prebuilt/android/{abi}/` | arm64-v8a, armeabi-v7a, x86_64 |
 
 ## License
 
-LGPL v2.1+
+The code in this repository is MIT (see [LICENSE](LICENSE)).
 
-This library is licensed under LGPL v2.1+ due to its use of FFmpeg. This ensures compliance with FFmpeg's licensing requirements while allowing commercial use with proper attribution and linking flexibility.
-
-### FFmpeg and LGPL
-
-- **FFmpeg**: LGPL v2.1 or later
-- **libvpx (VP9)**: BSD-style license (permissive)
-- **Static linking** creates a derivative work under LGPL
-
-**Compliance options**: (1) License under LGPL v2.1+ (recommended), (2) provide FFmpeg as dynamic libraries, or (3) distribute object files with relinking instructions.
+The prebuilt FFmpeg libraries are LGPL-2.1-or-later and libvpx is BSD-3-Clause. LGPL covers FFmpeg itself, not the code that uses it, but anything that distributes the binaries (this package, and apps built with it) must include their notices and make FFmpeg's source available. [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md) has the versions, configure options, source links and what LGPL asks of closed-source apps; the licence texts are in [`licenses/`](licenses).
 
 ## Credits
 

@@ -15,7 +15,6 @@ extern "C" {
 #include <libavutil/avutil.h>
 #include <libavutil/imgutils.h>
 #include <libavutil/opt.h>
-#include <libswscale/swscale.h>
 }
 
 #include <chrono>
@@ -990,10 +989,7 @@ bool WebMAlphaPlayer::initCodecs() {
     VLOGI("Codec opened - pix_fmt=%d (YUVA420P=%d, YUV420P=%d)", 
          colorCodecCtx_->pix_fmt, AV_PIX_FMT_YUVA420P, AV_PIX_FMT_YUV420P);
     
-    // Note: We don't create swscale context here anymore.
-    // The copyFromAVFrame function handles both YUVA420P (with alpha) and 
-    // YUV420P (filling alpha with 255) formats directly.
-    // swscale cannot create alpha data from a non-alpha source anyway.
+    // copyFromAVFrame handles both YUVA420P (with alpha) and YUV420P (alpha filled with 255).
     
     // Init alpha codec if present
     if (alphaStreamIndex_ >= 0) {
@@ -1019,14 +1015,6 @@ bool WebMAlphaPlayer::initCodecs() {
 }
 
 void WebMAlphaPlayer::closeCodecs() {
-    if (swsCtx_) {
-        sws_freeContext(swsCtx_);
-        swsCtx_ = nullptr;
-    }
-    if (swsFrame_) {
-        av_frame_free(&swsFrame_);
-        swsFrame_ = nullptr;
-    }
     if (colorCodecCtx_) {
         avcodec_free_context(&colorCodecCtx_);
         colorCodecCtx_ = nullptr;

@@ -41,8 +41,6 @@ target_link_libraries(${PROJECT_NAME}
     # FFmpeg libraries (order matters for static linking!)
     ${FFMPEG_ROOT}/lib/libavformat.a
     ${FFMPEG_ROOT}/lib/libavcodec.a
-    ${FFMPEG_ROOT}/lib/libswscale.a
-    ${FFMPEG_ROOT}/lib/libswresample.a
     ${FFMPEG_ROOT}/lib/libavutil.a
     ${FFMPEG_ROOT}/lib/libvpx.a
     

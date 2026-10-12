@@ -37,3 +37,6 @@ local.properties
 
 # Prebuilt binaries (should be committed for distribution)
 prebuilt/
+
+# FFmpeg/libvpx sources and build trees from scripts/build_ffmpeg_*.sh
+scripts/build/
