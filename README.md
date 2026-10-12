@@ -159,7 +159,7 @@ console.log(info);
 
 - **HTTP/HTTPS URLs**: `{ uri: 'https://example.com/video.webm' }`. Downloaded once into the app's cache directory and played from there. The file is named by `cacheKey` if you give one (it may include subfolders), otherwise by a hash of the URL.
 - **Local files**: `{ uri: 'file:///path/to/video.webm' }` or an absolute path.
-- **Bundled files**: `{ uri: 'asset://videos/glow.webm' }`. On Android this is `android/app/src/main/assets/videos/glow.webm`. On iOS it is `videos/glow.webm` inside the app bundle.
+- **Bundled files**: `{ uri: 'asset://videos/glow.webm' }`. On Android this is `android/app/src/main/assets/videos/glow.webm`. On iOS it is `videos/glow.webm` inside the app bundle. On web it is `/videos/glow.webm` from the site root.
 - **Android `content://` URIs**, for example from a document picker.
 - **`require()`**: pass `Image.resolveAssetSource(require('./glow.webm')).uri`. In debug builds this is a Metro `http://localhost:8081` URL. In release builds it is a file path on iOS and a `res/raw` resource name on Android.
 

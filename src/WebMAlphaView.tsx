@@ -28,7 +28,8 @@ type VideoElement = HTMLVideoElement;
 export interface WebMSource {
   /**
    * https:// (downloaded to the cache), file://, an absolute path, asset://relative/path
-   * (app bundle / APK assets), content:// (Android), or Image.resolveAssetSource(require(...)).uri
+   * (app bundle / APK assets; the site root on web), content:// (Android), or
+   * Image.resolveAssetSource(require(...)).uri
    */
   uri: string;
 }
@@ -128,6 +129,11 @@ export interface WebMAlphaViewRef {
 // Native component for iOS and Android (Fabric-aware via codegen fallback wrapper)
 const NativeWebMAlphaViewOrNull = Platform.OS !== 'web' ? NativeWebMAlphaView : null;
 
+/** asset://path names the app's bundled media; on the web it is served from the site root. */
+function toWebUrl(uri: string | undefined): string | undefined {
+  return uri?.startsWith('asset://') ? '/' + uri.slice('asset://'.length).replace(/^\/+/, '') : uri;
+}
+
 const WebVideoPlayer = forwardRef<WebMAlphaViewRef, WebMAlphaViewProps>(
   (props, ref) => {
     const { source, autoPlay = true, loop = true, paused = false, playbackSpeed = 1.0, style, onLoad, onError } = props;
@@ -206,7 +212,7 @@ const WebVideoPlayer = forwardRef<WebMAlphaViewRef, WebMAlphaViewProps>(
       <View style={[styles.container, style]}>
         <video
           ref={videoRef as React.RefObject<HTMLVideoElement>}
-          src={source?.uri}
+          src={toWebUrl(source?.uri)}
           autoPlay={autoPlay && !paused}
           loop={loop}
           muted
