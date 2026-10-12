@@ -2,7 +2,7 @@
   "compilerOptions": {
     "rootDir": ".",
     "paths": {
-      "react-native-webm-alpha-player": ["./src/index"]
+      "react-native-alpha-video": ["./react-native/src/index"]
     },
     "allowUnreachableCode": false,
     "allowUnusedLabels": false,

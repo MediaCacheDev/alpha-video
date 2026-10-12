@@ -1,6 +1,14 @@
-# react-native-webm-alpha-player
+# alpha-video
 
-High-performance WebM video player with alpha transparency support for React Native (iOS, Android) and Web. Supports both **software-decoded VP9** (single-stream YUVA) and **hardware-accelerated dual-stream VP9/AV1** (color + alpha in separate video tracks decoded via MediaCodec).
+Transparent video for iOS, Android, React Native and the web. Plays **software-decoded VP9 with alpha** (single-stream YUVA WebM) everywhere, and **hardware-decoded dual-stream VP9/AV1** (color and alpha in separate video tracks, decoded by MediaCodec) on Android.
+
+One repository, three packages:
+
+| Package | For | Install |
+|---|---|---|
+| `react-native-alpha-video` (npm) | React Native, and react-native-web | [React Native](#react-native) |
+| `dev.mediacache:alpha-video` (Maven Central) | Android apps without React Native | [Android](#android-without-react-native) |
+| `AlphaVideo` (Swift Package Manager) | iOS apps without React Native | [iOS](#ios-without-react-native) |
 
 ## Features
 
@@ -32,11 +40,15 @@ Choosing the right encoding format depends on your use case:
 
 ## Installation
 
+### React Native
+
 ```bash
-npm install react-native-webm-alpha-player
+npm install react-native-alpha-video
 # or
-yarn add react-native-webm-alpha-player
+yarn add react-native-alpha-video
 ```
+
+The npm package carries the prebuilt FFmpeg libraries, so nothing else is downloaded.
 
 ### Expo / Managed Workflow
 
@@ -64,14 +76,66 @@ android {
 }
 ```
 
+### Android without React Native
+
+```gradle
+dependencies {
+    implementation 'dev.mediacache:alpha-video:1.0.0'
+}
+```
+
+`dev.mediacache.alphavideo.AlphaVideoView` is a `TextureView`. It takes the same sources and options as the React Native component, through setters:
+
+```kotlin
+val view = AlphaVideoView(context)
+view.setMode("preload")
+view.setCallback(object : AlphaVideoView.PlayerCallback {
+    override fun onLoad(totalFrames: Int, width: Int, height: Int) {}
+    override fun onError(error: String) {}
+    override fun onEnd() {}
+    override fun onPreloadComplete(frames: Int, timeMs: Double) {}
+})
+view.setSource("asset://videos/glow.webm")  // loads on the next main-thread turn
+container.addView(view)
+
+// When the view is gone for good. Detaching keeps the player so the view can be re-attached.
+view.release()
+```
+
+Callbacks arrive on the main thread. http(s) sources need the `INTERNET` permission in the app's manifest.
+
+### iOS without React Native
+
+In Xcode, **File > Add Package Dependencies…** with `https://github.com/danielkpl2/alpha-video`, or in `Package.swift`:
+
+```swift
+.package(url: "https://github.com/danielkpl2/alpha-video", from: "1.0.0")
+// target dependency:
+.product(name: "AlphaVideo", package: "alpha-video")
+```
+
+FFmpeg comes as a prebuilt `FFmpegVPX.xcframework` from the GitHub Release. `AlphaVideoView` is a `UIView`:
+
+```swift
+import AlphaVideo
+
+let view = AlphaVideoView(frame: bounds)
+view.delegate = self       // AlphaVideoViewDelegate: didLoadFrames, didFailWithError, didEnd
+view.mode = "preload"
+view.source = "asset://videos/glow.webm"  // loads on the next main-queue turn
+addSubview(view)
+```
+
+Delegate calls arrive on the main queue. iOS 13 or later.
+
 ## Usage
 
 ```tsx
-import { WebMAlphaView } from 'react-native-webm-alpha-player';
+import { AlphaVideoView } from 'react-native-alpha-video';
 
 function MyComponent() {
   return (
-    <WebMAlphaView
+    <AlphaVideoView
       source={{ uri: 'https://example.com/video.webm' }}
       autoPlay={true}
       loop={true}
@@ -110,7 +174,7 @@ frame is shown. The playhead stays exactly where it was:
 
 ```tsx
 // Speeds the animation up from wherever it currently is. No seek, no restart.
-<WebMAlphaView source={source} playbackSpeed={hovered ? 2 : 1} />
+<AlphaVideoView source={source} playbackSpeed={hovered ? 2 : 1} />
 ```
 
 That distinction matters for anything driven by interaction. A rate change that also reset the
@@ -129,9 +193,9 @@ Its `alpha-glow-button/alpha-video` entry point uses this player, and relies on 
 ### Ref Methods
 
 ```tsx
-import { WebMAlphaView, WebMAlphaViewRef } from 'react-native-webm-alpha-player';
+import { AlphaVideoView, AlphaVideoViewRef } from 'react-native-alpha-video';
 
-const playerRef = useRef<WebMAlphaViewRef>(null);
+const playerRef = useRef<AlphaVideoViewRef>(null);
 
 playerRef.current?.play();
 playerRef.current?.pause();
@@ -144,7 +208,7 @@ playerRef.current?.seekToFrame(30);
 Query hardware decoder capabilities at runtime:
 
 ```tsx
-import { getDecoderStatus, getDecoderInfo } from 'react-native-webm-alpha-player';
+import { getDecoderStatus, getDecoderInfo } from 'react-native-alpha-video';
 
 const status = await getDecoderStatus();
 console.log(`VP9 HW: ${status.vp9HardwareAvailable}`);
@@ -234,14 +298,15 @@ On the web the component renders a muted HTML5 `<video>`, so the browser does th
 - Creates OES texture + SurfaceTexture per decoder instance
 - One-frame-per-cycle release gate prevents output buffer flooding
 
-**`WebMAlphaTextureView`** — Android view
+**`AlphaVideoView`** — Android view
 - TextureView-based (proper z-ordering, ScrollView support)
 - Dedicated GL thread for EGL context and rendering
 - Auto-detects single vs dual stream and routes to correct backend
 - Handles view lifecycle (attach/detach/z-index reorder) gracefully
 
 **iOS (Metal)** — software decode only
-- `WebMAlphaMetalPlayerView`: MTKView with YUVA-to-RGBA compute shader
+- `AlphaVideoView`: UIView that resolves the source, applies the mode and runs the global decode queue
+- `AlphaVideoMetalView`: MTKView with YUVA-to-RGBA compute shader
 - Triple buffering prevents tearing
 
 **Web** — HTML5 `<video>` fallback with automatic platform detection
@@ -251,9 +316,9 @@ On the web the component renders a muted HTML5 `<video>`, so the browser does th
 The `mode` prop controls the software decode path. The hardware dual-stream path always streams.
 
 ```tsx
-<WebMAlphaView source={{ uri: 'video.webm' }} mode="preload" />
-<WebMAlphaView source={{ uri: 'long-video.webm' }} mode="stream" />
-<WebMAlphaView source={{ uri: 'video.webm' }} mode="streamAndPreload" />
+<AlphaVideoView source={{ uri: 'video.webm' }} mode="preload" />
+<AlphaVideoView source={{ uri: 'long-video.webm' }} mode="stream" />
+<AlphaVideoView source={{ uri: 'video.webm' }} mode="streamAndPreload" />
 ```
 
 | Mode | Startup | Memory | Looping | Best For |
@@ -272,10 +337,10 @@ When spawning many players simultaneously in `preload` or `streamAndPreload` mod
 
 ```tsx
 // Default behavior - uses global queue (safe for many simultaneous players)
-<WebMAlphaView source={{ uri: 'video.webm' }} />
+<AlphaVideoView source={{ uri: 'video.webm' }} />
 
 // Opt out of queue (only if you know you have a single player)
-<WebMAlphaView source={{ uri: 'video.webm' }} useDecodeQueue={false} />
+<AlphaVideoView source={{ uri: 'video.webm' }} useDecodeQueue={false} />
 ```
 
 | Scenario | `useDecodeQueue` | Why |
@@ -385,6 +450,26 @@ The Android script uses the NDK in `ANDROID_NDK_HOME` (default `$ANDROID_HOME/nd
 | iOS Device | `prebuilt/ios/` | arm64 |
 | iOS Simulator | `prebuilt/ios-simulator/` | arm64 + x86_64 |
 | Android | `prebuilt/android/{abi}/` | arm64-v8a, armeabi-v7a, x86_64 |
+
+### Native packages
+
+```bash
+scripts/build_xcframework.sh          # prebuilt/FFmpegVPX.xcframework(.zip) for Package.swift
+scripts/publish-android.sh local      # dev.mediacache:alpha-video into ~/.m2
+scripts/publish-android.sh central    # signed, to the Maven Central Portal
+```
+
+`Package.swift` uses `prebuilt/FFmpegVPX.xcframework` when it exists, and the release zip otherwise. Its checksum must match the zip attached to the GitHub Release, so rebuilding the xcframework means updating the checksum. `publish-android.sh` lists the environment variables it needs for Central.
+
+### Repository layout
+
+| Path | Contents |
+|---|---|
+| `cpp/` | The C++ core (FFmpeg demux and libvpx decode), shared by every platform |
+| `android/` | The Android library: `AlphaVideoView`, the MediaCodec dual-stream path and the JNI build |
+| `ios/Sources/AlphaVideo/` | The iOS library: `AlphaVideoView` and the Metal renderer |
+| `react-native/` | The React Native component (`src/`) and its thin native view managers |
+| `Package.swift`, `react-native-alpha-video.podspec`, `package.json` | The SwiftPM, CocoaPods and npm packages |
 
 ## License
 

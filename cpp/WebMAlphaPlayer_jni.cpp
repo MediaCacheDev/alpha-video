@@ -97,7 +97,7 @@ extern "C" {
 //==============================================================================
 
 JNIEXPORT jlong JNICALL
-Java_com_danielkpl2_webmalphaplayer_WebMAlphaPlayerNative_nativeCreate(
+Java_dev_mediacache_alphavideo_WebMAlphaPlayerNative_nativeCreate(
     JNIEnv* env,
     jclass clazz,
     jint decodeThreads,
@@ -157,7 +157,7 @@ Java_com_danielkpl2_webmalphaplayer_WebMAlphaPlayerNative_nativeCreate(
 }
 
 JNIEXPORT void JNICALL
-Java_com_danielkpl2_webmalphaplayer_WebMAlphaPlayerNative_nativeDestroy(
+Java_dev_mediacache_alphavideo_WebMAlphaPlayerNative_nativeDestroy(
     JNIEnv* env,
     jclass clazz,
     jlong playerId
@@ -223,7 +223,7 @@ Java_com_danielkpl2_webmalphaplayer_WebMAlphaPlayerNative_nativeDestroy(
 //==============================================================================
 
 JNIEXPORT void JNICALL
-Java_com_danielkpl2_webmalphaplayer_WebMAlphaPlayerNative_nativeSetListener(
+Java_dev_mediacache_alphavideo_WebMAlphaPlayerNative_nativeSetListener(
     JNIEnv* env,
     jclass clazz,
     jlong playerId,
@@ -412,7 +412,7 @@ Java_com_danielkpl2_webmalphaplayer_WebMAlphaPlayerNative_nativeSetListener(
 //==============================================================================
 
 JNIEXPORT jboolean JNICALL
-Java_com_danielkpl2_webmalphaplayer_WebMAlphaPlayerNative_nativeLoadFromFile(
+Java_dev_mediacache_alphavideo_WebMAlphaPlayerNative_nativeLoadFromFile(
     JNIEnv* env,
     jclass clazz,
     jlong playerId,
@@ -459,7 +459,7 @@ Java_com_danielkpl2_webmalphaplayer_WebMAlphaPlayerNative_nativeLoadFromFile(
 }
 
 JNIEXPORT jboolean JNICALL
-Java_com_danielkpl2_webmalphaplayer_WebMAlphaPlayerNative_nativeLoadFromFd(
+Java_dev_mediacache_alphavideo_WebMAlphaPlayerNative_nativeLoadFromFd(
     JNIEnv* env,
     jclass clazz,
     jlong playerId,
@@ -499,7 +499,7 @@ Java_com_danielkpl2_webmalphaplayer_WebMAlphaPlayerNative_nativeLoadFromFd(
 }
 
 JNIEXPORT jboolean JNICALL
-Java_com_danielkpl2_webmalphaplayer_WebMAlphaPlayerNative_nativeLoadFromDownload(
+Java_dev_mediacache_alphavideo_WebMAlphaPlayerNative_nativeLoadFromDownload(
     JNIEnv* env,
     jclass clazz,
     jlong playerId,
@@ -542,7 +542,7 @@ Java_com_danielkpl2_webmalphaplayer_WebMAlphaPlayerNative_nativeLoadFromDownload
 //==============================================================================
 
 JNIEXPORT jlong JNICALL
-Java_com_danielkpl2_webmalphaplayer_WebMDownloader_nativeBegin(
+Java_dev_mediacache_alphavideo_WebMDownloader_nativeBegin(
     JNIEnv* env,
     jclass clazz,
     jstring path,
@@ -555,7 +555,7 @@ Java_com_danielkpl2_webmalphaplayer_WebMDownloader_nativeBegin(
 }
 
 JNIEXPORT void JNICALL
-Java_com_danielkpl2_webmalphaplayer_WebMDownloader_nativeSetWritten(
+Java_dev_mediacache_alphavideo_WebMDownloader_nativeSetWritten(
     JNIEnv* env,
     jclass clazz,
     jlong handle,
@@ -565,7 +565,7 @@ Java_com_danielkpl2_webmalphaplayer_WebMDownloader_nativeSetWritten(
 }
 
 JNIEXPORT void JNICALL
-Java_com_danielkpl2_webmalphaplayer_WebMDownloader_nativeEnd(
+Java_dev_mediacache_alphavideo_WebMDownloader_nativeEnd(
     JNIEnv* env,
     jclass clazz,
     jlong handle,
@@ -581,7 +581,7 @@ Java_com_danielkpl2_webmalphaplayer_WebMDownloader_nativeEnd(
 }
 
 JNIEXPORT jboolean JNICALL
-Java_com_danielkpl2_webmalphaplayer_WebMAlphaPlayerNative_nativeLoadFromBytes(
+Java_dev_mediacache_alphavideo_WebMAlphaPlayerNative_nativeLoadFromBytes(
     JNIEnv* env,
     jclass clazz,
     jlong playerId,
@@ -632,7 +632,7 @@ Java_com_danielkpl2_webmalphaplayer_WebMAlphaPlayerNative_nativeLoadFromBytes(
 }
 
 JNIEXPORT void JNICALL
-Java_com_danielkpl2_webmalphaplayer_WebMAlphaPlayerNative_nativeUnload(
+Java_dev_mediacache_alphavideo_WebMAlphaPlayerNative_nativeUnload(
     JNIEnv* env,
     jclass clazz,
     jlong playerId
@@ -656,7 +656,7 @@ Java_com_danielkpl2_webmalphaplayer_WebMAlphaPlayerNative_nativeUnload(
 //==============================================================================
 
 JNIEXPORT void JNICALL
-Java_com_danielkpl2_webmalphaplayer_WebMAlphaPlayerNative_nativePlay(JNIEnv* env, jclass clazz, jlong playerId) {
+Java_dev_mediacache_alphavideo_WebMAlphaPlayerNative_nativePlay(JNIEnv* env, jclass clazz, jlong playerId) {
     // Remove from stopped set when playing resumes
     {
         std::lock_guard<std::mutex> slock(stoppedMutex);
@@ -669,14 +669,14 @@ Java_com_danielkpl2_webmalphaplayer_WebMAlphaPlayerNative_nativePlay(JNIEnv* env
 }
 
 JNIEXPORT void JNICALL
-Java_com_danielkpl2_webmalphaplayer_WebMAlphaPlayerNative_nativePause(JNIEnv* env, jclass clazz, jlong playerId) {
+Java_dev_mediacache_alphavideo_WebMAlphaPlayerNative_nativePause(JNIEnv* env, jclass clazz, jlong playerId) {
     std::lock_guard<std::mutex> lock(playersMutex);
     auto it = players.find(playerId);
     if (it != players.end()) it->second->pause();
 }
 
 JNIEXPORT void JNICALL
-Java_com_danielkpl2_webmalphaplayer_WebMAlphaPlayerNative_nativeStop(JNIEnv* env, jclass clazz, jlong playerId) {
+Java_dev_mediacache_alphavideo_WebMAlphaPlayerNative_nativeStop(JNIEnv* env, jclass clazz, jlong playerId) {
     // Mark as stopped FIRST to block callbacks immediately
     {
         std::lock_guard<std::mutex> slock(stoppedMutex);
@@ -699,7 +699,7 @@ Java_com_danielkpl2_webmalphaplayer_WebMAlphaPlayerNative_nativeStop(JNIEnv* env
 }
 
 JNIEXPORT void JNICALL
-Java_com_danielkpl2_webmalphaplayer_WebMAlphaPlayerNative_nativeSeekToFrame(
+Java_dev_mediacache_alphavideo_WebMAlphaPlayerNative_nativeSeekToFrame(
     JNIEnv* env, jclass clazz, jlong playerId, jint frameIndex
 ) {
     std::lock_guard<std::mutex> lock(playersMutex);
@@ -708,7 +708,7 @@ Java_com_danielkpl2_webmalphaplayer_WebMAlphaPlayerNative_nativeSeekToFrame(
 }
 
 JNIEXPORT void JNICALL
-Java_com_danielkpl2_webmalphaplayer_WebMAlphaPlayerNative_nativeSetPlaybackSpeed(
+Java_dev_mediacache_alphavideo_WebMAlphaPlayerNative_nativeSetPlaybackSpeed(
     JNIEnv* env, jclass clazz, jlong playerId, jdouble speed
 ) {
     std::lock_guard<std::mutex> lock(playersMutex);
@@ -717,7 +717,7 @@ Java_com_danielkpl2_webmalphaplayer_WebMAlphaPlayerNative_nativeSetPlaybackSpeed
 }
 
 JNIEXPORT void JNICALL
-Java_com_danielkpl2_webmalphaplayer_WebMAlphaPlayerNative_nativeSetVerbose(
+Java_dev_mediacache_alphavideo_WebMAlphaPlayerNative_nativeSetVerbose(
     JNIEnv* env, jclass clazz, jlong playerId, jboolean verbose
 ) {
     std::lock_guard<std::mutex> lock(playersMutex);
@@ -726,7 +726,7 @@ Java_com_danielkpl2_webmalphaplayer_WebMAlphaPlayerNative_nativeSetVerbose(
 }
 
 JNIEXPORT void JNICALL
-Java_com_danielkpl2_webmalphaplayer_WebMAlphaPlayerNative_nativeSeekToTime(
+Java_dev_mediacache_alphavideo_WebMAlphaPlayerNative_nativeSeekToTime(
     JNIEnv* env, jclass clazz, jlong playerId, jdouble seconds
 ) {
     std::lock_guard<std::mutex> lock(playersMutex);
@@ -739,56 +739,56 @@ Java_com_danielkpl2_webmalphaplayer_WebMAlphaPlayerNative_nativeSeekToTime(
 //==============================================================================
 
 JNIEXPORT jboolean JNICALL
-Java_com_danielkpl2_webmalphaplayer_WebMAlphaPlayerNative_nativeIsLoaded(JNIEnv* env, jclass clazz, jlong playerId) {
+Java_dev_mediacache_alphavideo_WebMAlphaPlayerNative_nativeIsLoaded(JNIEnv* env, jclass clazz, jlong playerId) {
     std::lock_guard<std::mutex> lock(playersMutex);
     auto it = players.find(playerId);
     return (it != players.end() && it->second->isLoaded()) ? JNI_TRUE : JNI_FALSE;
 }
 
 JNIEXPORT jboolean JNICALL
-Java_com_danielkpl2_webmalphaplayer_WebMAlphaPlayerNative_nativeIsPlaying(JNIEnv* env, jclass clazz, jlong playerId) {
+Java_dev_mediacache_alphavideo_WebMAlphaPlayerNative_nativeIsPlaying(JNIEnv* env, jclass clazz, jlong playerId) {
     std::lock_guard<std::mutex> lock(playersMutex);
     auto it = players.find(playerId);
     return (it != players.end() && it->second->isPlaying()) ? JNI_TRUE : JNI_FALSE;
 }
 
 JNIEXPORT jint JNICALL
-Java_com_danielkpl2_webmalphaplayer_WebMAlphaPlayerNative_nativeGetCurrentFrame(JNIEnv* env, jclass clazz, jlong playerId) {
+Java_dev_mediacache_alphavideo_WebMAlphaPlayerNative_nativeGetCurrentFrame(JNIEnv* env, jclass clazz, jlong playerId) {
     std::lock_guard<std::mutex> lock(playersMutex);
     auto it = players.find(playerId);
     return (it != players.end()) ? it->second->getCurrentFrame() : 0;
 }
 
 JNIEXPORT jint JNICALL
-Java_com_danielkpl2_webmalphaplayer_WebMAlphaPlayerNative_nativeGetTotalFrames(JNIEnv* env, jclass clazz, jlong playerId) {
+Java_dev_mediacache_alphavideo_WebMAlphaPlayerNative_nativeGetTotalFrames(JNIEnv* env, jclass clazz, jlong playerId) {
     std::lock_guard<std::mutex> lock(playersMutex);
     auto it = players.find(playerId);
     return (it != players.end()) ? it->second->getTotalFrames() : 0;
 }
 
 JNIEXPORT jint JNICALL
-Java_com_danielkpl2_webmalphaplayer_WebMAlphaPlayerNative_nativeGetWidth(JNIEnv* env, jclass clazz, jlong playerId) {
+Java_dev_mediacache_alphavideo_WebMAlphaPlayerNative_nativeGetWidth(JNIEnv* env, jclass clazz, jlong playerId) {
     std::lock_guard<std::mutex> lock(playersMutex);
     auto it = players.find(playerId);
     return (it != players.end()) ? it->second->getWidth() : 0;
 }
 
 JNIEXPORT jint JNICALL
-Java_com_danielkpl2_webmalphaplayer_WebMAlphaPlayerNative_nativeGetHeight(JNIEnv* env, jclass clazz, jlong playerId) {
+Java_dev_mediacache_alphavideo_WebMAlphaPlayerNative_nativeGetHeight(JNIEnv* env, jclass clazz, jlong playerId) {
     std::lock_guard<std::mutex> lock(playersMutex);
     auto it = players.find(playerId);
     return (it != players.end()) ? it->second->getHeight() : 0;
 }
 
 JNIEXPORT jdouble JNICALL
-Java_com_danielkpl2_webmalphaplayer_WebMAlphaPlayerNative_nativeGetDuration(JNIEnv* env, jclass clazz, jlong playerId) {
+Java_dev_mediacache_alphavideo_WebMAlphaPlayerNative_nativeGetDuration(JNIEnv* env, jclass clazz, jlong playerId) {
     std::lock_guard<std::mutex> lock(playersMutex);
     auto it = players.find(playerId);
     return (it != players.end()) ? it->second->getDuration() : 0.0;
 }
 
 JNIEXPORT jdouble JNICALL
-Java_com_danielkpl2_webmalphaplayer_WebMAlphaPlayerNative_nativeGetFrameRate(JNIEnv* env, jclass clazz, jlong playerId) {
+Java_dev_mediacache_alphavideo_WebMAlphaPlayerNative_nativeGetFrameRate(JNIEnv* env, jclass clazz, jlong playerId) {
     std::lock_guard<std::mutex> lock(playersMutex);
     auto it = players.find(playerId);
     return (it != players.end()) ? it->second->getFrameRate() : 0.0;
@@ -799,7 +799,7 @@ Java_com_danielkpl2_webmalphaplayer_WebMAlphaPlayerNative_nativeGetFrameRate(JNI
 //==============================================================================
 
 JNIEXPORT jobject JNICALL
-Java_com_danielkpl2_webmalphaplayer_WebMAlphaPlayerNative_nativeGetFrame(
+Java_dev_mediacache_alphavideo_WebMAlphaPlayerNative_nativeGetFrame(
     JNIEnv* env, jclass clazz, jlong playerId, jint frameIndex
 ) {
     // Check if destroyed first
@@ -850,7 +850,7 @@ Java_com_danielkpl2_webmalphaplayer_WebMAlphaPlayerNative_nativeGetFrame(
     jobject aBuffer = env->CallStaticObjectMethod(byteBufferClass, wrapMethod, aArray);
     
     // Find the WebMFrame class
-    jclass frameClass = env->FindClass("com/danielkpl2/webmalphaplayer/WebMFrame");
+    jclass frameClass = env->FindClass("dev/mediacache/alphavideo/WebMFrame");
     if (!frameClass) return nullptr;
     
     // Create instance with constructor
@@ -881,7 +881,7 @@ Java_com_danielkpl2_webmalphaplayer_WebMAlphaPlayerNative_nativeGetFrame(
 //==============================================================================
 
 JNIEXPORT jlongArray JNICALL
-Java_com_danielkpl2_webmalphaplayer_WebMAlphaPlayerNative_nativeGetStats(JNIEnv* env, jclass clazz, jlong playerId) {
+Java_dev_mediacache_alphavideo_WebMAlphaPlayerNative_nativeGetStats(JNIEnv* env, jclass clazz, jlong playerId) {
     std::lock_guard<std::mutex> lock(playersMutex);
     auto it = players.find(playerId);
     if (it == players.end()) return nullptr;
@@ -902,7 +902,7 @@ Java_com_danielkpl2_webmalphaplayer_WebMAlphaPlayerNative_nativeGetStats(JNIEnv*
 }
 
 JNIEXPORT void JNICALL
-Java_com_danielkpl2_webmalphaplayer_WebMAlphaPlayerNative_nativeResetStats(JNIEnv* env, jclass clazz, jlong playerId) {
+Java_dev_mediacache_alphavideo_WebMAlphaPlayerNative_nativeResetStats(JNIEnv* env, jclass clazz, jlong playerId) {
     std::lock_guard<std::mutex> lock(playersMutex);
     auto it = players.find(playerId);
     if (it != players.end()) {
@@ -915,7 +915,7 @@ Java_com_danielkpl2_webmalphaplayer_WebMAlphaPlayerNative_nativeResetStats(JNIEn
 //==============================================================================
 
 JNIEXPORT jstring JNICALL
-Java_com_danielkpl2_webmalphaplayer_WebMAlphaPlayerNative_nativeGetFFmpegVersion(JNIEnv* env, jclass clazz) {
+Java_dev_mediacache_alphavideo_WebMAlphaPlayerNative_nativeGetFFmpegVersion(JNIEnv* env, jclass clazz) {
     std::string version = webm::WebMAlphaPlayer::getFFmpegVersion();
     return env->NewStringUTF(version.c_str());
 }
@@ -1101,7 +1101,7 @@ jlong registerDemuxer(std::shared_ptr<DualStreamDemuxer> demuxer) {
 } // anonymous namespace
 
 JNIEXPORT jboolean JNICALL
-Java_com_danielkpl2_webmalphaplayer_BufferedDualStreamPlayer_nativeIsDualStream(
+Java_dev_mediacache_alphavideo_BufferedDualStreamPlayer_nativeIsDualStream(
     JNIEnv* env,
     jclass clazz,
     jint fd,
@@ -1117,7 +1117,7 @@ Java_com_danielkpl2_webmalphaplayer_BufferedDualStreamPlayer_nativeIsDualStream(
 }
 
 JNIEXPORT jboolean JNICALL
-Java_com_danielkpl2_webmalphaplayer_BufferedDualStreamPlayer_nativeIsDualStreamDownload(
+Java_dev_mediacache_alphavideo_BufferedDualStreamPlayer_nativeIsDualStreamDownload(
     JNIEnv* env,
     jclass clazz,
     jstring path
@@ -1136,7 +1136,7 @@ Java_com_danielkpl2_webmalphaplayer_BufferedDualStreamPlayer_nativeIsDualStreamD
 // ============================================================================
 
 JNIEXPORT jlong JNICALL
-Java_com_danielkpl2_webmalphaplayer_BufferedDualStreamPlayer_nativeCreateDemuxer(
+Java_dev_mediacache_alphavideo_BufferedDualStreamPlayer_nativeCreateDemuxer(
     JNIEnv* env,
     jclass clazz,
     jint fd,
@@ -1151,7 +1151,7 @@ Java_com_danielkpl2_webmalphaplayer_BufferedDualStreamPlayer_nativeCreateDemuxer
 }
 
 JNIEXPORT jlong JNICALL
-Java_com_danielkpl2_webmalphaplayer_BufferedDualStreamPlayer_nativeCreateDemuxerFromDownload(
+Java_dev_mediacache_alphavideo_BufferedDualStreamPlayer_nativeCreateDemuxerFromDownload(
     JNIEnv* env,
     jclass clazz,
     jstring path
@@ -1164,7 +1164,7 @@ Java_com_danielkpl2_webmalphaplayer_BufferedDualStreamPlayer_nativeCreateDemuxer
 }
 
 JNIEXPORT void JNICALL
-Java_com_danielkpl2_webmalphaplayer_BufferedDualStreamPlayer_nativeDestroyDemuxer(
+Java_dev_mediacache_alphavideo_BufferedDualStreamPlayer_nativeDestroyDemuxer(
     JNIEnv* env,
     jclass clazz,
     jlong demuxerId
@@ -1182,7 +1182,7 @@ Java_com_danielkpl2_webmalphaplayer_BufferedDualStreamPlayer_nativeDestroyDemuxe
 }
 
 JNIEXPORT jintArray JNICALL
-Java_com_danielkpl2_webmalphaplayer_BufferedDualStreamPlayer_nativeGetVideoInfo(
+Java_dev_mediacache_alphavideo_BufferedDualStreamPlayer_nativeGetVideoInfo(
     JNIEnv* env,
     jclass clazz,
     jlong demuxerId
@@ -1210,7 +1210,7 @@ Java_com_danielkpl2_webmalphaplayer_BufferedDualStreamPlayer_nativeGetVideoInfo(
 }
 
 JNIEXPORT jobjectArray JNICALL
-Java_com_danielkpl2_webmalphaplayer_BufferedDualStreamPlayer_nativeReadPacket(
+Java_dev_mediacache_alphavideo_BufferedDualStreamPlayer_nativeReadPacket(
     JNIEnv* env,
     jclass clazz,
     jlong demuxerId
@@ -1291,7 +1291,7 @@ Java_com_danielkpl2_webmalphaplayer_BufferedDualStreamPlayer_nativeReadPacket(
 }
 
 JNIEXPORT void JNICALL
-Java_com_danielkpl2_webmalphaplayer_BufferedDualStreamPlayer_nativeSeekToStart(
+Java_dev_mediacache_alphavideo_BufferedDualStreamPlayer_nativeSeekToStart(
     JNIEnv* env,
     jclass clazz,
     jlong demuxerId

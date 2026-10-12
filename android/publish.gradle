@@ -1,67 +1,78 @@
-// Publishing configuration for standalone Android library
-// This file is only used when publishing to Maven, not when consumed as a node module
+// Maven publication for dev.mediacache:alpha-video. Run it through scripts/publish-android.sh.
 //
-// Usage: ./gradlew -b publish.gradle publishToMavenLocal
-//    or: ./gradlew -b publish.gradle publish
+// Signing reads ORG_GRADLE_PROJECT_signingInMemoryKey (armored secret key), …KeyPassword and
+// optionally …KeyId. Without a key the artifacts are left unsigned, which is enough for
+// publishToMavenLocal.
 
-apply from: 'build.gradle'
 apply plugin: 'maven-publish'
+apply plugin: 'signing'
+
+def repoUrl = 'https://github.com/danielkpl2/alpha-video'
 
 afterEvaluate {
     publishing {
         publications {
             release(MavenPublication) {
                 from components.release
-                
-                groupId = 'com.danielkpl2'
-                artifactId = 'webm-alpha-player-android'
-                version = '1.0.0'
-                
+                artifactId = 'alpha-video'
+
                 pom {
-                    name = 'WebM Alpha Player Android'
-                    description = 'High-performance WebM VP9 video player with alpha transparency support for Android'
-                    url = 'https://github.com/danielkpl2/webm-alpha-player-android'
-                    
+                    name = 'alpha-video'
+                    description = 'Transparent video for Android: VP9 WebM with alpha in software (FFmpeg + libvpx), and dual-stream VP9 or AV1 on the hardware decoders, drawn into a TextureView.'
+                    url = repoUrl
+                    inceptionYear = '2026'
                     licenses {
                         license {
                             name = 'MIT'
                             url = 'https://opensource.org/licenses/MIT'
+                            distribution = 'repo'
+                        }
+                        license {
+                            name = 'GNU Lesser General Public License v2.1 or later (bundled FFmpeg)'
+                            url = 'https://www.gnu.org/licenses/old-licenses/lgpl-2.1.txt'
+                            distribution = 'repo'
+                        }
+                        license {
+                            name = 'BSD-3-Clause (bundled libvpx)'
+                            url = 'https://chromium.googlesource.com/webm/libvpx/+/refs/tags/v1.14.0/LICENSE'
+                            distribution = 'repo'
                         }
                     }
-                    
                     developers {
                         developer {
                             id = 'danielkpl2'
-                            name = 'Daniel'
+                            name = 'Daniel Kasprowicz'
+                            email = '9932671+danielkpl2@users.noreply.github.com'
+                            url = 'https://github.com/danielkpl2'
                         }
                     }
-                    
                     scm {
-                        connection = 'scm:git:git://github.com/danielkpl2/webm-alpha-player-android.git'
-                        developerConnection = 'scm:git:ssh://github.com/danielkpl2/webm-alpha-player-android.git'
-                        url = 'https://github.com/danielkpl2/webm-alpha-player-android'
+                        connection = "scm:git:${repoUrl}.git"
+                        developerConnection = "scm:git:${repoUrl}.git"
+                        url = repoUrl
                     }
                 }
             }
         }
-        
         repositories {
-            // Local directory for testing
             maven {
-                name = 'local'
-                url = uri("${rootProject.projectDir}/../dist/android")
+                name = 'staging'
+                url = layout.buildDirectory.dir('staging-repo')
             }
-            
-            // Maven Central (Sonatype OSSRH)
-            // Uncomment and configure when ready to publish
-            // maven {
-            //     name = 'ossrh'
-            //     url = uri('https://s01.oss.sonatype.org/service/local/staging/deploy/maven2/')
-            //     credentials {
-            //         username = System.getenv('OSSRH_USERNAME')
-            //         password = System.getenv('OSSRH_PASSWORD')
-            //     }
-            // }
+        }
+    }
+
+    def signingKey = findProperty('signingInMemoryKey')
+    if (signingKey) {
+        signing {
+            def keyId = findProperty('signingInMemoryKeyId')
+            def password = findProperty('signingInMemoryKeyPassword')
+            if (keyId) {
+                useInMemoryPgpKeys(keyId, signingKey, password)
+            } else {
+                useInMemoryPgpKeys(signingKey, password)
+            }
+            sign publishing.publications.release
         }
     }
 }

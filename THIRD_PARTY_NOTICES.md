@@ -35,4 +35,4 @@ Copies of both are also attached to the GitHub Release of this repository that c
 
 ## Replacing FFmpeg
 
-The build scripts are in this repository, so you can rebuild the player against your own FFmpeg. On Android, FFmpeg is linked statically into `libwebmalphaplayer.so`; on iOS, it is linked statically into the app. If you ship a closed-source app, LGPL-2.1 asks you to let users relink it against a modified FFmpeg, for example by providing your app's object files or by building FFmpeg as a dynamic library.
+The build scripts are in this repository, so you can rebuild the player against your own FFmpeg. On Android, FFmpeg is linked statically into `libalphavideo.so`; on iOS, it is linked statically into the app. If you ship a closed-source app, LGPL-2.1 asks you to let users relink it against a modified FFmpeg, for example by providing your app's object files or by building FFmpeg as a dynamic library.

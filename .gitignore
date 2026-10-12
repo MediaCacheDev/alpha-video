@@ -33,6 +33,9 @@ ios/Pods/
 android/build/
 android/.gradle/
 android/.cxx/
+react-native/android/build/
+react-native/android/.gradle/
+react-native/android/.cxx/
 local.properties
 
 # Prebuilt binaries (should be committed for distribution)

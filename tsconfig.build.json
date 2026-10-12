@@ -5,6 +5,6 @@
     "declarationMap": true,
     "outDir": "lib/typescript"
   },
-  "include": ["src"],
+  "include": ["react-native/src"],
   "exclude": ["lib", "node_modules", "**/__tests__"]
 }

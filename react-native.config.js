@@ -3,9 +3,9 @@ module.exports = {
     platforms: {
       ios: {},
       android: {
-        sourceDir: './android',
-        packageImportPath: 'import com.danielkpl2.webmalphaplayer.RNWebMAlphaPlayerPackage;',
-        packageInstance: 'new RNWebMAlphaPlayerPackage()',
+        sourceDir: './react-native/android',
+        packageImportPath: 'import dev.mediacache.alphavideo.reactnative.AlphaVideoPackage;',
+        packageInstance: 'new AlphaVideoPackage()',
       },
     },
   },
