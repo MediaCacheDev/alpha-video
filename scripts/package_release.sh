@@ -6,12 +6,15 @@
 #
 #   prebuilt-ffmpeg<F>-libvpx<V>.tar.gz   prebuilt/ for Android and iOS, what fetch-prebuilt.sh unpacks
 #   FFmpegVPX.xcframework.zip             the Package.swift binary target, as built by build_xcframework.sh
+#   alpha-video-<version>-ios.zip         the CocoaPods source (alpha-video.podspec): the iOS sources
+#                                         and FFmpegVPX.xcframework
 #   ffmpeg-<F>.tar.xz, libvpx-<V>.tar.gz  the corresponding source (LGPL), checked against
 #                                         THIRD_PARTY_NOTICES.md
 #   SHA256SUMS
 #
-# Uploads nothing. Afterwards, fetch-prebuilt.sh's SHA256 must be the prebuilt archive's, and
-# Package.swift's checksum the zip's; the script stops or warns when they differ.
+# Uploads nothing. Afterwards, fetch-prebuilt.sh's SHA256 must be the prebuilt archive's,
+# alpha-video.podspec's sha256 the pod zip's, and Package.swift's checksum the xcframework zip's;
+# the script stops or warns when they differ.
 #
 
 set -euo pipefail
@@ -82,6 +85,20 @@ find "$STAGE/prebuilt" -exec touch -h -t 202601010000 {} +
         --uid 0 --gid 0 --uname "" --gname "" -f - \
     | gzip -n -9 > "$OUT/$PREBUILT_ARCHIVE"
 
+# The CocoaPods source: prebuilt/ isn't in git, so the pod downloads the sources and FFmpeg
+# together. Reproducible in the same way, for alpha-video.podspec's sha256.
+POD="$STAGE/pod"
+mkdir -p "$POD/cpp" "$POD/ios/Sources"
+cp "$ROOT"/cpp/*.h "$ROOT"/cpp/*.cpp "$POD/cpp/"
+rm "$POD/cpp/WebMAlphaPlayer_jni.cpp"
+cp -R "$ROOT/ios/Sources/AlphaVideo" "$POD/ios/Sources/"
+cp -R "$ROOT/prebuilt/FFmpegVPX.xcframework" "$POD/"
+cp -R "$ROOT/LICENSE" "$ROOT/THIRD_PARTY_NOTICES.md" "$ROOT/licenses" "$POD/"
+find "$POD" -name .DS_Store -delete
+find "$POD" -exec touch -h -t 202601010000 {} +
+POD_ZIP="alpha-video-$VERSION-ios.zip"
+(cd "$POD" && find . -mindepth 1 | sed 's#^\./##' | LC_ALL=C sort | zip -q -X -D -9 "$OUT/$POD_ZIP" -@)
+
 cp "$ZIP" "$OUT/"
 fetch_source "ffmpeg-$FFMPEG_VERSION.tar.xz" \
     "https://ffmpeg.org/releases/ffmpeg-$FFMPEG_VERSION.tar.xz" "$FFMPEG_SHA256"
@@ -95,4 +112,8 @@ sed 's/^/   /' "$OUT/SHA256SUMS"
 PREBUILT_SHA256="$(sha256 "$OUT/$PREBUILT_ARCHIVE")"
 if ! grep -q "^SHA256=\"$PREBUILT_SHA256\"" "$ROOT/scripts/fetch-prebuilt.sh"; then
     echo "⚠️  Set SHA256=\"$PREBUILT_SHA256\" in scripts/fetch-prebuilt.sh before uploading"
+fi
+POD_SHA256="$(sha256 "$OUT/$POD_ZIP")"
+if ! grep -q ":sha256 => '$POD_SHA256'" "$ROOT/alpha-video.podspec"; then
+    echo "⚠️  Set :sha256 => '$POD_SHA256' in alpha-video.podspec before uploading"
 fi

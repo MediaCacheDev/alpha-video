@@ -8,7 +8,7 @@ One repository, three packages:
 |---|---|---|
 | `react-native-alpha-video` (npm) | React Native, and react-native-web | [React Native](#react-native) |
 | `dev.mediacache:alpha-video` (Maven Central) | Android apps without React Native | [Android](#android-without-react-native) |
-| `AlphaVideo` (Swift Package Manager) | iOS apps without React Native | [iOS](#ios-without-react-native) |
+| `AlphaVideo` (Swift Package Manager), `alpha-video` (CocoaPods) | iOS apps without React Native | [iOS](#ios-without-react-native) |
 
 ## Features
 
@@ -113,6 +113,14 @@ In Xcode, **File > Add Package Dependencies…** with `https://github.com/daniel
 // target dependency:
 .product(name: "AlphaVideo", package: "alpha-video")
 ```
+
+Or with CocoaPods:
+
+```ruby
+pod 'alpha-video', '1.0.0'
+```
+
+CocoaPods trunk is read-only from 2 December 2026, so later versions are used through the podspec at their tag: `pod 'alpha-video', :podspec => 'https://raw.githubusercontent.com/danielkpl2/alpha-video/v<version>/alpha-video.podspec'`. The module is `AlphaVideo` either way.
 
 FFmpeg comes as a prebuilt `FFmpegVPX.xcframework` from the GitHub Release. `AlphaVideoView` is a `UIView`:
 
@@ -468,7 +476,7 @@ scripts/package_release.sh            # the GitHub Release assets, in dist/relea
 
 `Package.swift` uses `prebuilt/FFmpegVPX.xcframework` when it exists, and the release zip otherwise. Its checksum must match the zip attached to the GitHub Release, so rebuilding the xcframework means updating the checksum. The same goes for the prebuilt archive and `fetch-prebuilt.sh`, although packaging the same libraries again gives the same archive. `package_release.sh` stops or warns when either checksum is out of date. `publish-android.sh` lists the environment variables it needs for Central.
 
-A release carries the prebuilt archive, `FFmpegVPX.xcframework.zip`, and the FFmpeg and libvpx source tarballs that [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md) points to.
+A release carries the prebuilt archive, `FFmpegVPX.xcframework.zip`, the CocoaPods zip (`alpha-video-<version>-ios.zip`, the source of `alpha-video.podspec`, whose `:sha256` must match it), and the FFmpeg and libvpx source tarballs that [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md) points to. `pod trunk push alpha-video.podspec --allow-warnings` once the release is public; the warnings are FFmpeg's header comments.
 
 ### Repository layout
 
