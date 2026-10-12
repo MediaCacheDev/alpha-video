@@ -102,7 +102,7 @@ container.addView(view)
 view.release()
 ```
 
-Callbacks arrive on the main thread. http(s) sources need the `INTERNET` permission in the app's manifest.
+Control playback with `play()`, `pause()`, `stop()`, `seekToFrame(frame)` and `seekToTime(seconds)`, and hold it with `setPaused(paused)`; seeks behave as described under [Ref Methods](#ref-methods). Callbacks arrive on the main thread. http(s) sources need the `INTERNET` permission in the app's manifest.
 
 ### iOS without React Native
 
@@ -134,7 +134,7 @@ view.source = "asset://videos/glow.webm"  // loads on the next main-queue turn
 addSubview(view)
 ```
 
-Delegate calls arrive on the main queue. iOS 13 or later.
+Control playback with `play`, `pause`, `stop`, `seekToFrame:` and `seekToTime:`, and hold it with `paused`; seeks behave as described under [Ref Methods](#ref-methods). Delegate calls arrive on the main queue. iOS 13 or later.
 
 ## Usage
 
