@@ -451,15 +451,24 @@ The Android script uses the NDK in `ANDROID_NDK_HOME` (default `$ANDROID_HOME/nd
 | iOS Simulator | `prebuilt/ios-simulator/` | arm64 + x86_64 |
 | Android | `prebuilt/android/{abi}/` | arm64-v8a, armeabi-v7a, x86_64 |
 
-### Native packages
+`prebuilt/` is not committed. In a git clone, either rebuild it as above or download the release's copy:
+
+```bash
+scripts/fetch-prebuilt.sh             # prebuilt/ from the GitHub Release, checksum-verified
+```
+
+### Native packages and releases
 
 ```bash
 scripts/build_xcframework.sh          # prebuilt/FFmpegVPX.xcframework(.zip) for Package.swift
 scripts/publish-android.sh local      # dev.mediacache:alpha-video into ~/.m2
 scripts/publish-android.sh central    # signed, to the Maven Central Portal
+scripts/package_release.sh            # the GitHub Release assets, in dist/release-v<version>/
 ```
 
-`Package.swift` uses `prebuilt/FFmpegVPX.xcframework` when it exists, and the release zip otherwise. Its checksum must match the zip attached to the GitHub Release, so rebuilding the xcframework means updating the checksum. `publish-android.sh` lists the environment variables it needs for Central.
+`Package.swift` uses `prebuilt/FFmpegVPX.xcframework` when it exists, and the release zip otherwise. Its checksum must match the zip attached to the GitHub Release, so rebuilding the xcframework means updating the checksum. The same goes for the prebuilt archive and `fetch-prebuilt.sh`, although packaging the same libraries again gives the same archive. `package_release.sh` stops or warns when either checksum is out of date. `publish-android.sh` lists the environment variables it needs for Central.
+
+A release carries the prebuilt archive, `FFmpegVPX.xcframework.zip`, and the FFmpeg and libvpx source tarballs that [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md) points to.
 
 ### Repository layout
 

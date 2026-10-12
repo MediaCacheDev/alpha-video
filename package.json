@@ -48,7 +48,9 @@
     "build:ffmpeg:android": "cd scripts && ./build_ffmpeg_android.sh",
     "build:ffmpeg:all": "npm run build:ffmpeg:ios && npm run build:ffmpeg:android",
     "build:xcframework": "scripts/build_xcframework.sh",
-    "publish:android:local": "scripts/publish-android.sh local"
+    "publish:android:local": "scripts/publish-android.sh local",
+    "fetch:prebuilt": "scripts/fetch-prebuilt.sh",
+    "package:release": "scripts/package_release.sh"
   },
   "keywords": [
     "react-native",

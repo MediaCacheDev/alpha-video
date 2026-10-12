@@ -43,3 +43,6 @@ prebuilt/
 
 # FFmpeg/libvpx sources and build trees from scripts/build_ffmpeg_*.sh
 scripts/build/
+
+# Release assets from scripts/package_release.sh
+dist/
