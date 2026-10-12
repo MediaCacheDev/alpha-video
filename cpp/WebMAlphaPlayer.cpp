@@ -754,48 +754,6 @@ bool WebMAlphaPlayer::loadFromMemory(const uint8_t* data, size_t size) {
     return finishLoad();
 }
 
-bool WebMAlphaPlayer::loadFromUrl(const std::string& url) {
-    // FFmpeg supports HTTP/HTTPS URLs directly
-    unload();
-    
-    // Reset stop flag so decodeAllFrames doesn't exit immediately
-    shouldStop_ = false;
-    
-    formatCtx_ = avformat_alloc_context();
-    if (!formatCtx_) {
-        emitEvent("error", "Failed to allocate format context");
-        return false;
-    }
-    
-    // Set network options
-    AVDictionary* opts = nullptr;
-    av_dict_set(&opts, "timeout", "10000000", 0);  // 10 second timeout
-    av_dict_set(&opts, "reconnect", "1", 0);
-    av_dict_set(&opts, "reconnect_streamed", "1", 0);
-    
-    int ret = avformat_open_input(&formatCtx_, url.c_str(), nullptr, &opts);
-    av_dict_free(&opts);
-    
-    if (ret < 0) {
-        char err[AV_ERROR_MAX_STRING_SIZE];
-        av_strerror(ret, err, sizeof(err));
-        emitEvent("error", std::string("Failed to open URL: ") + err);
-        return false;
-    }
-    
-    if (!openStreams() || !initCodecs()) {
-        return false;
-    }
-    
-    loaded_ = true;
-    
-    if (config_.preloadAllFrames) {
-        decodeAllFrames();
-    }
-    
-    return true;
-}
-
 void WebMAlphaPlayer::unload() {
     // Protect against concurrent unload calls (e.g., during view detach/reattach)
     std::lock_guard<std::mutex> unloadLock(unloadMutex_);

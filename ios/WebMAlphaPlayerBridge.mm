@@ -300,13 +300,6 @@
     );
 }
 
-- (BOOL)loadFromURL:(NSURL *)url {
-    if (url.isFileURL) {
-        return [self loadFromFile:url.path];
-    }
-    return _player->loadFromUrl([url.absoluteString UTF8String]);
-}
-
 - (void)unload {
     _player->unload();
 }
@@ -627,11 +620,6 @@
 - (BOOL)loadFromDownloadPath:(NSString *)path {
     _sourcePath = path;
     return [_player loadFromDownload:path];
-}
-
-- (BOOL)loadFromURL:(NSURL *)url {
-    _sourceURL = url;
-    return [_player loadFromURL:url];
 }
 
 - (void)unloadVideo {

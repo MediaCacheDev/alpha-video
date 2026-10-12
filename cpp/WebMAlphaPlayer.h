@@ -231,7 +231,6 @@ public:
     // arrived, so playback starts with the first frames. Use with Stream or StreamAndPreload;
     // Preload's first seek reads the Cues, usually at the end, so it waits for the whole file.
     bool loadFromDownload(const std::string& path);
-    bool loadFromUrl(const std::string& url);  // Network loading
     void unload();
     
     // Playback control

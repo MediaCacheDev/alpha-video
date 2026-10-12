@@ -126,7 +126,8 @@ export interface WebMAlphaViewRef {
   seekToFrame: (frame: number) => void;
 }
 
-// Native component for iOS and Android (Fabric-aware via codegen fallback wrapper)
+// Native component for iOS and Android. An old-architecture view (requireNativeComponent); on
+// the new architecture it runs through React Native's interop layer.
 const NativeWebMAlphaViewOrNull = Platform.OS !== 'web' ? NativeWebMAlphaView : null;
 
 /** asset://path names the app's bundled media; on the web it is served from the site root. */
@@ -136,7 +137,7 @@ function toWebUrl(uri: string | undefined): string | undefined {
 
 const WebVideoPlayer = forwardRef<WebMAlphaViewRef, WebMAlphaViewProps>(
   (props, ref) => {
-    const { source, autoPlay = true, loop = true, paused = false, playbackSpeed = 1.0, style, onLoad, onError } = props;
+    const { source, autoPlay = true, loop = true, paused = false, playbackSpeed = 1.0, style, onLoad, onError, onEnd } = props;
     const videoRef = useRef<VideoElement | null>(null);
     const [isLoaded, setIsLoaded] = useState(false);
 
@@ -219,6 +220,7 @@ const WebVideoPlayer = forwardRef<WebMAlphaViewRef, WebMAlphaViewProps>(
           playsInline
           onLoadedMetadata={handleLoadedMetadata}
           onError={handleError}
+          onEnded={() => onEnd?.({})}
           style={{
             width: '100%',
             height: '100%',

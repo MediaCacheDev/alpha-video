@@ -51,7 +51,6 @@ public class WebMAlphaPlayerNative {
     /** A {@link WebMDownloader} cache file, read as it downloads. Use with the stream modes. */
     public static native boolean nativeLoadFromDownload(long playerId, String path);
     public static native boolean nativeLoadFromBytes(long playerId, byte[] data);
-    public static native boolean nativeLoadFromUrl(long playerId, String url);
     public static native void nativeUnload(long playerId);
     
     // Playback control

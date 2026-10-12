@@ -127,7 +127,6 @@ NS_ASSUME_NONNULL_BEGIN
 // Use with the stream modes (preload's first seek waits for the whole file).
 - (BOOL)loadFromDownload:(NSString *)path;
 - (BOOL)loadFromData:(NSData *)data;
-- (BOOL)loadFromURL:(NSURL *)url;
 - (void)unload;
 
 // Playback
@@ -171,7 +170,6 @@ NS_ASSUME_NONNULL_BEGIN
 
 // Source management
 @property (nonatomic, copy, nullable) NSString *sourcePath;
-@property (nonatomic, copy, nullable) NSURL *sourceURL;
 
 // Playback configuration
 @property (nonatomic) BOOL autoplay;
@@ -188,7 +186,6 @@ NS_ASSUME_NONNULL_BEGIN
 // Loading
 - (BOOL)loadFromPath:(NSString *)path;
 - (BOOL)loadFromDownloadPath:(NSString *)path;  // See -[WebMAlphaPlayerWrapper loadFromDownload:]
-- (BOOL)loadFromURL:(NSURL *)url;
 - (void)unloadVideo;
 
 // Playback control

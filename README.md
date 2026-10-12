@@ -10,7 +10,7 @@ High-performance WebM video player with alpha transparency support for React Nat
 - **High Performance** - Native C++ core (FFmpeg) with GPU-accelerated rendering
 - **iOS** - Metal-based rendering with YUVA-to-RGBA GPU shader
 - **Android** - TextureView with OpenGL ES 2.0, proper z-ordering and ScrollView support
-- **Web** - HTML5 video fallback for react-native-web compatibility
+- **Web** - HTML5 video fallback for react-native-web compatibility (Chrome and Firefox; see [Web](#web))
 - **Zero-Copy Frame Pipeline** - Efficient memory usage with LRU frame caching (software path) and OES texture compositing (hardware path)
 
 ## Decision Matrix
@@ -20,7 +20,7 @@ Choosing the right encoding format depends on your use case:
 | | Single-Stream YUVA (Software) | Dual-Stream VP9/AV1 (Hardware) |
 |---|---|---|
 | **Decoding** | CPU (FFmpeg libvpx) | GPU (MediaCodec) |
-| **CPU usage during playback** | Moderate (decode + render) | Near-zero (decode offloaded) |
+| **CPU usage during playback** | Depends on `mode`: none once `preload` has decoded every frame (upload and render only); continuous decoding in `stream`; first pass only in `streamAndPreload` | Near-zero (decode offloaded) |
 | **Looping** | Seamless | Tiny stall at loop boundary (MediaCodec flush) |
 | **Max resolution** | ~720p practical limit | 1080p+ (hardware limited) |
 | **Best for** | Short loops, small animations, many simultaneous players | Long-duration, high-res, single-instance playback |
@@ -87,7 +87,8 @@ The player automatically detects whether a file contains a single YUVA stream (s
 
 | Prop | Type | Default | Description |
 |------|------|---------|-------------|
-| `source` | `{ uri: string }` | required | Video source URL or local file path |
+| `source` | `{ uri: string }` | required | Video source URL or local file path (see [Supported Source Types](#supported-source-types)) |
+| `cacheKey` | `string` | hash of the URL | Cache file path for an http(s) source, relative to the app's cache directory (may include subfolders, must stay inside it) |
 | `autoPlay` | `boolean` | `true` | Auto-play video when loaded |
 | `loop` | `boolean` | `true` | Loop video playback |
 | `paused` | `boolean` | `false` | Pause video playback |
@@ -95,6 +96,7 @@ The player automatically detects whether a file contains a single YUVA stream (s
 | `style` | `ViewStyle` | - | Container style |
 | `onLoad` | `function` | - | Callback when video loads (`{ totalFrames, width, height }`) |
 | `onError` | `function` | - | Callback when error occurs (`{ error }`) |
+| `onEnd` | `function` | - | Callback when playback reaches the end with `loop` off |
 | `mode` | `'preload' \| 'stream' \| 'streamAndPreload'` | `'preload'` | Playback mode (software path only, see below) |
 | `streamCacheSize` | `number` | `30` | Frames to keep in LRU cache when streaming |
 | `streamPrefetchAhead` | `number` | `15` | Frames to decode ahead of playback position |
@@ -173,6 +175,15 @@ In `stream` and `streamAndPreload` mode (and on the Android hardware path in tho
 - A download that fails, including one cut off part way, is reported through `onError` as `Download failed: …`. The player stops at the last frame that arrived instead of looping over a partial file. Nothing is cached, so the next load starts over.
 - If the network is slower than the clip's bitrate, playback waits for frames on the software path. On the Android hardware path its clock can run ahead during the stall and catch up quickly afterwards.
 - `seekToFrame` during a download waits until the file is complete, because a WebM file keeps its seek index (Cues) at the end. Looping back to the start only happens after the end has arrived, so it isn't affected.
+
+### Web
+
+On the web the component renders a muted HTML5 `<video>`, so the browser does the decoding and streaming. It honours `source`, `autoPlay`, `loop`, `paused`, `playbackSpeed`, `onLoad`, `onError`, `onEnd` and the ref methods; `mode`, `cacheKey` and the stream and queue props have no effect.
+
+- **Chrome, Edge and Firefox** play single-stream YUVA VP9 WebM with its transparency.
+- **Safari** doesn't show WebM's alpha channel. For Safari, serve a separate HEVC-with-alpha file.
+- **Dual-stream files** show only the colour track in every browser: `<video>` plays one video track, so the alpha track is ignored.
+- Browsers don't report a frame rate, so `onLoad`'s `totalFrames` and `seekToFrame` assume 30 fps.
 
 ## Architecture Overview
 

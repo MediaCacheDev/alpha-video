@@ -631,52 +631,6 @@ Java_com_danielkpl2_webmalphaplayer_WebMAlphaPlayerNative_nativeLoadFromBytes(
     return result ? JNI_TRUE : JNI_FALSE;
 }
 
-JNIEXPORT jboolean JNICALL
-Java_com_danielkpl2_webmalphaplayer_WebMAlphaPlayerNative_nativeLoadFromUrl(
-    JNIEnv* env,
-    jclass clazz,
-    jlong playerId,
-    jstring url
-) {
-    // Check if already destroyed
-    {
-        std::lock_guard<std::mutex> dlock(destroyedMutex);
-        if (destroyedPlayers.count(playerId)) return JNI_FALSE;
-    }
-    
-    // Remove from stopped set when loading new content (re-enabling callbacks)
-    {
-        std::lock_guard<std::mutex> slock(stoppedMutex);
-        stoppedPlayers.erase(playerId);
-    }
-    
-    // Get shared_ptr to keep player alive during operation
-    std::shared_ptr<webm::WebMAlphaPlayer> player;
-    {
-        std::lock_guard<std::mutex> lock(playersMutex);
-        auto it = players.find(playerId);
-        if (it == players.end()) return JNI_FALSE;
-        player = it->second;  // Increment refcount
-    }
-    
-    const char* urlStr = env->GetStringUTFChars(url, nullptr);
-    std::string urlCopy(urlStr);  // Copy before releasing
-    env->ReleaseStringUTFChars(url, urlStr);
-    
-    // Check again if destroyed before expensive operation
-    {
-        std::lock_guard<std::mutex> dlock(destroyedMutex);
-        if (destroyedPlayers.count(playerId)) {
-            LOGI("LoadFromUrl aborted - player %lld destroyed", playerId);
-            return JNI_FALSE;
-        }
-    }
-    
-    bool result = player->loadFromUrl(urlCopy);
-    
-    return result ? JNI_TRUE : JNI_FALSE;
-}
-
 JNIEXPORT void JNICALL
 Java_com_danielkpl2_webmalphaplayer_WebMAlphaPlayerNative_nativeUnload(
     JNIEnv* env,
