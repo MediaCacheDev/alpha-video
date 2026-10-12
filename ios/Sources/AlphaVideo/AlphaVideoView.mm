@@ -103,7 +103,7 @@ static void releaseGlobalDecodeQueue(void) {
 
 - (void)setAutoPlay:(BOOL)autoPlay {
     _autoPlay = autoPlay;
-    self.metalView.autoplay = autoPlay;
+    self.metalView.autoplay = autoPlay && !_paused;
 }
 
 - (void)setLoop:(BOOL)loop {
@@ -113,6 +113,8 @@ static void releaseGlobalDecodeQueue(void) {
 
 - (void)setPaused:(BOOL)paused {
     _paused = paused;
+    // A view paused before it loads must not start on load
+    self.metalView.autoplay = _autoPlay && !paused;
     if (paused) {
         [self.metalView pause];
     } else if (self.autoPlay) {
@@ -242,6 +244,10 @@ static void releaseGlobalDecodeQueue(void) {
 
 - (void)seekToFrame:(int)frame {
     [self.metalView seekToFrame:frame];
+}
+
+- (void)seekToTime:(double)seconds {
+    [self.metalView seekToTime:seconds];
 }
 
 #pragma mark - AlphaVideoPlayerDelegate

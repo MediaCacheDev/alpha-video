@@ -89,6 +89,8 @@ public class AlphaVideoView extends TextureView implements
     
     // Configuration
     private boolean autoplay = true;
+    // Kept so that a source loading after the paused prop was set doesn't start playing
+    private boolean paused = false;
     private boolean loop = true;
     private double playbackSpeed = 1.0;
     // Reduced defaults for better performance with multiple simultaneous players
@@ -350,6 +352,7 @@ public class AlphaVideoView extends TextureView implements
     }
     
     public void setPaused(boolean paused) {
+        this.paused = paused;
         if (paused) {
             pause();
         } else if (autoplay) {
@@ -526,7 +529,7 @@ public class AlphaVideoView extends TextureView implements
                         if (callback != null && !isReleased) {
                             callback.onLoad(totalFrames, width, height);
                         }
-                        if (autoplay && bufferedPlayer != null) {
+                        if (autoplay && !paused && bufferedPlayer != null) {
                             bufferedPlayer.play();
                         }
                     });
@@ -655,9 +658,29 @@ public class AlphaVideoView extends TextureView implements
         }
     }
     
+    /**
+     * Moves to a frame (clamped to the clip), staying playing or paused; a paused view shows it.
+     * Ignored until the clip has loaded.
+     */
     public void seekToFrame(int frame) {
-        if (isReleased || playerId == 0) return;
-        WebMAlphaPlayerNative.nativeSeekToFrame(playerId, frame);
+        if (isReleased) return;
+        
+        if (isDualStreamMode && bufferedPlayer != null) {
+            bufferedPlayer.seekToFrame(frame);
+        } else if (playerId != 0) {
+            WebMAlphaPlayerNative.nativeSeekToFrame(playerId, frame);
+        }
+    }
+    
+    /** Moves to the frame showing at {@code seconds}; see {@link #seekToFrame}. */
+    public void seekToTime(double seconds) {
+        if (isReleased) return;
+        
+        if (isDualStreamMode && bufferedPlayer != null) {
+            bufferedPlayer.seekToTime(seconds);
+        } else if (playerId != 0) {
+            WebMAlphaPlayerNative.nativeSeekToTime(playerId, seconds);
+        }
     }
     
     public boolean isLoaded() {
@@ -1311,7 +1334,7 @@ public class AlphaVideoView extends TextureView implements
                 }
             }
             
-            if (autoplay && playerId != 0 && !isReleased) {
+            if (autoplay && !paused && playerId != 0 && !isReleased) {
                 play();
             }
         });

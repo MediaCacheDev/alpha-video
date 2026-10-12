@@ -68,6 +68,8 @@ public class SurfaceTextureVideoDecoder implements SurfaceTexture.OnFrameAvailab
     // PTS-gated release
     private final AtomicLong targetPresentationTimeUs = new AtomicLong(0);
     private final AtomicBoolean frameReleasedSinceConsume = new AtomicBoolean(false);
+    // Outputs before this are discarded unshown: after a seek, the frames from the keyframe up to the target
+    private final AtomicLong dropBeforeUs = new AtomicLong(Long.MIN_VALUE);
     
     private final ConcurrentLinkedQueue<FrameInfo> pendingFrames = new ConcurrentLinkedQueue<>();
     
@@ -439,6 +441,11 @@ public class SurfaceTextureVideoDecoder implements SurfaceTexture.OnFrameAvailab
                     long pts = bufferInfo.presentationTimeUs;
                     long target = targetPresentationTimeUs.get();
                     
+                    if (pts < dropBeforeUs.get()) {
+                        codec.releaseOutputBuffer(outputIndex, false);
+                        pendingFrames.poll();
+                        continue;
+                    }
                     if (pts <= target) {
                         codec.releaseOutputBuffer(outputIndex, true);
                         frameReleasedSinceConsume.set(true);
@@ -609,6 +616,11 @@ public class SurfaceTextureVideoDecoder implements SurfaceTexture.OnFrameAvailab
     public void setTargetPresentationTimeUs(long ptsUs) {
         targetPresentationTimeUs.set(ptsUs);
     }
+
+    /** Discards decoded frames earlier than ptsUs without showing them, until the next flush. */
+    public void setDropBeforeUs(long ptsUs) {
+        dropBeforeUs.set(ptsUs);
+    }
     
     public boolean wasFrameReleased() {
         return frameReleasedSinceConsume.get();
@@ -635,6 +647,7 @@ public class SurfaceTextureVideoDecoder implements SurfaceTexture.OnFrameAvailab
                 hasNewFrame.set(false);
                 lastFrameTimestampNs.set(0);
                 targetPresentationTimeUs.set(0);
+                dropBeforeUs.set(Long.MIN_VALUE);
                 frameReleasedSinceConsume.set(false);
                 heldOutputIndex = -1;
             }

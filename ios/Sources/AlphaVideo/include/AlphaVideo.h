@@ -248,7 +248,9 @@ NS_ASSUME_NONNULL_BEGIN
 - (void)play;
 - (void)pause;
 - (void)stop;
+// Both clamp to the clip and keep playing or stay paused; a paused view shows the frame.
 - (void)seekToFrame:(int)frame;
+- (void)seekToTime:(double)seconds;
 
 @end
 

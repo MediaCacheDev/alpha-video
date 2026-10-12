@@ -35,6 +35,15 @@ std::unordered_map<jlong, std::shared_ptr<webm::WebMAlphaPlayer>> players;
 std::mutex playersMutex;
 jlong nextPlayerId = 1;
 
+// Calls that can block or emit callbacks must run outside playersMutex: a preload holds the
+// decode lock while it emits events, and the "loaded" event takes playersMutex under
+// callbacksMutex, so holding playersMutex across them deadlocks.
+std::shared_ptr<webm::WebMAlphaPlayer> findPlayer(jlong playerId) {
+    std::lock_guard<std::mutex> lock(playersMutex);
+    auto it = players.find(playerId);
+    return it != players.end() ? it->second : nullptr;
+}
+
 // Track which players are destroyed (to reject callbacks from destroyed players)
 std::unordered_set<jlong> destroyedPlayers;
 std::mutex destroyedMutex;
@@ -229,9 +238,8 @@ Java_dev_mediacache_alphavideo_WebMAlphaPlayerNative_nativeSetListener(
     jlong playerId,
     jobject listener
 ) {
-    std::lock_guard<std::mutex> plock(playersMutex);
-    auto playerIt = players.find(playerId);
-    if (playerIt == players.end()) return;
+    auto player = findPlayer(playerId);
+    if (!player) return;
     
     CallbackRefs refs;
     env->GetJavaVM(&refs.jvm);
@@ -272,8 +280,6 @@ Java_dev_mediacache_alphavideo_WebMAlphaPlayerNative_nativeSetListener(
     }
     
     // Set up C++ callbacks
-    auto& player = playerIt->second;
-    
     player->setFrameCallback([playerId](std::shared_ptr<webm::YUVAFrame> frame) {
         // Check if player was destroyed
         {
@@ -397,9 +403,10 @@ Java_dev_mediacache_alphavideo_WebMAlphaPlayerNative_nativeSetListener(
             env->CallVoidMethod(it->second.listener, it->second.onError, errStr);
             env->DeleteLocalRef(errStr);
         } else if (event == "preload_complete") {
-            // Parse "X frames in Yms"
-            int frames = std::stoi(data.substr(0, data.find(' ')));
-            double ms = std::stod(data.substr(data.find("in ") + 3));
+            // "X frames in Yms". Parsed without std::stod, whose exception would abort the app.
+            int frames = std::atoi(data.c_str());
+            size_t in = data.find(" in ");
+            double ms = in != std::string::npos ? std::atof(data.c_str() + in + 4) : 0.0;
             env->CallVoidMethod(it->second.listener, it->second.onPreloadComplete, frames, ms);
         }
     });
@@ -663,16 +670,12 @@ Java_dev_mediacache_alphavideo_WebMAlphaPlayerNative_nativePlay(JNIEnv* env, jcl
         stoppedPlayers.erase(playerId);
     }
     
-    std::lock_guard<std::mutex> lock(playersMutex);
-    auto it = players.find(playerId);
-    if (it != players.end()) it->second->play();
+    if (auto player = findPlayer(playerId)) player->play();
 }
 
 JNIEXPORT void JNICALL
 Java_dev_mediacache_alphavideo_WebMAlphaPlayerNative_nativePause(JNIEnv* env, jclass clazz, jlong playerId) {
-    std::lock_guard<std::mutex> lock(playersMutex);
-    auto it = players.find(playerId);
-    if (it != players.end()) it->second->pause();
+    if (auto player = findPlayer(playerId)) player->pause();
 }
 
 JNIEXPORT void JNICALL
@@ -702,9 +705,7 @@ JNIEXPORT void JNICALL
 Java_dev_mediacache_alphavideo_WebMAlphaPlayerNative_nativeSeekToFrame(
     JNIEnv* env, jclass clazz, jlong playerId, jint frameIndex
 ) {
-    std::lock_guard<std::mutex> lock(playersMutex);
-    auto it = players.find(playerId);
-    if (it != players.end()) it->second->seekToFrame(frameIndex);
+    if (auto player = findPlayer(playerId)) player->seekToFrame(frameIndex);
 }
 
 JNIEXPORT void JNICALL
@@ -729,9 +730,7 @@ JNIEXPORT void JNICALL
 Java_dev_mediacache_alphavideo_WebMAlphaPlayerNative_nativeSeekToTime(
     JNIEnv* env, jclass clazz, jlong playerId, jdouble seconds
 ) {
-    std::lock_guard<std::mutex> lock(playersMutex);
-    auto it = players.find(playerId);
-    if (it != players.end()) it->second->seekTo(seconds);
+    if (auto player = findPlayer(playerId)) player->seekTo(seconds);
 }
 
 //==============================================================================
@@ -808,16 +807,10 @@ Java_dev_mediacache_alphavideo_WebMAlphaPlayerNative_nativeGetFrame(
         if (destroyedPlayers.count(playerId)) return nullptr;
     }
     
-    // Get frame while holding lock - keep shared_ptr alive
-    std::shared_ptr<webm::YUVAFrame> frame;
-    {
-        std::lock_guard<std::mutex> lock(playersMutex);
-        auto it = players.find(playerId);
-        if (it == players.end()) return nullptr;
-        
-        frame = it->second->getFrame(frameIndex);
-        if (!frame) return nullptr;
-    }
+    auto player = findPlayer(playerId);
+    if (!player) return nullptr;
+    std::shared_ptr<webm::YUVAFrame> frame = player->getFrame(frameIndex);
+    if (!frame) return nullptr;
     
     // Now we have a shared_ptr keeping the frame alive.
     // CRITICAL: Create Java-owned byte arrays and copy data!
@@ -1305,6 +1298,23 @@ Java_dev_mediacache_alphavideo_BufferedDualStreamPlayer_nativeSeekToStart(
     demuxer->alphaFrameIndex = 0;
     
     LOGI("[Buffered] Demuxer %lld seeked to start", demuxerId);
+}
+
+JNIEXPORT void JNICALL
+Java_dev_mediacache_alphavideo_BufferedDualStreamPlayer_nativeSeekToTime(
+    JNIEnv* env,
+    jclass clazz,
+    jlong demuxerId,
+    jlong timeUs
+) {
+    // To the keyframe at or before timeUs, in the same timebase as the packet PTS handed out.
+    // Not under demuxersMutex, for the same reason as nativeSeekToStart.
+    std::shared_ptr<DualStreamDemuxer> demuxer = findDemuxer(demuxerId);
+    if (!demuxer) return;
+    
+    AVStream* stream = demuxer->formatCtx->streams[demuxer->colorStreamIndex];
+    int64_t ts = av_rescale_q(timeUs, AVRational{1, 1000000}, stream->time_base);
+    av_seek_frame(demuxer->formatCtx, demuxer->colorStreamIndex, ts, AVSEEK_FLAG_BACKWARD);
 }
 
 } // extern "C"

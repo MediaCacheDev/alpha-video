@@ -165,7 +165,7 @@ The player automatically detects whether a file contains a single YUVA stream (s
 | `loop` | `boolean` | `true` | Loop video playback |
 | `paused` | `boolean` | `false` | Pause video playback |
 | `playbackSpeed` | `number` | `1.0` | Playback speed multiplier. Changeable while playing, and does **not** move the playhead — see below |
-| `style` | `ViewStyle` | - | Container style |
+| `style` | `ViewStyle` | - | Container style. On Android `backgroundColor` is ignored (the view is a `TextureView`); put a background on a parent view |
 | `onLoad` | `function` | - | Callback when video loads (`{ totalFrames, width, height }`) |
 | `onError` | `function` | - | Callback when error occurs (`{ error }`) |
 | `onEnd` | `function` | - | Callback when playback reaches the end with `loop` off |
@@ -208,8 +208,14 @@ const playerRef = useRef<AlphaVideoViewRef>(null);
 playerRef.current?.play();
 playerRef.current?.pause();
 playerRef.current?.stop();
-playerRef.current?.seekToFrame(30);
+playerRef.current?.seekToFrame(30);   // frame number, from 0
+playerRef.current?.seekToTime(1.5);   // seconds; the frame showing at that time
 ```
+
+Seeking works in every mode and on both decode paths. The target is clamped to the clip, and the
+player keeps playing from there or stays paused showing that frame. In `stream` mode a seek far
+from the playhead jumps the decoder to the nearest keyframe before it, so the wait depends on the
+keyframe interval. A seek before `onLoad` is ignored.
 
 ### Decoder Status API (Android)
 
@@ -246,7 +252,7 @@ In `stream` and `streamAndPreload` mode (and on the Android hardware path in tho
 - Views that ask for the same URL at the same time share one download. Once it is complete, later views play the cached file without a request.
 - A download that fails, including one cut off part way, is reported through `onError` as `Download failed: …`. The player stops at the last frame that arrived instead of looping over a partial file. Nothing is cached, so the next load starts over.
 - If the network is slower than the clip's bitrate, playback waits for frames on the software path. On the Android hardware path its clock can run ahead during the stall and catch up quickly afterwards.
-- `seekToFrame` during a download waits until the file is complete, because a WebM file keeps its seek index (Cues) at the end. Looping back to the start only happens after the end has arrived, so it isn't affected.
+- A seek during a download waits until the file is complete, because a WebM file keeps its seek index (Cues) at the end. Looping back to the start only happens after the end has arrived, so it isn't affected.
 
 ### Web
 

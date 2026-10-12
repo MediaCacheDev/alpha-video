@@ -2,6 +2,7 @@ package dev.mediacache.alphavideo.reactnative;
 
 import dev.mediacache.alphavideo.AlphaVideoView;
 
+import android.graphics.Color;
 import android.util.Log;
 
 import androidx.annotation.NonNull;
@@ -17,6 +18,7 @@ import com.facebook.react.common.MapBuilder;
 import com.facebook.react.uimanager.SimpleViewManager;
 import com.facebook.react.uimanager.ThemedReactContext;
 import com.facebook.react.uimanager.UIManagerHelper;
+import com.facebook.react.uimanager.ViewProps;
 import com.facebook.react.uimanager.annotations.ReactProp;
 import com.facebook.react.uimanager.events.Event;
 import com.facebook.react.uimanager.events.EventDispatcher;
@@ -36,7 +38,7 @@ import java.util.Map;
  * - playbackSpeed: double (default 1.0, changeable while playing)
  * - cacheKey: string (optional cache file name for https sources)
  * 
- * Commands: play, pause, stop, seekToFrame(frame). Events: onLoad, onError, onEnd, onPreloadComplete.
+ * Commands: play, pause, stop, seekToFrame(frame), seekToTime(seconds). Events: onLoad, onError, onEnd, onPreloadComplete.
  */
 public class AlphaVideoViewManager extends SimpleViewManager<AlphaVideoView> {
     
@@ -64,6 +66,15 @@ public class AlphaVideoViewManager extends SimpleViewManager<AlphaVideoView> {
     public void onDropViewInstance(@NonNull AlphaVideoView view) {
         view.release();
         super.onDropViewInstance(view);
+    }
+    
+    /**
+     * TextureView throws on a background drawable, so a backgroundColor style would crash the
+     * app. The view stays transparent; put a background on a parent view instead.
+     */
+    @Override
+    @ReactProp(name = ViewProps.BACKGROUND_COLOR, defaultInt = Color.TRANSPARENT, customType = "Color")
+    public void setBackgroundColor(@NonNull AlphaVideoView view, int backgroundColor) {
     }
     
     @ReactProp(name = "source")
@@ -182,6 +193,11 @@ public class AlphaVideoViewManager extends SimpleViewManager<AlphaVideoView> {
             case "seekToFrame":
                 if (args != null && args.size() > 0) {
                     view.seekToFrame(args.getInt(0));
+                }
+                break;
+            case "seekToTime":
+                if (args != null && args.size() > 0) {
+                    view.seekToTime(args.getDouble(0));
                 }
                 break;
             default:

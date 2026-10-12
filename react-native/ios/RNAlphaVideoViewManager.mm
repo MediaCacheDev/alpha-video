@@ -127,4 +127,8 @@ RCT_EXPORT_METHOD(seekToFrame:(nonnull NSNumber *)reactTag frame:(nonnull NSNumb
     [self withView:reactTag do:^(RNAlphaVideoView *view) { [view seekToFrame:[frame intValue]]; }];
 }
 
+RCT_EXPORT_METHOD(seekToTime:(nonnull NSNumber *)reactTag seconds:(nonnull NSNumber *)seconds) {
+    [self withView:reactTag do:^(RNAlphaVideoView *view) { [view seekToTime:[seconds doubleValue]]; }];
+}
+
 @end

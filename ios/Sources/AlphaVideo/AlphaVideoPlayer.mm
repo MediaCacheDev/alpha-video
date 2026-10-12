@@ -774,7 +774,8 @@
     AlphaVideoFrame *frame = [_player getCurrentFrame];
     if (frame) {
         self.latestFrame = frame;
-        [self renderFrame:frame];
+        _lastRenderedFrame = -1;
+        [self draw];
     }
 }
 
@@ -852,9 +853,11 @@
                   aPtr[0], aPtr[1], aPtr[2], aPtr[3], aPtr[4], aPtr[5], aPtr[6], aPtr[7]);
         }
         
+        // Through draw rather than renderFrame directly: a drawable presented outside the view's
+        // draw cycle is handed out again on the next draw, and Metal rejects it.
         self.latestFrame = firstFrame;
-        [self renderFrame:firstFrame];
-        _lastRenderedFrame = 0;
+        _lastRenderedFrame = -1;
+        [self draw];
         WEBM_VLOG(@"First frame rendered via C++ → Metal GPU pipeline");
     }
     
@@ -876,6 +879,13 @@
     // Store the latest frame for display link to render
     // This is thread-safe due to atomic property
     self.latestFrame = frame;
+    
+    // While paused the view's draw loop is stopped, but a seek still has to show its frame.
+    if (!_isAnimating) {
+        dispatch_async(dispatch_get_main_queue(), ^{
+            if (self.paused) [self draw];
+        });
+    }
     
     // Forward to external delegate if needed
     if ([_playerDelegate respondsToSelector:@selector(playerDidReceiveFrame:)]) {

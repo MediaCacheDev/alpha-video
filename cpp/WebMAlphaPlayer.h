@@ -236,7 +236,10 @@ public:
     void play();
     void pause();
     void stop();
-    void seekTo(double timeSeconds);
+    // Both clamp to the clip and keep playing or paused; a paused player shows the new frame.
+    // In the stream modes the frame appears once it's decoded, which during a download waits
+    // for the end of the file (the Cues).
+    void seekTo(double timeSeconds);  // To the frame showing at timeSeconds
     void seekToFrame(int frameIndex);
 
     /**
@@ -298,6 +301,7 @@ private:
     double duration_ = 0.0;
     double frameRate_ = 30.0;
     double timeBase_ = 0.0;
+    int64_t startPts_ = 0;  // The color stream's first timestamp, in timeBase_ units
     
     // State
     std::atomic<bool> loaded_{false};
@@ -317,6 +321,8 @@ private:
     // Threading
     std::unique_ptr<std::thread> decodeThread_;
     std::unique_ptr<std::thread> playbackThread_;
+    std::atomic<bool> playbackLoopRunning_{false};
+    std::atomic<bool> preloading_{false};  // decodeAllFrames() is running and holds the decoder
     std::unique_ptr<std::thread> prefetchThread_;  // Background prefetch for streaming mode
     std::timed_mutex decodeMutex_;  // timed_mutex allows try_lock_for() for non-blocking unload
     std::mutex unloadMutex_;  // Protects unload() from concurrent calls
@@ -327,6 +333,8 @@ private:
     std::atomic<int> prefetchTarget_{-1};  // Target frame for prefetch thread
     std::atomic<int> streamDecodePos_{0};  // Current sequential decode position for streaming
     std::atomic<bool> firstPassComplete_{false};  // For streamAndPreload: all frames cached after first pass
+    std::atomic<int> seekRequest_{-1};       // Stream mode: frame the prefetch thread must move the demuxer to
+    std::atomic<int> pendingSeekFrame_{-1};  // Stream modes: sought frame to show when decoded while paused
     
     // Caching
     std::unique_ptr<FrameCache> frameCache_;
@@ -350,6 +358,7 @@ private:
     void closeCodecs();
     
     std::shared_ptr<YUVAFrame> decodeFrame(int index);
+    int frameIndexForPts(int64_t pts) const;
     void decodeAllFrames();
     void playbackLoop();
     void streamingPrefetch(int currentFrame);  // Prefetch frames ahead in streaming mode

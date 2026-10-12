@@ -123,7 +123,10 @@ export interface AlphaVideoViewRef {
   play: () => void;
   pause: () => void;
   stop: () => void;
+  /** Shows that frame (clamped to the clip) and keeps playing or stays paused. */
   seekToFrame: (frame: number) => void;
+  /** Seeks to the frame showing at that time, in seconds. */
+  seekToTime: (seconds: number) => void;
 }
 
 // Native component for iOS and Android. An old-architecture view (requireNativeComponent); on
@@ -157,7 +160,13 @@ const WebVideoPlayer = forwardRef<AlphaVideoViewRef, AlphaVideoViewProps>(
       seekToFrame: (frame: number) => {
         if (videoRef.current) {
           const fps = 30;
-          videoRef.current.currentTime = frame / fps;
+          // The middle of the frame, so rounding in the browser can't land on the one before
+          videoRef.current.currentTime = (Math.max(0, frame) + 0.5) / fps;
+        }
+      },
+      seekToTime: (seconds: number) => {
+        if (videoRef.current) {
+          videoRef.current.currentTime = seconds > 0 ? seconds : 0;
         }
       },
     }));
@@ -241,55 +250,22 @@ const NativePlayer = forwardRef<AlphaVideoViewRef, AlphaVideoViewProps>(
   (props, ref) => {
     const nativeRef = useRef<any>(null);
 
+    const sendCommand = (name: string, args: number[] = []) => {
+      const handle = nativeRef.current ? findNodeHandle(nativeRef.current) : null;
+      if (!handle) return;
+      UIManager.dispatchViewManagerCommand(
+        handle,
+        UIManager.getViewManagerConfig('RNAlphaVideoView')?.Commands?.[name] ?? name,
+        args
+      );
+    };
+
     useImperativeHandle(ref, () => ({
-      play: () => {
-        if (nativeRef.current) {
-          const handle = findNodeHandle(nativeRef.current);
-          if (handle) {
-            UIManager.dispatchViewManagerCommand(
-              handle,
-              UIManager.getViewManagerConfig('RNAlphaVideoView')?.Commands?.play ?? 'play',
-              []
-            );
-          }
-        }
-      },
-      pause: () => {
-        if (nativeRef.current) {
-          const handle = findNodeHandle(nativeRef.current);
-          if (handle) {
-            UIManager.dispatchViewManagerCommand(
-              handle,
-              UIManager.getViewManagerConfig('RNAlphaVideoView')?.Commands?.pause ?? 'pause',
-              []
-            );
-          }
-        }
-      },
-      stop: () => {
-        if (nativeRef.current) {
-          const handle = findNodeHandle(nativeRef.current);
-          if (handle) {
-            UIManager.dispatchViewManagerCommand(
-              handle,
-              UIManager.getViewManagerConfig('RNAlphaVideoView')?.Commands?.stop ?? 'stop',
-              []
-            );
-          }
-        }
-      },
-      seekToFrame: (frame: number) => {
-        if (nativeRef.current) {
-          const handle = findNodeHandle(nativeRef.current);
-          if (handle) {
-            UIManager.dispatchViewManagerCommand(
-              handle,
-              UIManager.getViewManagerConfig('RNAlphaVideoView')?.Commands?.seekToFrame ?? 'seekToFrame',
-              [frame]
-            );
-          }
-        }
-      },
+      play: () => sendCommand('play'),
+      pause: () => sendCommand('pause'),
+      stop: () => sendCommand('stop'),
+      seekToFrame: (frame: number) => sendCommand('seekToFrame', [frame]),
+      seekToTime: (seconds: number) => sendCommand('seekToTime', [seconds]),
     }));
 
     if (!NativeAlphaVideoViewOrNull) {
