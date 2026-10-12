@@ -463,7 +463,7 @@
     // KEY: Use MTKView's built-in continuous rendering loop (like ChatGPT example)
     self.delegate = self;
     self.enableSetNeedsDisplay = NO;  // Don't use setNeedsDisplay, use continuous rendering
-    self.preferredFramesPerSecond = 30;  // Match video frame rate (30fps)
+    self.preferredFramesPerSecond = 30;  // Until the clip's frame rate is known (playerDidLoad)
     self.paused = YES;  // Start paused, will unpause when playback starts
     
     _commandQueue = [_metalDevice newCommandQueue];
@@ -782,7 +782,7 @@
 }
 
 - (void)drawInMTKView:(MTKView *)view {
-    // This is called by MTKView at preferredFramesPerSecond (30fps)
+    // This is called by MTKView at preferredFramesPerSecond (the clip's frame rate)
     // It's the core render loop - equivalent to CADisplayLink callback
     
     // Debug: log that we're being called
@@ -845,6 +845,13 @@
     config.loopPlayback = _loop;
     config.playbackSpeed = _playbackSpeed;
     [_player setConfig:config];
+
+    // The C++ clock advances frames at the file's rate; redraw at least that often, or a 60 fps
+    // clip would show every other frame. MTKView rounds to a rate the display supports.
+    double frameRate = _player.frameRate;
+    if (frameRate > 0) {
+        self.preferredFramesPerSecond = (NSInteger)ceil(frameRate * MAX(_playbackSpeed, 1.0));
+    }
     
     // Render first frame
     WebMFrame *firstFrame = [_player getFrame:0];
