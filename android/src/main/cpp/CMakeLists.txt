@@ -29,6 +29,9 @@ link_directories(${FFMPEG_ROOT}/lib)
 # Create the native library
 add_library(${PROJECT_NAME} SHARED ${NATIVE_SOURCES})
 
+# Google Play requires 16 KB-aligned segments for Android 15+; NDK r27 and older link 4 KB by default.
+target_link_options(${PROJECT_NAME} PRIVATE "-Wl,-z,max-page-size=16384")
+
 # Find Android log library
 find_library(log-lib log)
 

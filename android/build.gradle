@@ -21,11 +21,12 @@ def getExtOrDefault(name, defaultValue) {
 
 android {
     namespace "com.danielkpl2.webmalphaplayer"
-    compileSdkVersion getExtOrDefault('compileSdkVersion', 34)
+    compileSdkVersion getExtOrDefault('compileSdkVersion', 36)
+    ndkVersion getExtOrDefault('ndkVersion', '27.1.12297006')
 
     defaultConfig {
-        minSdkVersion getExtOrDefault('minSdkVersion', 21)
-        targetSdkVersion getExtOrDefault('targetSdkVersion', 34)
+        minSdkVersion getExtOrDefault('minSdkVersion', 24)
+        targetSdkVersion getExtOrDefault('targetSdkVersion', 36)
         buildConfigField "boolean", "IS_NEW_ARCHITECTURE_ENABLED", isNewArchitectureEnabled().toString()
 
         externalNativeBuild {
