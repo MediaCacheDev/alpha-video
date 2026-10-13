@@ -28,6 +28,7 @@
     "!android/.cxx",
     "!android/local.properties",
     "!react-native/android/build",
+    "!react-native/android/.gradle",
     "!react-native/android/.cxx",
     "!android/gradle",
     "!android/gradlew",
