@@ -16,7 +16,7 @@ Pod::Spec.new do |s|
   s.author       = { 'Daniel Kasprowicz' => '9932671+danielkpl2@users.noreply.github.com' }
   s.platform     = :ios, '13.0'
   s.source       = { :http => "https://github.com/danielkpl2/alpha-video/releases/download/v#{s.version}/alpha-video-#{s.version}-ios.zip",
-                     :sha256 => 'd96921eda7b64e50fda78692a3a169d1030e5fda2428619743bdaf98fcf71b5d' }
+                     :sha256 => 'aad3af2d4126c0f981d523acc5b732da7f6a3498274d490ec988d95086f694b4' }
 
   s.source_files        = 'cpp/*.{h,cpp}', 'ios/Sources/AlphaVideo/**/*.{h,mm}'
   s.public_header_files = 'ios/Sources/AlphaVideo/include/AlphaVideo.h'
