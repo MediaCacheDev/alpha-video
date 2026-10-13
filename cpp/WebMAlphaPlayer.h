@@ -33,6 +33,23 @@ struct AVIOContext;
 namespace webm {
 
 /**
+ * YUV to RGB for the shaders: rgb = m * (y, u, v, 1), with y, u and v the texture samples
+ * (0..1) and the result in 0..1 before clamping. Column-major, as GLSL's mat4 and Metal's
+ * float4x4 take it.
+ */
+struct YuvToRgb {
+    float m[16];
+};
+
+/**
+ * The conversion for a clip's AVColorRange and AVColorSpace. An unspecified range is limited
+ * (16-235), which VP9 and AV1 video almost always is. An unspecified matrix is BT.601 up to
+ * 720x576 and BT.709 above, Android's default for untagged video, so the software path matches
+ * MediaCodec's.
+ */
+YuvToRgb yuvToRgbFor(int colorRange, int colorSpace, int width, int height);
+
+/**
  * Represents a decoded YUVA frame with zero-copy plane access
  */
 struct YUVAFrame {
@@ -78,6 +95,8 @@ struct YUVAFrame {
     
     // Copy from AVFrame (used during decode)
     void copyFromAVFrame(AVFrame* colorFrame, AVFrame* alphaFrame);
+    // Fill the alpha plane from a two-stream file's alpha frame (its plane 0)
+    void copyAlphaFromAVFrame(const AVFrame* alphaFrame);
     
     // Get duration in milliseconds
     double getDurationMs() const;
@@ -266,6 +285,8 @@ public:
     int getWidth() const;
     int getHeight() const;
     double getFrameRate() const;
+    // The shader's YUV to RGB for the loaded clip (its range and matrix)
+    YuvToRgb getYuvToRgb() const;
     
     // Callbacks
     void setFrameCallback(FrameCallback callback);
@@ -302,6 +323,8 @@ private:
     double frameRate_ = 30.0;
     double timeBase_ = 0.0;
     int64_t startPts_ = 0;  // The color stream's first timestamp, in timeBase_ units
+    mutable std::mutex yuvToRgbMutex_;  // Set on load, read from render threads
+    YuvToRgb yuvToRgb_{};
     
     // State
     std::atomic<bool> loaded_{false};

@@ -779,6 +779,20 @@ Java_dev_mediacache_alphavideo_WebMAlphaPlayerNative_nativeGetHeight(JNIEnv* env
     return (it != players.end()) ? it->second->getHeight() : 0;
 }
 
+JNIEXPORT jfloatArray JNICALL
+Java_dev_mediacache_alphavideo_WebMAlphaPlayerNative_nativeGetYuvToRgb(JNIEnv* env, jclass clazz, jlong playerId) {
+    webm::YuvToRgb m;
+    {
+        std::lock_guard<std::mutex> lock(playersMutex);
+        auto it = players.find(playerId);
+        if (it == players.end()) return nullptr;
+        m = it->second->getYuvToRgb();
+    }
+    jfloatArray out = env->NewFloatArray(16);
+    if (out) env->SetFloatArrayRegion(out, 0, 16, m.m);
+    return out;
+}
+
 JNIEXPORT jdouble JNICALL
 Java_dev_mediacache_alphavideo_WebMAlphaPlayerNative_nativeGetDuration(JNIEnv* env, jclass clazz, jlong playerId) {
     std::lock_guard<std::mutex> lock(playersMutex);

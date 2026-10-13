@@ -49,6 +49,6 @@ public class WebMFrame {
     
     // Convenience getters for plane sizes
     public int getYSize() { return width * height; }
-    public int getUVSize() { return (width / 2) * (height / 2); }
+    public int getUVSize() { return ((width + 1) / 2) * ((height + 1) / 2); }
     public int getASize() { return width * height; }
 }

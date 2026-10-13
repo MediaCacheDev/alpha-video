@@ -8,6 +8,10 @@
 #include "WebMAlphaPlayer.h"
 #include "GrowingFile.h"
 
+extern "C" {
+#include <libavutil/pixfmt.h>
+}
+
 #include <algorithm>
 #include <chrono>
 #include <cmath>
@@ -62,12 +66,7 @@ struct KnownFailure {
     const char* symptom;
     const char* bug;
 };
-static const KnownFailure kKnownFailures[] = {
-    {"shader colour", ", expected ", "the shaders use full-range BT.601 on limited-range video"},
-    {"alpha plane range [card_383x217/dual_vp9_p0", "where the card has", "limited-range alpha streams are used raw (16-235)"},
-    {"alpha plane range [card_256x256/dual_vp9_p0", "where the card has", "limited-range alpha streams are used raw (16-235)"},
-    {"odd-size chroma planes [card_383x217", "chroma plane is", "chroma planes are w/2 x h/2, dropping the last column and row"},
-};
+static const std::vector<KnownFailure> kKnownFailures = {};
 
 static const KnownFailure* knownFailure(const std::string& name) {
     for (const auto& k : kKnownFailures) {
@@ -198,13 +197,16 @@ struct FrameWaiter {
     std::mutex mutex;
     std::condition_variable changed;
     std::vector<int> codes;
+    /** Frames whose alpha code didn't match their colour code, as "colour/alpha". */
+    std::vector<std::string> alphaMismatches;
     Card card;
 
     void attach(WebMAlphaPlayer& player) {
         player.setFrameCallback([this](std::shared_ptr<YUVAFrame> f) {
-            int code = readCodes(*f, card).colour;
+            Codes c = readCodes(*f, card);
             std::lock_guard<std::mutex> lock(mutex);
-            codes.push_back(code);
+            codes.push_back(c.colour);
+            if (c.alpha != c.colour) alphaMismatches.push_back(std::to_string(c.colour) + "/" + std::to_string(c.alpha));
             changed.notify_all();
         });
     }
@@ -297,6 +299,28 @@ static void registerTests() {
                 p->seekToFrame(target);
                 CHECK(waiter.waitFor(target, std::chrono::seconds(5)), "seekToFrame(" << target << ") showed no such frame");
             }
+            std::lock_guard<std::mutex> lock(waiter.mutex);
+            CHECK(waiter.alphaMismatches.empty(), "frames with the wrong alpha (colour/alpha code): "
+                  << waiter.alphaMismatches.size() << ", first " << waiter.alphaMismatches.front());
+        });
+
+        add("stream mode plays every frame with its alpha", [](const Fixture& fx) {
+            PlayerConfig config;
+            config.mode = PlaybackMode::Stream;
+            config.loopPlayback = false;
+            config.playbackSpeed = 4;
+            auto p = std::make_unique<WebMAlphaPlayer>();
+            p->setConfig(config);
+            FrameWaiter waiter;
+            waiter.card = fx.card;
+            waiter.attach(*p);
+            CHECK(p->loadFromFile(fx.path), fx.path);
+            p->play();
+            CHECK(waiter.waitFor(fx.card.frames - 1, std::chrono::seconds(10)), "playback never reached the last frame");
+            std::lock_guard<std::mutex> lock(waiter.mutex);
+            CHECK(waiter.alphaMismatches.empty(), "frames with the wrong alpha (colour/alpha code): "
+                  << waiter.alphaMismatches.size() << ", first " << waiter.alphaMismatches.front());
+            CHECK(waiter.codes.size() >= static_cast<size_t>(fx.card.frames / 2), "only " << waiter.codes.size() << " frames shown");
         });
 
         add("alpha plane range", [](const Fixture& fx) {
@@ -310,18 +334,27 @@ static void registerTests() {
         });
 
         add("shader colour", [](const Fixture& fx) {
-            // The YUV -> RGB maths in the Android and iOS shaders (AlphaVideoView.java, AlphaVideoPlayer.mm).
+            // What the Android and iOS shaders compute (AlphaVideoView.java, AlphaVideoPlayer.mm):
+            // the player's YuvToRgb applied to the plane samples.
             auto p = load(fx, onDemandConfig());
             auto f = p->getFrame(0);
             CHECK(f != nullptr, "no frame");
-            int cw = f->width / 2, chh = f->height / 2;
+            const YuvToRgb m = p->getYuvToRgb();
+            int cw = f->uvStride, chh = (f->height + 1) / 2;
             for (const auto& patch : kColours) {
                 Rect r = fx.card.cell(patch.col, 7);
-                double y = planeMean(f->yPlane, f->yStride, f->width, f->height, r) / 255;
-                double u = planeMean(f->uPlane, f->uvStride, cw, chh, r, 2) / 255 - 0.5;
-                double v = planeMean(f->vPlane, f->uvStride, cw, chh, r, 2) / 255 - 0.5;
-                auto level = [](double c) { return std::clamp(c, 0.0, 1.0) * 255; };
-                double rgb[3] = {level(y + 1.402 * v), level(y - 0.344136 * u - 0.714136 * v), level(y + 1.772 * u)};
+                double yuv[4] = {
+                    planeMean(f->yPlane, f->yStride, f->width, f->height, r) / 255,
+                    planeMean(f->uPlane, f->uvStride, cw, chh, r, 2) / 255,
+                    planeMean(f->vPlane, f->uvStride, cw, chh, r, 2) / 255,
+                    1,
+                };
+                double rgb[3];
+                for (int c = 0; c < 3; c++) {
+                    double sum = 0;
+                    for (int k = 0; k < 4; k++) sum += m.m[k * 4 + c] * yuv[k];
+                    rgb[c] = std::clamp(sum, 0.0, 1.0) * 255;
+                }
                 int expected[3] = {patch.r, patch.g, patch.b};
                 for (int c = 0; c < 3; c++) {
                     CHECK(std::abs(rgb[c] - expected[c]) <= kLevelTolerance,
@@ -330,7 +363,7 @@ static void registerTests() {
             }
         });
 
-        add("odd-size chroma planes", [](const Fixture& fx) {
+        add("chroma planes cover odd sizes", [](const Fixture& fx) {
             auto p = load(fx, onDemandConfig());
             auto f = p->getFrame(0);
             CHECK(f != nullptr, "no frame");
@@ -409,6 +442,37 @@ static void registerTests() {
             CHECK(lastFrame, "playback never reached the last frame");
         });
     }
+
+    tests().push_back({"yuvToRgbFor maps black, white and the matrices", [] {
+        auto apply = [](const YuvToRgb& m, double y, double u, double v, int c) {
+            double in[4] = {y / 255, u / 255, v / 255, 1};
+            double sum = 0;
+            for (int k = 0; k < 4; k++) sum += m.m[k * 4 + c] * in[k];
+            return sum * 255;
+        };
+        auto near = [](double a, double b) { return std::abs(a - b) < 0.05; };
+        const int tv = AVCOL_RANGE_MPEG, pc = AVCOL_RANGE_JPEG, unspecified = AVCOL_SPC_UNSPECIFIED;
+        const int bt709 = AVCOL_SPC_BT709, bt601 = AVCOL_SPC_SMPTE170M;
+        YuvToRgb limited601 = yuvToRgbFor(tv, bt601, 383, 217);
+        YuvToRgb full601 = yuvToRgbFor(pc, bt601, 383, 217);
+        for (int c = 0; c < 3; c++) {
+            CHECK(near(apply(limited601, 16, 128, 128, c), 0), "limited black, channel " << c);
+            CHECK(near(apply(limited601, 235, 128, 128, c), 255), "limited white, channel " << c);
+            CHECK(near(apply(full601, 0, 128, 128, c), 0), "full black, channel " << c);
+            CHECK(near(apply(full601, 255, 128, 128, c), 255), "full white, channel " << c);
+        }
+        // Limited-range BT.601 red (R'G'B' 255,0,0) is Y'CbCr 81, 90, 240; BT.709 red is 63, 102, 240.
+        CHECK(std::abs(apply(limited601, 81, 90, 240, 0) - 255) < 1.5, apply(limited601, 81, 90, 240, 0));
+        CHECK(std::abs(apply(limited601, 81, 90, 240, 1)) < 1.5, apply(limited601, 81, 90, 240, 1));
+        YuvToRgb limited709 = yuvToRgbFor(tv, bt709, 1920, 1080);
+        CHECK(std::abs(apply(limited709, 63, 102, 240, 0) - 255) < 1.5, apply(limited709, 63, 102, 240, 0));
+        CHECK(std::abs(apply(limited709, 63, 102, 240, 2)) < 1.5, apply(limited709, 63, 102, 240, 2));
+        // Untagged: BT.601 up to 720x576, BT.709 above
+        YuvToRgb untaggedHd = yuvToRgbFor(AVCOL_RANGE_UNSPECIFIED, unspecified, 1920, 1080);
+        YuvToRgb untaggedSd = yuvToRgbFor(AVCOL_RANGE_UNSPECIFIED, unspecified, 640, 480);
+        CHECK(std::memcmp(&untaggedHd, &limited709, sizeof(YuvToRgb)) == 0, "untagged HD is limited BT.709");
+        CHECK(std::memcmp(&untaggedSd, &limited601, sizeof(YuvToRgb)) == 0, "untagged SD is limited BT.601");
+    }});
 
     tests().push_back({"AV1 is refused with an error event", [] {
         // The core decodes VP9 only; dual-stream AV1 plays through MediaCodec on Android.

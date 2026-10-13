@@ -69,6 +69,13 @@ public class AlphaVideoView extends TextureView implements
     private int currentWidth, currentHeight;
     
     // OES texture transformation matrices (from SurfaceTexture)
+    // The YUVA shader's YUV to RGB, set from the clip on load. Until then, limited-range BT.601.
+    private volatile float[] yuvToRgb = {
+        1.164384f, 1.164384f, 1.164384f, 0f,
+        0f, -0.391762f, 2.017232f, 0f,
+        1.596027f, -0.812968f, 0f, 0f,
+        -0.874202f, 0.531668f, -1.085631f, 1f,
+    };
     private final float[] colorTransformMatrix = new float[16];
     private final float[] alphaTransformMatrix = new float[16];
     
@@ -944,15 +951,13 @@ public class AlphaVideoView extends TextureView implements
             "uniform sampler2D uTexture;\n" +
             "uniform sampler2D vTexture;\n" +
             "uniform sampler2D aTexture;\n" +
+            "uniform mat4 uYuvToRgb;\n" +
             "void main() {\n" +
-            "    float y = texture2D(yTexture, vTexCoord).r;\n" +
-            "    float u = texture2D(uTexture, vTexCoord).r - 0.5;\n" +
-            "    float v = texture2D(vTexture, vTexCoord).r - 0.5;\n" +
+            "    vec4 yuv = vec4(texture2D(yTexture, vTexCoord).r, texture2D(uTexture, vTexCoord).r,\n" +
+            "                    texture2D(vTexture, vTexCoord).r, 1.0);\n" +
             "    float a = texture2D(aTexture, vTexCoord).r;\n" +
-            "    float r = clamp(y + 1.402 * v, 0.0, 1.0);\n" +
-            "    float g = clamp(y - 0.344136 * u - 0.714136 * v, 0.0, 1.0);\n" +
-            "    float b = clamp(y + 1.772 * u, 0.0, 1.0);\n" +
-            "    gl_FragColor = vec4(r * a, g * a, b * a, a);\n" +
+            "    vec3 rgb = clamp((uYuvToRgb * yuv).rgb, 0.0, 1.0);\n" +
+            "    gl_FragColor = vec4(rgb * a, a);\n" +
             "}\n";
         
         programId = createProgram(vertexShader, fragmentShader);
@@ -1217,9 +1222,9 @@ public class AlphaVideoView extends TextureView implements
                 GLES20.GL_LUMINANCE, GLES20.GL_UNSIGNED_BYTE, y);
         }
         
-        // U texture
-        int uvWidth = width / 2;
-        int uvHeight = height / 2;
+        // U texture (4:2:0, rounded up for odd sizes)
+        int uvWidth = (width + 1) / 2;
+        int uvHeight = (height + 1) / 2;
         GLES20.glActiveTexture(GLES20.GL_TEXTURE1);
         GLES20.glBindTexture(GLES20.GL_TEXTURE_2D, uTextureId);
         if (currentWidth != width || currentHeight != height) {
@@ -1276,6 +1281,7 @@ public class AlphaVideoView extends TextureView implements
         GLES20.glUniform1i(GLES20.glGetUniformLocation(programId, "uTexture"), 1);
         GLES20.glUniform1i(GLES20.glGetUniformLocation(programId, "vTexture"), 2);
         GLES20.glUniform1i(GLES20.glGetUniformLocation(programId, "aTexture"), 3);
+        GLES20.glUniformMatrix4fv(GLES20.glGetUniformLocation(programId, "uYuvToRgb"), 1, false, yuvToRgb, 0);
         
         GLES20.glDrawArrays(GLES20.GL_TRIANGLE_STRIP, 0, 4);
         
@@ -1299,6 +1305,8 @@ public class AlphaVideoView extends TextureView implements
         if (isReleased) return;
         
         logV("Loaded: " + totalFrames + " frames, " + width + "x" + height);
+        float[] clipYuvToRgb = WebMAlphaPlayerNative.nativeGetYuvToRgb(playerId);
+        if (clipYuvToRgb != null) yuvToRgb = clipYuvToRgb;
         
         post(() -> {
             if (isReleased) return;

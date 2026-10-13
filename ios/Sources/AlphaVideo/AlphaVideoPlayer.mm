@@ -148,6 +148,11 @@
 // AlphaVideoPlayer Implementation
 //==============================================================================
 
+@interface AlphaVideoPlayer ()
+/** The loaded clip's YUV to RGB, as the Metal view's fragment shader takes it. */
+- (webm::YuvToRgb)yuvToRgb;
+@end
+
 @implementation AlphaVideoPlayer {
     std::unique_ptr<webm::WebMAlphaPlayer> _player;
     dispatch_queue_t _callbackQueue;
@@ -361,6 +366,7 @@
 - (int)width { return _player->getWidth(); }
 - (int)height { return _player->getHeight(); }
 - (double)frameRate { return _player->getFrameRate(); }
+- (webm::YuvToRgb)yuvToRgb { return _player->getYuvToRgb(); }
 
 + (NSString *)ffmpegVersion {
     return [NSString stringWithUTF8String:webm::WebMAlphaPlayer::getFFmpegVersion().c_str()];
@@ -496,27 +502,21 @@
             texture2d<float> yTexture [[texture(0)]],
             texture2d<float> uTexture [[texture(1)]],
             texture2d<float> vTexture [[texture(2)]],
-            texture2d<float> aTexture [[texture(3)]]
+            texture2d<float> aTexture [[texture(3)]],
+            constant float4x4 &yuvToRgb [[buffer(0)]]
         ) {
             constexpr sampler texSampler(mag_filter::linear, min_filter::linear);
             
-            float y = yTexture.sample(texSampler, in.texCoord).r;
-            float u = uTexture.sample(texSampler, in.texCoord).r - 0.5;
-            float v = vTexture.sample(texSampler, in.texCoord).r - 0.5;
+            float4 yuv = float4(yTexture.sample(texSampler, in.texCoord).r,
+                                uTexture.sample(texSampler, in.texCoord).r,
+                                vTexture.sample(texSampler, in.texCoord).r, 1.0);
             float a = aTexture.sample(texSampler, in.texCoord).r;
             
-            // BT.601 YUV to RGB conversion
-            float r = y + 1.402 * v;
-            float g = y - 0.344136 * u - 0.714136 * v;
-            float b = y + 1.772 * u;
-            
-            // Clamp to valid range
-            r = clamp(r, 0.0, 1.0);
-            g = clamp(g, 0.0, 1.0);
-            b = clamp(b, 0.0, 1.0);
+            // The clip's range and matrix (webm::yuvToRgbFor)
+            float3 rgb = clamp((yuvToRgb * yuv).rgb, 0.0, 1.0);
             
             // Premultiplied alpha for correct compositing
-            return float4(r * a, g * a, b * a, a);
+            return float4(rgb * a, a);
         }
     )";
     
@@ -587,9 +587,9 @@
     yDesc.usage = MTLTextureUsageShaderRead;
     yDesc.storageMode = MTLStorageModeShared;  // CPU+GPU access
     
-    // UV texture descriptor (half resolution)
-    int uvWidth = width / 2;
-    int uvHeight = height / 2;
+    // UV texture descriptor (half resolution, rounded up for odd sizes)
+    int uvWidth = (width + 1) / 2;
+    int uvHeight = (height + 1) / 2;
     MTLTextureDescriptor *uvDesc = [MTLTextureDescriptor texture2DDescriptorWithPixelFormat:MTLPixelFormatR8Unorm
                                                                                       width:uvWidth
                                                                                      height:uvHeight
@@ -690,8 +690,8 @@
               withBytes:frame.aPlanePtr 
             bytesPerRow:frame.aStride];
     
-    int uvWidth = frame.width / 2;
-    int uvHeight = frame.height / 2;
+    int uvWidth = (frame.width + 1) / 2;
+    int uvHeight = (frame.height + 1) / 2;
     MTLRegion uvRegion = MTLRegionMake2D(0, 0, uvWidth, uvHeight);
     
     [uTex replaceRegion:uvRegion 
@@ -756,6 +756,8 @@
     [encoder setFragmentTexture:uTex atIndex:1];
     [encoder setFragmentTexture:vTex atIndex:2];
     [encoder setFragmentTexture:aTex atIndex:3];
+    webm::YuvToRgb yuvToRgb = [_player yuvToRgb];
+    [encoder setFragmentBytes:yuvToRgb.m length:sizeof(yuvToRgb.m) atIndex:0];
     
     [encoder drawPrimitives:MTLPrimitiveTypeTriangleStrip vertexStart:0 vertexCount:4];
     [encoder endEncoding];

@@ -391,7 +391,7 @@ The dual-stream format stores color and alpha as two independent video streams i
 ```bash
 # AV1 dual-stream from existing YUVA WebM
 ffmpeg -c:v libvpx-vp9 -i input.webm \
-       -filter_complex "[0:v]format=yuv420p[rgb]; [0:v]alphaextract,format=gray[alpha]" \
+       -filter_complex "[0:v]format=yuv420p[rgb]; [0:v]alphaextract,format=yuv420p[alpha]" \
        -map "[rgb]" -map "[alpha]" \
        -c:v:0 libsvtav1 -crf 28 -preset 8 \
        -c:v:1 libsvtav1 -crf 28 -preset 8 \
@@ -400,7 +400,7 @@ ffmpeg -c:v libvpx-vp9 -i input.webm \
 
 # VP9 dual-stream from existing YUVA WebM
 ffmpeg -c:v libvpx-vp9 -i input.webm \
-       -filter_complex "[0:v]format=yuv420p[rgb]; [0:v]alphaextract,format=gray[alpha]" \
+       -filter_complex "[0:v]format=yuv420p[rgb]; [0:v]alphaextract,format=yuv420p[alpha]" \
        -map "[rgb]" -map "[alpha]" \
        -c:v:0 libvpx-vp9 -crf 20 -b:v 0 \
        -c:v:1 libvpx-vp9 -crf 20 -b:v 0 \
@@ -412,7 +412,7 @@ ffmpeg -c:v libvpx-vp9 -i input.webm \
 |-----------|-------------|
 | `-c:v libvpx-vp9` (input) | Decode the YUVA source with libvpx so the alpha plane is available |
 | `format=yuv420p` | Strip alpha from the color stream |
-| `alphaextract,format=gray` | Extract the alpha channel as a grayscale video |
+| `alphaextract,format=yuv420p` | Extract the alpha channel as a grayscale video. `yuv420p` keeps VP9 at profile 0, which hardware decoders support; `format=gray` makes libvpx encode `gbrp` (profile 1), which many don't |
 | `-map "[rgb]" -map "[alpha]"` | Place color as stream 0, alpha as stream 1 |
 | `-c:v:0` / `-c:v:1` | Encode each stream independently (can use different CRF) |
 | `-metadata:s:v:1 title=Alpha` | Optional: tag the alpha stream for identification |

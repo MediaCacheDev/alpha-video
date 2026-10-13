@@ -75,6 +75,8 @@ public class WebMAlphaPlayerNative {
     public static native int nativeGetHeight(long playerId);
     public static native double nativeGetDuration(long playerId);
     public static native double nativeGetFrameRate(long playerId);
+    /** The loaded clip's YUV to RGB for the shader: a column-major mat4, or null if no player. */
+    public static native float[] nativeGetYuvToRgb(long playerId);
     
     // Direct frame access
     public static native WebMFrame nativeGetFrame(long playerId, int frameIndex);
