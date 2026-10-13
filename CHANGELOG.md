@@ -11,7 +11,7 @@ First public release.
 - Colour is converted with the clip's range and matrix (limited or full; BT.601, BT.709 or BT.2020), matching FFmpeg's own conversion. An untagged clip is taken as limited range, BT.601 up to 720x576 and BT.709 above. Odd frame sizes keep their last chroma column and row.
 - Playback modes for the software path: `preload` (decode every frame once), `stream` (decode ahead, bounded cache) and `streamAndPreload`. A global decode queue (`useDecodeQueue`) keeps many players from saturating the CPU.
 - Sources: `https://`, `file://`, absolute paths, `asset://` (Android assets, the iOS bundle, the web root), `res/raw` names and `content://` on Android. http(s) files are cached under `cacheKey`, and the stream modes play them while they download.
-- Playback control: `play`, `pause`, `stop`, `seekToFrame` and `seekToTime`, plus `paused`, `autoPlay`, `loop` and `playbackSpeed`. Events: `onLoad`, `onError` and `onEnd`.
+- Playback control: `play`, `pause`, `stop`, `seekToFrame` and `seekToTime`, plus `paused`, `autoPlay`, `loop` and `playbackSpeed`. With `autoPlay` off the first frame shows, in every mode. Events: `onLoad`, `onError` and `onEnd`.
 - Android decoder status: `getDecoderStatus`, `getDecoderInfo`, `getMaxDecoderInstances` and `getActiveDecoderCount`.
 - React Native: `AlphaVideoView` on both the new architecture (a Fabric view, and a TurboModule for the decoder status) and the old one. On react-native-web it renders a `<video>`.
 - Standalone Android and iOS libraries with no React Native dependency.

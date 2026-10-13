@@ -702,6 +702,9 @@ bool WebMAlphaPlayer::finishLoad() {
         // Reset streaming decode position
         streamDecodePos_ = 0;
         prefetchTarget_ = 0;
+        // Frame 0 goes through the frame callback once decoded, so a clip that isn't played
+        // straight away still shows its first frame.
+        pendingSeekFrame_ = 0;
         
         // Start background sequential decode thread immediately
         prefetchThread_ = std::make_unique<std::thread>(&WebMAlphaPlayer::prefetchLoop, this);
@@ -730,6 +733,7 @@ bool WebMAlphaPlayer::finishLoad() {
         // Reset streaming decode position
         streamDecodePos_ = 0;
         prefetchTarget_ = 0;
+        pendingSeekFrame_ = 0;  // as in Stream mode: frame 0 is shown without play()
         
         // Start background sequential decode thread - will decode ALL frames
         prefetchThread_ = std::make_unique<std::thread>(&WebMAlphaPlayer::prefetchLoop, this);

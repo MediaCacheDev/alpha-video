@@ -304,6 +304,21 @@ static void registerTests() {
                   << waiter.alphaMismatches.size() << ", first " << waiter.alphaMismatches.front());
         });
 
+        add("stream mode shows frame 0 without play()", [](const Fixture& fx) {
+            PlayerConfig config;
+            config.mode = PlaybackMode::Stream;
+            config.loopPlayback = false;
+            auto p = std::make_unique<WebMAlphaPlayer>();
+            p->setConfig(config);
+            FrameWaiter waiter;
+            waiter.card = fx.card;
+            waiter.attach(*p);
+            CHECK(p->loadFromFile(fx.path), fx.path);
+            CHECK(waiter.waitFor(0, std::chrono::seconds(5)), "frame 0 never reached the frame callback");
+            std::lock_guard<std::mutex> lock(waiter.mutex);
+            CHECK(waiter.alphaMismatches.empty(), "frame 0 with the wrong alpha: " << waiter.alphaMismatches.front());
+        });
+
         add("stream mode plays every frame with its alpha", [](const Fixture& fx) {
             PlayerConfig config;
             config.mode = PlaybackMode::Stream;
