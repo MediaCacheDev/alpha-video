@@ -1,0 +1,466 @@
+// Tests of the C++ core against the test-card fixtures in tests/fixtures.
+//
+// The fixtures come from the test-card generator in the demo app (alpha-video-test,
+// testing/testcard/generate.ts). Card holds the part of its layout these tests read; it must match
+// testing/testcard/layout.ts there. Every frame carries its own index as a row of black/white cells
+// in the colour planes and again in the alpha plane, so a test can tell which frame it got.
+
+#include "WebMAlphaPlayer.h"
+#include "GrowingFile.h"
+
+#include <algorithm>
+#include <chrono>
+#include <cmath>
+#include <condition_variable>
+#include <cstdio>
+#include <cstring>
+#include <fcntl.h>
+#include <fstream>
+#include <functional>
+#include <iterator>
+#include <mutex>
+#include <random>
+#include <sstream>
+#include <stdexcept>
+#include <string>
+#include <thread>
+#include <unistd.h>
+#include <vector>
+
+using namespace webm;
+
+// ---------------------------------------------------------------- runner
+
+struct Failure : std::runtime_error {
+    using std::runtime_error::runtime_error;
+};
+
+#define CHECK(cond, ...)                                                                    \
+    do {                                                                                    \
+        if (!(cond)) {                                                                      \
+            std::ostringstream message_;                                                    \
+            message_ << __FILE__ << ":" << __LINE__ << ": " << #cond << " " << __VA_ARGS__; \
+            throw Failure(message_.str());                                                  \
+        }                                                                                   \
+    } while (0)
+
+struct Test {
+    std::string name;
+    std::function<void()> run;
+};
+
+static std::vector<Test>& tests() {
+    static std::vector<Test> all;
+    return all;
+}
+
+// Known bugs: a test whose name contains `match` is expected to fail, with a message containing
+// `symptom`, until `bug` is fixed. Failing any other way is a real failure, and a known failure
+// that passes is reported so the entry gets removed with the fix.
+struct KnownFailure {
+    const char* match;
+    const char* symptom;
+    const char* bug;
+};
+static const KnownFailure kKnownFailures[] = {
+    {"shader colour", ", expected ", "the shaders use full-range BT.601 on limited-range video"},
+    {"alpha plane range [card_383x217/dual_vp9_p0", "where the card has", "limited-range alpha streams are used raw (16-235)"},
+    {"alpha plane range [card_256x256/dual_vp9_p0", "where the card has", "limited-range alpha streams are used raw (16-235)"},
+    {"odd-size chroma planes [card_383x217", "chroma plane is", "chroma planes are w/2 x h/2, dropping the last column and row"},
+};
+
+static const KnownFailure* knownFailure(const std::string& name) {
+    for (const auto& k : kKnownFailures) {
+        if (name.find(k.match) != std::string::npos) return &k;
+    }
+    return nullptr;
+}
+
+// ---------------------------------------------------------------- the card
+
+struct Rect {
+    int x, y, w, h;
+};
+
+struct Card {
+    int width = 0, height = 0, unit = 0;
+    int frames = 60;
+    double fps = 30;
+
+    static Card forSize(int w, int h) {
+        Card c;
+        c.width = w;
+        c.height = h;
+        c.unit = std::max(8, std::min(w, h) / 16);
+        return c;
+    }
+    Rect cell(int col, int row) const { return {col * unit, row * unit, unit, unit}; }
+    Rect codeCell(int bit) const { return cell(2 + bit, 1); }
+    Rect invertedCell(int bit) const { return cell(2 + bit, 2); }
+    Rect alphaCodeCell(int bit) const { return cell(2 + bit, 3); }
+};
+
+static const int kCodeBits = 12;
+
+struct AlphaPatch {
+    int col;
+    int alpha;
+};
+// Row 5: white at alpha 0, 64, 128, 191, 255, then red at 64, 128, 191, 255.
+static const AlphaPatch kAlphaRamp[] = {{2, 0}, {3, 64}, {4, 128}, {5, 191}, {6, 255}, {7, 64}, {8, 128}, {9, 191}, {10, 255}};
+
+struct ColourPatch {
+    const char* name;
+    int col;
+    int r, g, b;
+};
+// Row 7, all opaque.
+static const ColourPatch kColours[] = {
+    {"black", 2, 0, 0, 0},       {"white", 3, 255, 255, 255},  {"grey 128", 4, 128, 128, 128},
+    {"red 191", 5, 191, 0, 0},   {"green 191", 6, 0, 191, 0},  {"blue 191", 7, 0, 0, 191},
+    {"skin", 8, 224, 172, 105},  {"grey 64", 9, 64, 64, 64},   {"grey 192", 10, 192, 192, 192},
+};
+
+// The largest error a correct decode shows on these fixtures (FFmpeg's own conversion, measured by
+// testing/reference.ts in the demo: at most 3 levels) plus a margin of 3.
+static const double kLevelTolerance = 6;
+
+struct Fixture {
+    std::string name;  // e.g. card_383x217/yuva.webm
+    std::string path;
+    Card card;
+};
+
+static std::vector<Fixture> fixtures() {
+    std::vector<Fixture> all;
+    for (auto [w, h] : {std::pair{383, 217}, std::pair{256, 256}}) {
+        std::string card = "card_" + std::to_string(w) + "x" + std::to_string(h);
+        for (const char* file : {"yuva.webm", "dual_vp9.webm", "dual_vp9_p0.webm"}) {
+            all.push_back({card + "/" + file, std::string(FIXTURES_DIR) + "/" + card + "/" + file, Card::forSize(w, h)});
+        }
+    }
+    return all;
+}
+
+/** Mean of a plane over the middle half of `r` (in card pixels); `scale` 2 for 4:2:0 chroma. */
+static double planeMean(const uint8_t* plane, int stride, int planeW, int planeH, Rect r, int scale = 1) {
+    int x0 = (r.x + r.w / 4) / scale, x1 = std::max(x0 + 1, (r.x + 3 * r.w / 4) / scale);
+    int y0 = (r.y + r.h / 4) / scale, y1 = std::max(y0 + 1, (r.y + 3 * r.h / 4) / scale);
+    x1 = std::min(x1, planeW);
+    y1 = std::min(y1, planeH);
+    double sum = 0;
+    for (int y = y0; y < y1; y++) {
+        for (int x = x0; x < x1; x++) sum += plane[y * stride + x];
+    }
+    return sum / ((x1 - x0) * (y1 - y0));
+}
+
+struct Codes {
+    int colour;  // -1 when the inverted row doesn't match
+    int alpha;
+};
+
+static Codes readCodes(const YUVAFrame& f, const Card& card) {
+    int code = 0, inverted = 0, alpha = 0;
+    for (int bit = 0; bit < kCodeBits; bit++) {
+        code = (code << 1) | (planeMean(f.yPlane, f.yStride, f.width, f.height, card.codeCell(bit)) > 125.5);
+        inverted = (inverted << 1) | (planeMean(f.yPlane, f.yStride, f.width, f.height, card.invertedCell(bit)) > 125.5);
+        alpha = (alpha << 1) | (planeMean(f.aPlane, f.aStride, f.width, f.height, card.alphaCodeCell(bit)) > 125.5);
+    }
+    bool valid = (code ^ inverted) == (1 << kCodeBits) - 1;
+    return {valid ? code : -1, alpha};
+}
+
+static void checkFrame(const std::shared_ptr<YUVAFrame>& f, const Card& card, int expected) {
+    CHECK(f != nullptr, "no frame " << expected);
+    Codes codes = readCodes(*f, card);
+    CHECK(codes.colour == expected, "colour code " << codes.colour << ", expected frame " << expected);
+    CHECK(codes.alpha == expected, "alpha code " << codes.alpha << ", expected frame " << expected);
+}
+
+static PlayerConfig onDemandConfig() {
+    PlayerConfig config;
+    config.mode = PlaybackMode::Preload;
+    config.preloadAllFrames = false;  // getFrame() decodes on demand, in any order
+    config.loopPlayback = false;
+    return config;
+}
+
+static std::unique_ptr<WebMAlphaPlayer> load(const Fixture& fx, const PlayerConfig& config) {
+    auto player = std::make_unique<WebMAlphaPlayer>();
+    player->setConfig(config);
+    CHECK(player->loadFromFile(fx.path), "loading " << fx.path);
+    return player;
+}
+
+/** Collects frames delivered through the frame callback, and lets a test wait for one. */
+struct FrameWaiter {
+    std::mutex mutex;
+    std::condition_variable changed;
+    std::vector<int> codes;
+    Card card;
+
+    void attach(WebMAlphaPlayer& player) {
+        player.setFrameCallback([this](std::shared_ptr<YUVAFrame> f) {
+            int code = readCodes(*f, card).colour;
+            std::lock_guard<std::mutex> lock(mutex);
+            codes.push_back(code);
+            changed.notify_all();
+        });
+    }
+    bool waitFor(int code, std::chrono::milliseconds timeout) {
+        std::unique_lock<std::mutex> lock(mutex);
+        return changed.wait_for(lock, timeout, [&] { return std::find(codes.begin(), codes.end(), code) != codes.end(); });
+    }
+    void clear() {
+        std::lock_guard<std::mutex> lock(mutex);
+        codes.clear();
+    }
+};
+
+// ---------------------------------------------------------------- tests
+
+static void registerTests() {
+    for (const Fixture& fx : fixtures()) {
+        auto add = [&](const std::string& name, std::function<void(const Fixture&)> fn) {
+            tests().push_back({name + " [" + fx.name + "]", [fx, fn] { fn(fx); }});
+        };
+
+        add("clip info", [](const Fixture& fx) {
+            auto p = load(fx, onDemandConfig());
+            CHECK(p->getWidth() == fx.card.width, p->getWidth());
+            CHECK(p->getHeight() == fx.card.height, p->getHeight());
+            CHECK(p->getTotalFrames() == fx.card.frames, p->getTotalFrames());
+            CHECK(std::abs(p->getFrameRate() - fx.card.fps) < 0.01, p->getFrameRate());
+            CHECK(std::abs(p->getDuration() - fx.card.frames / fx.card.fps) < 0.05, p->getDuration());
+        });
+
+        add("every frame in order", [](const Fixture& fx) {
+            auto p = load(fx, onDemandConfig());
+            for (int i = 0; i < fx.card.frames; i++) checkFrame(p->getFrame(i), fx.card, i);
+        });
+
+        add("every frame in random order", [](const Fixture& fx) {
+            auto p = load(fx, onDemandConfig());
+            std::vector<int> order(fx.card.frames);
+            for (int i = 0; i < fx.card.frames; i++) order[i] = i;
+            std::shuffle(order.begin(), order.end(), std::mt19937(1234));
+            for (int i : order) checkFrame(p->getFrame(i), fx.card, i);
+        });
+
+        add("seekTo maps times to frames", [](const Fixture& fx) {
+            auto p = load(fx, onDemandConfig());
+            const std::pair<double, int> cases[] = {
+                {0, 0}, {1.0 / 30, 1}, {29.0 / 30, 29}, {1.0, 30}, {0.999, 29}, {59.0 / 30, 59},
+                {-1, 0}, {NAN, 0}, {100, 59},
+            };
+            for (auto [time, frame] : cases) {
+                p->seekTo(time);
+                CHECK(p->getCurrentFrame() == frame, "seekTo(" << time << ") gave " << p->getCurrentFrame());
+            }
+        });
+
+        add("preload decodes every frame", [](const Fixture& fx) {
+            PlayerConfig config = onDemandConfig();
+            config.preloadAllFrames = true;
+            auto p = std::make_unique<WebMAlphaPlayer>();
+            p->setConfig(config);
+            std::mutex m;
+            std::condition_variable cv;
+            bool done = false;
+            p->setEventCallback([&](const std::string& event, const std::string&) {
+                if (event != "preload_complete") return;
+                std::lock_guard<std::mutex> lock(m);
+                done = true;
+                cv.notify_all();
+            });
+            CHECK(p->loadFromFile(fx.path), fx.path);
+            {
+                std::unique_lock<std::mutex> lock(m);
+                CHECK(cv.wait_for(lock, std::chrono::seconds(20), [&] { return done; }), "no preload_complete");
+            }
+            for (int i = 0; i < fx.card.frames; i++) checkFrame(p->getCachedFrame(i), fx.card, i);
+        });
+
+        add("stream mode seeks while paused", [](const Fixture& fx) {
+            PlayerConfig config;
+            config.mode = PlaybackMode::Stream;
+            config.loopPlayback = false;
+            auto p = std::make_unique<WebMAlphaPlayer>();
+            p->setConfig(config);
+            FrameWaiter waiter;
+            waiter.card = fx.card;
+            waiter.attach(*p);
+            CHECK(p->loadFromFile(fx.path), fx.path);
+            for (int target : {59, 0, 30, 29, 31, 17, 45, 1}) {
+                waiter.clear();
+                p->seekToFrame(target);
+                CHECK(waiter.waitFor(target, std::chrono::seconds(5)), "seekToFrame(" << target << ") showed no such frame");
+            }
+        });
+
+        add("alpha plane range", [](const Fixture& fx) {
+            auto p = load(fx, onDemandConfig());
+            auto f = p->getFrame(0);
+            CHECK(f != nullptr, "no frame");
+            for (const auto& patch : kAlphaRamp) {
+                double a = planeMean(f->aPlane, f->aStride, f->width, f->height, fx.card.cell(patch.col, 5));
+                CHECK(std::abs(a - patch.alpha) <= kLevelTolerance, "alpha " << a << " where the card has " << patch.alpha);
+            }
+        });
+
+        add("shader colour", [](const Fixture& fx) {
+            // The YUV -> RGB maths in the Android and iOS shaders (AlphaVideoView.java, AlphaVideoPlayer.mm).
+            auto p = load(fx, onDemandConfig());
+            auto f = p->getFrame(0);
+            CHECK(f != nullptr, "no frame");
+            int cw = f->width / 2, chh = f->height / 2;
+            for (const auto& patch : kColours) {
+                Rect r = fx.card.cell(patch.col, 7);
+                double y = planeMean(f->yPlane, f->yStride, f->width, f->height, r) / 255;
+                double u = planeMean(f->uPlane, f->uvStride, cw, chh, r, 2) / 255 - 0.5;
+                double v = planeMean(f->vPlane, f->uvStride, cw, chh, r, 2) / 255 - 0.5;
+                auto level = [](double c) { return std::clamp(c, 0.0, 1.0) * 255; };
+                double rgb[3] = {level(y + 1.402 * v), level(y - 0.344136 * u - 0.714136 * v), level(y + 1.772 * u)};
+                int expected[3] = {patch.r, patch.g, patch.b};
+                for (int c = 0; c < 3; c++) {
+                    CHECK(std::abs(rgb[c] - expected[c]) <= kLevelTolerance,
+                          patch.name << " channel " << c << " is " << rgb[c] << ", expected " << expected[c]);
+                }
+            }
+        });
+
+        add("odd-size chroma planes", [](const Fixture& fx) {
+            auto p = load(fx, onDemandConfig());
+            auto f = p->getFrame(0);
+            CHECK(f != nullptr, "no frame");
+            CHECK(f->uvStride >= (f->width + 1) / 2, "chroma plane is " << f->uvStride << " wide for a " << f->width << " px frame");
+            CHECK(f->uSize >= ((f->width + 1) / 2) * ((f->height + 1) / 2), "chroma plane holds " << f->uSize << " bytes");
+        });
+
+        add("file range inside a larger file", [](const Fixture& fx) {
+            std::ifstream in(fx.path, std::ios::binary);
+            std::vector<char> clip((std::istreambuf_iterator<char>(in)), {});
+            std::string path = "/tmp/core_tests_range_" + std::to_string(getpid()) + ".bin";
+            {
+                std::ofstream out(path, std::ios::binary);
+                std::string before(1000, 'x'), after(500, 'y');
+                out << before;
+                out.write(clip.data(), clip.size());
+                out << after;
+            }
+            int fd = open(path.c_str(), O_RDONLY);
+            CHECK(fd >= 0, path);
+            WebMAlphaPlayer p;
+            p.setConfig(onDemandConfig());
+            bool loaded = p.loadFromFileRange(fd, 1000, static_cast<int64_t>(clip.size()));
+            close(fd);
+            unlink(path.c_str());
+            CHECK(loaded, "loadFromFileRange");
+            for (int i : {0, 31, 59}) checkFrame(p.getFrame(i), fx.card, i);
+        });
+
+        add("plays while the file is still downloading", [](const Fixture& fx) {
+            std::ifstream in(fx.path, std::ios::binary);
+            std::vector<char> clip((std::istreambuf_iterator<char>(in)), {});
+            std::string base = "/tmp/core_tests_download_" + std::to_string(getpid());
+            std::string path = base + ".webm", part = base + ".part";
+            unlink(path.c_str());
+            FILE* out = fopen(part.c_str(), "wb");
+            CHECK(out != nullptr, part);
+            auto download = GrowingFile::begin(path, part, static_cast<int64_t>(clip.size()));
+            CHECK(download != nullptr, "GrowingFile::begin");
+
+            std::atomic<bool> finished{false};
+            std::thread writer([&] {
+                const size_t chunk = std::max<size_t>(1024, clip.size() / 40);
+                for (size_t off = 0; off < clip.size(); off += chunk) {
+                    size_t n = std::min(chunk, clip.size() - off);
+                    fwrite(clip.data() + off, 1, n, out);
+                    fflush(out);
+                    download->setWritten(static_cast<int64_t>(off + n));
+                    std::this_thread::sleep_for(std::chrono::milliseconds(25));
+                }
+                fclose(out);
+                rename(part.c_str(), path.c_str());
+                download->finish();
+                finished = true;
+            });
+
+            PlayerConfig config;
+            config.mode = PlaybackMode::Stream;
+            config.loopPlayback = false;
+            WebMAlphaPlayer p;
+            p.setConfig(config);
+            FrameWaiter waiter;
+            waiter.card = fx.card;
+            waiter.attach(p);
+            bool loaded = p.loadFromDownload(path);
+            if (loaded) p.play();
+            bool firstFrame = loaded && waiter.waitFor(0, std::chrono::seconds(5));
+            bool beforeEnd = !finished;
+            bool lastFrame = firstFrame && waiter.waitFor(fx.card.frames - 1, std::chrono::seconds(10));
+            p.unload();
+            writer.join();
+            unlink(path.c_str());
+            CHECK(loaded, "loadFromDownload");
+            CHECK(firstFrame, "frame 0 never arrived");
+            CHECK(beforeEnd, "frame 0 only arrived after the download finished");
+            CHECK(lastFrame, "playback never reached the last frame");
+        });
+    }
+
+    tests().push_back({"AV1 is refused with an error event", [] {
+        // The core decodes VP9 only; dual-stream AV1 plays through MediaCodec on Android.
+        WebMAlphaPlayer p;
+        std::string error;
+        p.setEventCallback([&](const std::string& event, const std::string& data) {
+            if (event == "error") error = data;
+        });
+        CHECK(!p.loadFromFile(std::string(FIXTURES_DIR) + "/card_383x217/dual_av1.webm"), "an AV1 file loaded");
+        CHECK(!error.empty(), "no error event");
+        CHECK(!p.isLoaded(), "isLoaded() after a failed load");
+    }});
+
+    tests().push_back({"FrameCache evicts the least recently used", [] {
+        FrameCache cache(3);
+        for (const char* key : {"a", "b", "c"}) cache.put(key, std::make_shared<YUVAFrame>());
+        CHECK(cache.get("a") != nullptr, "a");
+        cache.put("d", std::make_shared<YUVAFrame>());
+        CHECK(!cache.contains("b"), "b should have been evicted");
+        CHECK(cache.contains("a") && cache.contains("c") && cache.contains("d"), "a, c and d kept");
+        cache.setMaxSize(2);
+        CHECK(cache.size() == 2, cache.size());
+        CHECK(!cache.contains("c"), "c is now the oldest");
+    }});
+}
+
+int main(int argc, char** argv) {
+    registerTests();
+    const char* filter = argc > 1 ? argv[1] : nullptr;
+    int passed = 0, failed = 0, known = 0, fixed = 0;
+    for (const Test& t : tests()) {
+        if (filter && t.name.find(filter) == std::string::npos) continue;
+        const KnownFailure* bug = knownFailure(t.name);
+        std::string error;
+        try {
+            t.run();
+        } catch (const std::exception& e) {
+            error = e.what();
+        }
+        if (error.empty() && !bug) {
+            passed++;
+        } else if (error.empty()) {
+            fixed++;
+            printf("NOW PASSES  %s\n            (remove it from kKnownFailures: %s)\n", t.name.c_str(), bug->bug);
+        } else if (bug && error.find(bug->symptom) != std::string::npos) {
+            known++;
+            printf("known bug   %s\n            %s\n", t.name.c_str(), error.c_str());
+        } else {
+            failed++;
+            printf("FAIL        %s\n            %s\n", t.name.c_str(), error.c_str());
+        }
+    }
+    printf("\n%d passed, %d failed, %d known bugs, %d known bugs now passing\n", passed, failed, known, fixed);
+    return failed || fixed ? 1 : 0;
+}

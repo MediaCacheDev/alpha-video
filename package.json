@@ -42,6 +42,7 @@
     "build": "bob build",
     "typescript": "tsc --noEmit",
     "lint": "eslint \"**/*.{js,ts,tsx}\"",
+    "test:core": "cmake -S tests/core -B tests/core/build -G Ninja && cmake --build tests/core/build && tests/core/build/core_tests",
     "prepare": "bob build",
     "prepack": "bob build",
     "build:ffmpeg:ios": "cd scripts && ./build_ffmpeg_ios.sh",

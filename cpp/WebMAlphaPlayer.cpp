@@ -898,8 +898,8 @@ bool WebMAlphaPlayer::openStreams() {
     }
     
     // Check stream side data for alpha indication
-    for (int i = 0; i < colorStream->nb_side_data; i++) {
-        AVPacketSideData sd = colorStream->side_data[i];
+    for (int i = 0; i < colorStream->codecpar->nb_coded_side_data; i++) {
+        const AVPacketSideData& sd = colorStream->codecpar->coded_side_data[i];
         VLOGI("Stream side_data[%d]: type=%d, size=%d", i, sd.type, (int)sd.size);
     }
     width_ = colorStream->codecpar->width;

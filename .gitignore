@@ -4,6 +4,7 @@ node_modules/
 # Build outputs
 lib/
 *.tgz
+tests/core/build/
 
 # IDE
 .idea/
