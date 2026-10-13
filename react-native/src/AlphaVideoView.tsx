@@ -14,10 +14,8 @@ import {
   ViewProps,
   StyleProp,
   ViewStyle,
-  UIManager,
-  findNodeHandle,
 } from 'react-native';
-import NativeAlphaVideoView from './AlphaVideoViewNativeComponent';
+import NativeAlphaVideoView, { Commands } from './AlphaVideoViewNativeComponent';
 
 // Web video element type
 type VideoElement = HTMLVideoElement;
@@ -129,9 +127,16 @@ export interface AlphaVideoViewRef {
   seekToTime: (seconds: number) => void;
 }
 
-// Native component for iOS and Android. An old-architecture view (requireNativeComponent); on
-// the new architecture it runs through React Native's interop layer.
+// Native component for iOS and Android, from the codegen spec: a Fabric component on the new
+// architecture, a view manager on the old one.
 const NativeAlphaVideoViewOrNull = Platform.OS !== 'web' ? NativeAlphaVideoView : null;
+
+/** `mode` wins over the deprecated `stream`. */
+function resolveMode(mode: PlaybackMode | undefined, stream: boolean | undefined): PlaybackMode | undefined {
+  if (mode) return mode;
+  if (stream == null) return undefined;
+  return stream ? 'stream' : 'preload';
+}
 
 /** asset://path names the app's bundled media; on the web it is served from the site root. */
 function toWebUrl(uri: string | undefined): string | undefined {
@@ -252,24 +257,18 @@ WebVideoPlayer.displayName = 'WebVideoPlayer';
  */
 const NativePlayer = forwardRef<AlphaVideoViewRef, AlphaVideoViewProps>(
   (props, ref) => {
-    const nativeRef = useRef<any>(null);
+    const nativeRef = useRef<React.ElementRef<typeof NativeAlphaVideoView>>(null);
 
-    const sendCommand = (name: string, args: number[] = []) => {
-      const handle = nativeRef.current ? findNodeHandle(nativeRef.current) : null;
-      if (!handle) return;
-      UIManager.dispatchViewManagerCommand(
-        handle,
-        UIManager.getViewManagerConfig('RNAlphaVideoView')?.Commands?.[name] ?? name,
-        args
-      );
+    const withView = (command: (view: React.ElementRef<typeof NativeAlphaVideoView>) => void) => {
+      if (nativeRef.current) command(nativeRef.current);
     };
 
     useImperativeHandle(ref, () => ({
-      play: () => sendCommand('play'),
-      pause: () => sendCommand('pause'),
-      stop: () => sendCommand('stop'),
-      seekToFrame: (frame: number) => sendCommand('seekToFrame', [frame]),
-      seekToTime: (seconds: number) => sendCommand('seekToTime', [seconds]),
+      play: () => withView(view => Commands.play(view)),
+      pause: () => withView(view => Commands.pause(view)),
+      stop: () => withView(view => Commands.stop(view)),
+      seekToFrame: (frame: number) => withView(view => Commands.seekToFrame(view, frame)),
+      seekToTime: (seconds: number) => withView(view => Commands.seekToTime(view, seconds)),
     }));
 
     if (!NativeAlphaVideoViewOrNull) {
@@ -304,8 +303,7 @@ const NativePlayer = forwardRef<AlphaVideoViewRef, AlphaVideoViewProps>(
         paused={props.paused}
         playbackSpeed={props.playbackSpeed}
         cacheKey={props.cacheKey}
-        mode={props.mode}
-        stream={props.stream}
+        mode={resolveMode(props.mode, props.stream)}
         streamCacheSize={props.streamCacheSize}
         streamPrefetchAhead={props.streamPrefetchAhead}
         useDecodeQueue={props.useDecodeQueue}

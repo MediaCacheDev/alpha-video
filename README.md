@@ -50,6 +50,8 @@ yarn add react-native-alpha-video
 
 The npm package carries the prebuilt FFmpeg libraries, so nothing else is downloaded.
 
+The package works on both React Native architectures: the new one (a Fabric view, and a TurboModule for the [decoder status API](#decoder-status-api-android); the default since 0.76) and the old one (`newArchEnabled=false`, up to 0.81). It is tested on 0.83, and on 0.81 with the new architecture turned off.
+
 ### Expo / Managed Workflow
 
 - **Expo Go:** Not supported (needs custom native modules and FFmpeg binaries).

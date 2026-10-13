@@ -5,7 +5,8 @@
  * utilities and re-exports the rest.
  */
 
-import { Platform, NativeModules } from 'react-native';
+import { Platform } from 'react-native';
+import NativeAlphaVideoModule from './NativeAlphaVideoModule';
 
 /**
  * Decoder status information (Android only)
@@ -32,9 +33,7 @@ export interface DecoderStatus {
 /**
  * Native module for AlphaVideo utilities (Android only)
  */
-const AlphaVideoModule = Platform.OS === 'android' 
-  ? NativeModules.RNAlphaVideo 
-  : null;
+const AlphaVideoModule = Platform.OS === 'android' ? NativeAlphaVideoModule : null;
 
 /**
  * Get detailed decoder information for all supported codecs (VP9, AV1).

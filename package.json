@@ -6,6 +6,7 @@
   "main": "lib/commonjs/index.js",
   "module": "lib/module/index.js",
   "types": "lib/typescript/react-native/src/index.d.ts",
+  "react-native": "react-native/src/index.tsx",
   "files": [
     "react-native",
     "lib",
@@ -78,6 +79,19 @@
     "url": "https://github.com/danielkpl2/alpha-video/issues"
   },
   "homepage": "https://github.com/danielkpl2/alpha-video#readme",
+  "codegenConfig": {
+    "name": "RNAlphaVideoSpec",
+    "type": "all",
+    "jsSrcsDir": "react-native/src",
+    "android": {
+      "javaPackageName": "dev.mediacache.alphavideo.reactnative"
+    },
+    "ios": {
+      "componentProvider": {
+        "RNAlphaVideoView": "RNAlphaVideoViewComponentView"
+      }
+    }
+  },
   "publishConfig": {
     "registry": "https://registry.npmjs.org/"
   },

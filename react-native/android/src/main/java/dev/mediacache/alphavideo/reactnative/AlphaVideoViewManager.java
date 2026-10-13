@@ -3,7 +3,6 @@ package dev.mediacache.alphavideo.reactnative;
 import dev.mediacache.alphavideo.AlphaVideoView;
 
 import android.graphics.Color;
-import android.util.Log;
 
 import androidx.annotation.NonNull;
 import androidx.annotation.Nullable;
@@ -15,7 +14,6 @@ import com.facebook.react.bridge.ReadableArray;
 import com.facebook.react.bridge.ReadableMap;
 import com.facebook.react.bridge.WritableMap;
 import com.facebook.react.common.MapBuilder;
-import com.facebook.react.uimanager.SimpleViewManager;
 import com.facebook.react.uimanager.ThemedReactContext;
 import com.facebook.react.uimanager.UIManagerHelper;
 import com.facebook.react.uimanager.ViewProps;
@@ -39,10 +37,10 @@ import java.util.Map;
  * - cacheKey: string (optional cache file name for https sources)
  * 
  * Commands: play, pause, stop, seekToFrame(frame), seekToTime(seconds). Events: onLoad, onError, onEnd, onPreloadComplete.
+ * Every prop and event is declared in the codegen spec, react-native/src/AlphaVideoViewNativeComponent.ts.
  */
-public class AlphaVideoViewManager extends SimpleViewManager<AlphaVideoView> {
+public class AlphaVideoViewManager extends AlphaVideoViewManagerSpec<AlphaVideoView> {
     
-    private static final String TAG = "AlphaVideoViewManager";
     public static final String REACT_CLASS = "RNAlphaVideoView";
     
     public AlphaVideoViewManager(ReactApplicationContext context) {
@@ -78,6 +76,7 @@ public class AlphaVideoViewManager extends SimpleViewManager<AlphaVideoView> {
     }
     
     @ReactProp(name = "source")
+    @Override
     public void setSource(AlphaVideoView view, @Nullable ReadableMap source) {
         String sourceUri = null;
         if (source != null) {
@@ -93,16 +92,19 @@ public class AlphaVideoViewManager extends SimpleViewManager<AlphaVideoView> {
     }
     
     @ReactProp(name = "autoPlay", defaultBoolean = true)
+    @Override
     public void setAutoPlay(AlphaVideoView view, boolean autoPlay) {
         view.setAutoplay(autoPlay);
     }
     
     @ReactProp(name = "loop", defaultBoolean = true)
+    @Override
     public void setLoop(AlphaVideoView view, boolean loop) {
         view.setLoop(loop);
     }
     
     @ReactProp(name = "paused", defaultBoolean = false)
+    @Override
     public void setPaused(AlphaVideoView view, boolean paused) {
         view.setPaused(paused);
     }
@@ -112,11 +114,13 @@ public class AlphaVideoViewManager extends SimpleViewManager<AlphaVideoView> {
      * value never left JS.
      */
     @ReactProp(name = "playbackSpeed", defaultDouble = 1.0)
+    @Override
     public void setPlaybackSpeed(AlphaVideoView view, double playbackSpeed) {
         view.setPlaybackSpeed(playbackSpeed);
     }
     
     @ReactProp(name = "cacheKey")
+    @Override
     public void setCacheKey(AlphaVideoView view, @Nullable String cacheKey) {
         view.setCacheKey(cacheKey);
     }
@@ -128,16 +132,9 @@ public class AlphaVideoViewManager extends SimpleViewManager<AlphaVideoView> {
      * - "streamAndPreload": start playing immediately, cache all frames for smooth looping
      */
     @ReactProp(name = "mode")
+    @Override
     public void setMode(AlphaVideoView view, @Nullable String mode) {
         view.setMode(mode != null ? mode : "preload");
-    }
-    
-    /**
-     * @deprecated Use mode prop instead
-     */
-    @ReactProp(name = "stream", defaultBoolean = false)
-    public void setStream(AlphaVideoView view, boolean stream) {
-        view.setStream(stream);
     }
     
     /**
@@ -145,6 +142,7 @@ public class AlphaVideoViewManager extends SimpleViewManager<AlphaVideoView> {
      * Default: 30 frames (~1 second at 30fps)
      */
     @ReactProp(name = "streamCacheSize", defaultInt = 30)
+    @Override
     public void setStreamCacheSize(AlphaVideoView view, int size) {
         view.setStreamCacheSize(size);
     }
@@ -154,6 +152,7 @@ public class AlphaVideoViewManager extends SimpleViewManager<AlphaVideoView> {
      * Default: 15 frames (~0.5 seconds at 30fps)
      */
     @ReactProp(name = "streamPrefetchAhead", defaultInt = 15)
+    @Override
     public void setStreamPrefetchAhead(AlphaVideoView view, int frames) {
         view.setStreamPrefetchAhead(frames);
     }
@@ -165,6 +164,7 @@ public class AlphaVideoViewManager extends SimpleViewManager<AlphaVideoView> {
      * Has no effect when mode='stream'.
      */
     @ReactProp(name = "useDecodeQueue", defaultBoolean = true)
+    @Override
     public void setUseDecodeQueue(AlphaVideoView view, boolean use) {
         view.setUseDecodeQueue(use);
     }
@@ -174,37 +174,36 @@ public class AlphaVideoViewManager extends SimpleViewManager<AlphaVideoView> {
      * When false (default): only warnings and errors.
      */
     @ReactProp(name = "verbose", defaultBoolean = false)
+    @Override
     public void setVerbose(AlphaVideoView view, boolean verbose) {
         view.setVerbose(verbose);
     }
     
     @Override
-    public void receiveCommand(@NonNull AlphaVideoView view, String commandId, @Nullable ReadableArray args) {
-        switch (commandId) {
-            case "play":
-                view.play();
-                break;
-            case "pause":
-                view.pause();
-                break;
-            case "stop":
-                view.stop();
-                break;
-            case "seekToFrame":
-                if (args != null && args.size() > 0) {
-                    view.seekToFrame(args.getInt(0));
-                }
-                break;
-            case "seekToTime":
-                if (args != null && args.size() > 0) {
-                    view.seekToTime(args.getDouble(0));
-                }
-                break;
-            default:
-                Log.w(TAG, "Unknown command: " + commandId);
-        }
+    public void play(AlphaVideoView view) {
+        view.play();
     }
-    
+
+    @Override
+    public void pause(AlphaVideoView view) {
+        view.pause();
+    }
+
+    @Override
+    public void stop(AlphaVideoView view) {
+        view.stop();
+    }
+
+    @Override
+    public void seekToFrame(AlphaVideoView view, int frame) {
+        view.seekToFrame(frame);
+    }
+
+    @Override
+    public void seekToTime(AlphaVideoView view, double seconds) {
+        view.seekToTime(seconds);
+    }
+
     @Nullable
     @Override
     public Map<String, Object> getExportedCustomDirectEventTypeConstants() {

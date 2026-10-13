@@ -55,5 +55,11 @@ Pod::Spec.new do |s|
   s.frameworks = ['Metal', 'MetalKit']
   s.libraries = ['z', 'c++']
   
-  s.dependency 'React-Core'
+  # React Native's helper: the Fabric and codegen dependencies, and RCT_NEW_ARCH_ENABLED on the
+  # new architecture. It reads pod_target_xcconfig, so it comes after it.
+  if respond_to?(:install_modules_dependencies, true)
+    install_modules_dependencies(s)
+  else
+    s.dependency 'React-Core'
+  end
 end

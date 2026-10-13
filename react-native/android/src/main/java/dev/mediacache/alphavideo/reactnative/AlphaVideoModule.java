@@ -4,11 +4,8 @@ import dev.mediacache.alphavideo.SurfaceTextureVideoDecoder;
 
 import android.util.Log;
 
-import androidx.annotation.NonNull;
-
 import com.facebook.react.bridge.Promise;
 import com.facebook.react.bridge.ReactApplicationContext;
-import com.facebook.react.bridge.ReactContextBaseJavaModule;
 import com.facebook.react.bridge.ReactMethod;
 import com.facebook.react.bridge.WritableMap;
 import com.facebook.react.bridge.WritableNativeMap;
@@ -17,24 +14,18 @@ import com.facebook.react.bridge.WritableNativeMap;
  * React Native Module for WebM Alpha Player utility functions.
  * Provides access to video decoder information and diagnostics.
  */
-public class AlphaVideoModule extends ReactContextBaseJavaModule {
+public class AlphaVideoModule extends AlphaVideoModuleSpec {
     
     private static final String TAG = "RNAlphaVideo";
-    public static final String NAME = "RNAlphaVideo";
     
     public AlphaVideoModule(ReactApplicationContext reactContext) {
         super(reactContext);
     }
     
-    @NonNull
-    @Override
-    public String getName() {
-        return NAME;
-    }
-    
     /**
      * Get detailed decoder information for all supported codecs (VP9, AV1).
      */
+    @Override
     @ReactMethod
     public void getDecoderInfo(Promise promise) {
         try {
@@ -46,15 +37,10 @@ public class AlphaVideoModule extends ReactContextBaseJavaModule {
         }
     }
     
-    /** @deprecated Use getDecoderInfo() */
-    @ReactMethod
-    public void getVp9DecoderInfo(Promise promise) {
-        getDecoderInfo(promise);
-    }
-    
     /**
      * Get the maximum number of concurrent decoder instances for a given codec.
      */
+    @Override
     @ReactMethod
     public void getMaxDecoderInstances(String mimeType, Promise promise) {
         try {
@@ -65,20 +51,10 @@ public class AlphaVideoModule extends ReactContextBaseJavaModule {
         }
     }
     
-    /** @deprecated Use getMaxDecoderInstances() */
-    @ReactMethod
-    public void getMaxVp9Instances(Promise promise) {
-        try {
-            int max = SurfaceTextureVideoDecoder.getMaxVp9Instances();
-            promise.resolve(max);
-        } catch (Exception e) {
-            promise.reject("DECODER_INFO_ERROR", e.getMessage());
-        }
-    }
-    
     /**
      * Get the current number of active decoder instances.
      */
+    @Override
     @ReactMethod
     public void getActiveDecoderCount(Promise promise) {
         try {
@@ -92,6 +68,7 @@ public class AlphaVideoModule extends ReactContextBaseJavaModule {
     /**
      * Get comprehensive decoder status as a structured object.
      */
+    @Override
     @ReactMethod
     public void getDecoderStatus(Promise promise) {
         try {

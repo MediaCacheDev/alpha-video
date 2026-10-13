@@ -1,7 +1,10 @@
 //
 //  RNAlphaVideoViewManager.mm
-//  React Native view manager for AlphaVideoView
+//  React Native view manager for AlphaVideoView (old architecture; the new one uses
+//  RNAlphaVideoViewComponentView.mm)
 //
+
+#ifndef RCT_NEW_ARCH_ENABLED
 
 #import <React/RCTViewManager.h>
 #import <React/RCTBridge.h>
@@ -15,8 +18,6 @@
 
 // `source` prop: { uri }
 @property (nonatomic, copy) NSDictionary *reactSource;
-// Deprecated: use mode
-@property (nonatomic, assign) BOOL stream;
 
 @property (nonatomic, copy) RCTDirectEventBlock onLoad;
 @property (nonatomic, copy) RCTDirectEventBlock onError;
@@ -37,11 +38,6 @@
 - (void)setReactSource:(NSDictionary *)reactSource {
     _reactSource = [reactSource copy];
     self.source = reactSource[@"uri"];
-}
-
-- (void)setStream:(BOOL)stream {
-    _stream = stream;
-    self.mode = stream ? @"stream" : @"preload";
 }
 
 - (void)alphaVideoView:(AlphaVideoView *)view didLoadFrames:(int)totalFrames width:(int)width height:(int)height {
@@ -92,7 +88,6 @@ RCT_EXPORT_VIEW_PROPERTY(paused, BOOL)
 RCT_EXPORT_VIEW_PROPERTY(playbackSpeed, double)
 RCT_EXPORT_VIEW_PROPERTY(cacheKey, NSString)
 RCT_EXPORT_VIEW_PROPERTY(mode, NSString)
-RCT_EXPORT_VIEW_PROPERTY(stream, BOOL)
 RCT_EXPORT_VIEW_PROPERTY(streamCacheSize, int)
 RCT_EXPORT_VIEW_PROPERTY(streamPrefetchAhead, int)
 RCT_EXPORT_VIEW_PROPERTY(useDecodeQueue, BOOL)
@@ -132,3 +127,5 @@ RCT_EXPORT_METHOD(seekToTime:(nonnull NSNumber *)reactTag seconds:(nonnull NSNum
 }
 
 @end
+
+#endif
