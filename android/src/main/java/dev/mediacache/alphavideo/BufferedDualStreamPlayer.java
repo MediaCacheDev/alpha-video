@@ -69,6 +69,11 @@ public class BufferedDualStreamPlayer implements SurfaceTextureVideoDecoder.Fram
     // Frame pairs consumeFrames() has taken; a redraw for some other reason may show presentFrame first
     private final AtomicInteger consumedPairs = new AtomicInteger(0);
     private volatile int consumedPairsAtPresent = 0;
+    // Presentation time of the last pair consumeFrames() took (-1: none since the last flush)
+    private volatile long consumedPtsUs = -1;
+    // How long a loop waits for the last frame to be drawn once playback has passed it, in case a
+    // decoder never outputs it
+    private static final long LAST_FRAME_WAIT_NS = 250_000_000L;
     
     // Frame availability — set by onFrameAvailable, used only for initial sync
     // After initial frames arrive, the playback loop renders unconditionally at frame rate
@@ -236,7 +241,10 @@ public class BufferedDualStreamPlayer implements SurfaceTextureVideoDecoder.Fram
             colorDecoder.setVerbose(verbose);
             alphaDecoder.setVerbose(verbose);
             
-            if (!colorDecoder.configure(width, height) || !alphaDecoder.configure(width, height)) {
+            // [colour range, colour space, alpha range, alpha space]
+            int[] colorInfo = nativeGetColorInfo(nativeDemuxerPtr);
+            if (!colorDecoder.configure(width, height, colorInfo[0], colorInfo[1])
+                    || !alphaDecoder.configure(width, height, colorInfo[2], colorInfo[3])) {
                 Log.e(TAG, "Failed to configure decoders");
                 cleanup();
                 return false;
@@ -414,6 +422,7 @@ public class BufferedDualStreamPlayer implements SurfaceTextureVideoDecoder.Fram
         cd.getTransformMatrix(colorTransformMatrix);
         ad.getTransformMatrix(alphaTransformMatrix);
         
+        consumedPtsUs = cd.getLatchedTimestampNs() / 1000;
         consumedPairs.incrementAndGet();
         return true;
     }
@@ -506,14 +515,12 @@ public class BufferedDualStreamPlayer implements SurfaceTextureVideoDecoder.Fram
             if (packet1 == null) {
                 // End of file
                 logV("End of file at frame " + decodeFrameIndex);
+                queueEndOfStream();
                 
                 if (loop) {
                     // Flushing now would drop the frames still queued in the decoders, so wait
-                    // until playback has passed the last one (paused: until play or a seek).
-                    while (!shouldStop.get() && isLoaded.get() && seekRequest.get() < 0
-                            && (presentFrame.get() >= 0 || playbackFrameIndex.get() < decodeFrameIndex)) {
-                        try { Thread.sleep(5); } catch (InterruptedException e) { break; }
-                    }
+                    // until the last one is drawn (paused: until play or a seek).
+                    waitForLastFrameDrawn();
                     if (seekRequest.get() >= 0) continue;
                     
                     loopCount++;
@@ -596,6 +603,33 @@ public class BufferedDualStreamPlayer implements SurfaceTextureVideoDecoder.Fram
         }
         
         logV("Demux loop ended");
+    }
+    
+    /**
+     * Returns once playback has passed the last frame read and that frame has been drawn, or
+     * LAST_FRAME_WAIT_NS after passing it without; or on stop or a seek.
+     */
+    private void waitForLastFrameDrawn() {
+        long frameUs = (long) (1_000_000.0 / frameRate);
+        // Half a frame of slack, as the playback loop's targets have
+        long lastFramePtsUs = (decodeFrameIndex - 1) * frameUs - frameUs / 2;
+        long passedAtNs = 0;
+        while (!shouldStop.get() && isLoaded.get() && seekRequest.get() < 0) {
+            boolean passed = presentFrame.get() < 0 && playbackFrameIndex.get() >= decodeFrameIndex;
+            if (passed && passedAtNs == 0) passedAtNs = System.nanoTime();
+            boolean drawn = consumedPtsUs >= lastFramePtsUs;
+            if (passed && (drawn || System.nanoTime() - passedAtNs > LAST_FRAME_WAIT_NS)) return;
+            try { Thread.sleep(5); } catch (InterruptedException e) { return; }
+        }
+    }
+    
+    /** Lets both decoders output their last frames; the next loop or seek flushes them. */
+    private void queueEndOfStream() {
+        for (SurfaceTextureVideoDecoder decoder : new SurfaceTextureVideoDecoder[] {colorDecoder, alphaDecoder}) {
+            while (decoder != null && !decoder.queueEndOfStream() && !shouldStop.get() && seekRequest.get() < 0) {
+                try { Thread.sleep(1); } catch (InterruptedException e) { return; }
+            }
+        }
     }
     
     /**
@@ -706,6 +740,7 @@ public class BufferedDualStreamPlayer implements SurfaceTextureVideoDecoder.Fram
         logV("Flushing decoders...");
         if (colorDecoder != null) colorDecoder.flush();
         if (alphaDecoder != null) alphaDecoder.flush();
+        consumedPtsUs = -1;
     }
     
     // -------------------------------------------------------------------------
@@ -878,6 +913,7 @@ public class BufferedDualStreamPlayer implements SurfaceTextureVideoDecoder.Fram
     private static native long nativeCreateDemuxerFromDownload(String path);
     private static native void nativeDestroyDemuxer(long ptr);
     private static native int[] nativeGetVideoInfo(long ptr);
+    private static native int[] nativeGetColorInfo(long ptr);
     private static native Object[] nativeReadPacket(long ptr);
     private static native void nativeSeekToStart(long ptr);
     private static native void nativeSeekToTime(long ptr, long timeUs);

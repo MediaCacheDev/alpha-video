@@ -16,6 +16,8 @@ import android.view.Surface;
 import java.io.IOException;
 import java.nio.ByteBuffer;
 import java.util.concurrent.ConcurrentLinkedQueue;
+import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicLong;
@@ -42,6 +44,7 @@ public class SurfaceTextureVideoDecoder implements SurfaceTexture.OnFrameAvailab
     // Timeout for codec operations (microseconds)
     private static final long DEQUEUE_TIMEOUT_US = 0; // Non-blocking for async
     private static final long INPUT_TIMEOUT_US = 10000; // 10ms for input
+    private static final long FLUSH_TIMEOUT_MS = 500;
     
     private final String label;
     private final String mimeType;
@@ -83,6 +86,8 @@ public class SurfaceTextureVideoDecoder implements SurfaceTexture.OnFrameAvailab
     private static final AtomicInteger activeDecoderCount = new AtomicInteger(0);
     
     private final Object pendingFramesLock = new Object();
+    // Guarded by pendingFramesLock
+    private boolean endOfStreamQueued = false;
     
     private static class FrameInfo {
         final int frameIndex;
@@ -259,7 +264,8 @@ public class SurfaceTextureVideoDecoder implements SurfaceTexture.OnFrameAvailab
     // Instance methods
     // -------------------------------------------------------------------------
     
-    public boolean configure(int width, int height) {
+    /** @param avColorRange the stream's FFmpeg AVColorRange; with avColorSpace, sets MediaCodec's colour keys */
+    public boolean configure(int width, int height, int avColorRange, int avColorSpace) {
         if (isConfigured.get()) {
             Log.w(TAG, "[" + label + "] Already configured");
             return true;
@@ -311,6 +317,7 @@ public class SurfaceTextureVideoDecoder implements SurfaceTexture.OnFrameAvailab
             activeDecoderCount.incrementAndGet();
             
             format = MediaFormat.createVideoFormat(mimeType, width, height);
+            MediaCodecColor.apply(format, avColorRange, avColorSpace, width, height);
             codec.configure(format, outputSurface, null, 0);
             
             codecThread = new HandlerThread("Codec-" + label);
@@ -422,6 +429,28 @@ public class SurfaceTextureVideoDecoder implements SurfaceTexture.OnFrameAvailab
         }
     }
     
+    /**
+     * Tells the decoder no more input follows, so it outputs the frames it still holds back (AV1
+     * decoders keep some until then). Until the next flush, no packets are accepted.
+     *
+     * @return false if the decoder had no free input buffer; try again
+     */
+    public boolean queueEndOfStream() {
+        synchronized (pendingFramesLock) {
+            if (!isStarted.get() || isReleased.get() || endOfStreamQueued) return true;
+            try {
+                int inputIndex = codec.dequeueInputBuffer(INPUT_TIMEOUT_US);
+                if (inputIndex < 0) return false;
+                codec.queueInputBuffer(inputIndex, 0, 0, 0, MediaCodec.BUFFER_FLAG_END_OF_STREAM);
+                endOfStreamQueued = true;
+                logV("[" + label + "] Queued end of stream");
+            } catch (Exception e) {
+                Log.e(TAG, "[" + label + "] End-of-stream error: " + e.getMessage());
+            }
+            return true;
+        }
+    }
+
     private void pollOutput() {
         if (isReleased.get() || !isStarted.get()) {
             return;
@@ -440,6 +469,12 @@ public class SurfaceTextureVideoDecoder implements SurfaceTexture.OnFrameAvailab
                 if (outputIndex >= 0) {
                     long pts = bufferInfo.presentationTimeUs;
                     long target = targetPresentationTimeUs.get();
+                    
+                    boolean endOfStream = (bufferInfo.flags & MediaCodec.BUFFER_FLAG_END_OF_STREAM) != 0;
+                    if (endOfStream && bufferInfo.size == 0) {
+                        codec.releaseOutputBuffer(outputIndex, false);
+                        continue;
+                    }
                     
                     if (pts < dropBeforeUs.get()) {
                         codec.releaseOutputBuffer(outputIndex, false);
@@ -596,6 +631,11 @@ public class SurfaceTextureVideoDecoder implements SurfaceTexture.OnFrameAvailab
         return lastFrameTimestampNs.get();
     }
     
+    /** The presentation time of the frame the last updateTexImage() latched; GL thread. */
+    public long getLatchedTimestampNs() {
+        return surfaceTexture != null ? surfaceTexture.getTimestamp() : -1;
+    }
+    
     public int getLastRenderedFrameIndex() {
         return lastRenderedFrameIndex.get();
     }
@@ -630,55 +670,59 @@ public class SurfaceTextureVideoDecoder implements SurfaceTexture.OnFrameAvailab
         frameReleasedSinceConsume.set(false);
     }
     
+    /**
+     * Drops every queued and decoded frame. Runs on the codec thread, between output polls: a poll
+     * holding an output buffer across the flush would afterwards wait on a buffer the codec has
+     * taken back, and show nothing until the playhead reached that buffer's time again.
+     */
     public void flush() {
-        if (isReleased.get()) {
+        Handler handler = codecHandler;
+        if (isReleased.get() || handler == null) {
             Log.w(TAG, "[" + label + "] flush() called but already released");
             return;
         }
         
         logV("[" + label + "] Flushing decoder...");
-        
+        CountDownLatch flushed = new CountDownLatch(1);
+        handler.post(() -> {
+            try {
+                flushOnCodecThread(handler);
+            } finally {
+                flushed.countDown();
+            }
+        });
         try {
-            synchronized (pendingFramesLock) {
-                isStarted.set(false);
-                pendingFrames.clear();
-                nextOutputFrameIndex.set(0);
-                lastRenderedFrameIndex.set(-1);
-                hasNewFrame.set(false);
-                lastFrameTimestampNs.set(0);
-                targetPresentationTimeUs.set(0);
-                dropBeforeUs.set(Long.MIN_VALUE);
-                frameReleasedSinceConsume.set(false);
-                heldOutputIndex = -1;
+            if (!flushed.await(FLUSH_TIMEOUT_MS, TimeUnit.MILLISECONDS)) {
+                Log.w(TAG, "[" + label + "] Flush still running after " + FLUSH_TIMEOUT_MS + " ms");
             }
-            
-            try { Thread.sleep(10); } catch (InterruptedException ignored) {}
-            
-            codec.flush();
-            
-            synchronized (pendingFramesLock) {
-                isStarted.set(true);
-            }
-            
-            if (codecHandler != null) {
-                codecHandler.post(this::pollOutput);
-            }
-            
-            logV("[" + label + "] Flushed and restarted successfully");
-        } catch (IllegalStateException e) {
-            Log.e(TAG, "[" + label + "] Flush failed (illegal state): " + e.getMessage());
-            synchronized (pendingFramesLock) {
-                isStarted.set(true);
-            }
-            if (codecHandler != null) {
-                codecHandler.post(this::pollOutput);
-            }
-        } catch (Exception e) {
-            Log.e(TAG, "[" + label + "] Flush error: " + e.getMessage());
-            synchronized (pendingFramesLock) {
-                isStarted.set(true);
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+        }
+    }
+    
+    private void flushOnCodecThread(Handler handler) {
+        if (isReleased.get()) return;
+        // The poll restarts below, after the flush
+        handler.removeCallbacksAndMessages(null);
+        synchronized (pendingFramesLock) {
+            pendingFrames.clear();
+            nextOutputFrameIndex.set(0);
+            lastRenderedFrameIndex.set(-1);
+            hasNewFrame.set(false);
+            lastFrameTimestampNs.set(0);
+            targetPresentationTimeUs.set(0);
+            dropBeforeUs.set(Long.MIN_VALUE);
+            frameReleasedSinceConsume.set(false);
+            heldOutputIndex = -1;
+            endOfStreamQueued = false;
+            try {
+                codec.flush();
+                logV("[" + label + "] Flushed and restarted successfully");
+            } catch (Exception e) {
+                Log.e(TAG, "[" + label + "] Flush error: " + e.getMessage());
             }
         }
+        handler.post(this::pollOutput);
     }
     
     public void release() {

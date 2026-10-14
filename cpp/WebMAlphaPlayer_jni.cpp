@@ -959,6 +959,9 @@ struct DualStreamDemuxer {
     double frameRate = 30.0;
     double timeBase = 0.0;
     AVCodecID codecId = AV_CODEC_ID_NONE;
+    // AVColorRange and AVColorSpace of each stream, for MediaCodec's colour keys
+    int colorRange = AVCOL_RANGE_UNSPECIFIED, colorSpace = AVCOL_SPC_UNSPECIFIED;
+    int alphaRange = AVCOL_RANGE_UNSPECIFIED, alphaSpace = AVCOL_SPC_UNSPECIFIED;
     
     // Track frame indices for each stream
     int colorFrameIndex = 0;
@@ -1066,6 +1069,8 @@ jlong registerDemuxer(std::shared_ptr<DualStreamDemuxer> demuxer) {
                 demuxer->width = stream->codecpar->width;
                 demuxer->height = stream->codecpar->height;
                 demuxer->codecId = stream->codecpar->codec_id;
+                demuxer->colorRange = stream->codecpar->color_range;
+                demuxer->colorSpace = stream->codecpar->color_space;
                 
                 if (stream->avg_frame_rate.den > 0) {
                     demuxer->frameRate = av_q2d(stream->avg_frame_rate);
@@ -1085,6 +1090,8 @@ jlong registerDemuxer(std::shared_ptr<DualStreamDemuxer> demuxer) {
                 }
             } else if (demuxer->alphaStreamIndex < 0) {
                 demuxer->alphaStreamIndex = i;
+                demuxer->alphaRange = stream->codecpar->color_range;
+                demuxer->alphaSpace = stream->codecpar->color_space;
             }
         }
     }
@@ -1213,6 +1220,21 @@ Java_dev_mediacache_alphavideo_BufferedDualStreamPlayer_nativeGetVideoInfo(
     };
     env->SetIntArrayRegion(result, 0, 6, values);
     
+    return result;
+}
+
+// [colour range, colour space, alpha range, alpha space] as FFmpeg's AVColorRange and AVColorSpace
+JNIEXPORT jintArray JNICALL
+Java_dev_mediacache_alphavideo_BufferedDualStreamPlayer_nativeGetColorInfo(
+    JNIEnv* env,
+    jclass clazz,
+    jlong demuxerId
+) {
+    std::shared_ptr<DualStreamDemuxer> demuxer = findDemuxer(demuxerId);
+    if (!demuxer) return nullptr;
+    jint values[] = {demuxer->colorRange, demuxer->colorSpace, demuxer->alphaRange, demuxer->alphaSpace};
+    jintArray result = env->NewIntArray(4);
+    env->SetIntArrayRegion(result, 0, 4, values);
     return result;
 }
 

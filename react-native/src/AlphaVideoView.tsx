@@ -64,6 +64,8 @@ export interface AlphaVideoViewProps extends ViewProps {
    * - 'preload' (default): Decode all frames upfront before playback starts.
    * - 'stream': Decode frames on-demand with a sliding window cache.
    * - 'streamAndPreload': Start playing immediately while decoding in background.
+   *
+   * Ignored for dual-stream files on Android: MediaCodec decodes them as it reads, in hardware.
    */
   mode?: PlaybackMode;
   
