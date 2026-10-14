@@ -137,6 +137,13 @@ public class AlphaVideoViewManager extends AlphaVideoViewManagerSpec<AlphaVideoV
         view.setMode(mode != null ? mode : "preload");
     }
     
+    /** "auto" (default), "mediacodec", "mediacodec-hw", "mediacodec-sw" or "ffmpeg"; see AlphaVideoView.setDecoder. */
+    @ReactProp(name = "decoder")
+    @Override
+    public void setDecoder(AlphaVideoView view, @Nullable String decoder) {
+        view.setDecoder(decoder);
+    }
+    
     /**
      * Set the cache size when streaming (number of frames to keep in memory)
      * Default: 30 frames (~1 second at 30fps)
@@ -224,11 +231,12 @@ public class AlphaVideoViewManager extends AlphaVideoViewManagerSpec<AlphaVideoV
         }
         
         @Override
-        public void onLoad(int totalFrames, int width, int height) {
+        public void onLoad(int totalFrames, int width, int height, String decoder) {
             WritableMap event = Arguments.createMap();
             event.putInt("totalFrames", totalFrames);
             event.putInt("width", width);
             event.putInt("height", height);
+            event.putString("decoder", decoder);
             send("onLoad", event);
         }
         

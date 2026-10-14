@@ -8,25 +8,28 @@ The player has two completely separate decode backends, selected automatically b
 
 | | Software Path | Hardware Path |
 |---|---|---|
-| **File format** | Single VP9 stream with YUVA420P alpha | Two VP9 or AV1 streams (color + alpha) |
+| **File format** | Single VP9 stream with YUVA420P alpha, or two VP9 streams | Two VP9 or AV1 streams (color + alpha), or a single VP9 stream with YUVA420P alpha |
+| **Used for** | iOS always; Android when MediaCodec can't decode the file | Android when it can |
 | **Decoder** | FFmpeg (C++, libvpx) | Android MediaCodec (hardware or software codec) |
 | **Rendering** | YUVA textures → fragment shader | OES textures → fragment shader |
 | **Platforms** | iOS + Android | Android only |
 | **Looping** | Seamless (frames stay in cache) | Tiny stall (MediaCodec flush + refill) |
 | **Key class** | `WebMAlphaPlayer` (C++) | `BufferedDualStreamPlayer` (Java) |
 
-Detection happens in `AlphaVideoView.loadProbedSource()`: the JNI function `nativeDualStreamTracks()` lists the VP9 and AV1 video streams in the WebM container with their profiles. If there are 2, MediaCodec lists both profiles, and a hardware decoder is available, the dual-stream path is used. A VP9 profile MediaCodec doesn't list (usually profile 1, the 4:4:4 a `gbrp` alpha track encodes to) goes to the C++ core instead.
+Detection happens in `AlphaVideoView.loadProbedSource()`: the JNI function `nativeColorAlphaTracks()` lists the colour and alpha bitstreams with their profiles. They come from 2 VP9/AV1 tracks, or from a standard alpha WebM: one VP9 track whose alpha is a second VP9 stream in each block's BlockAdditional. The demuxer then hands each block's main data to the colour decoder and its BlockAdditional to the alpha decoder, as if they were 2 tracks.
+
+The `decoder` prop then picks the engine. `MediaCodecDecoders.reserve()` takes a decoder for each track, of the kind asked for (hardware, software, or hardware where it can), that lists the track's profile and has an instance free under its `getMaxSupportedInstances()`; it counts the instances players hold per decoder name. Under `auto`, a file goes to MediaCodec if hardware decoders can be reserved for both tracks; otherwise a VP9 file goes to the C++ core, and an AV1 file (the C++ core has no AV1 decoder) to MediaCodec's software decoders. A VP9 profile MediaCodec doesn't list (usually profile 1, the 4:4:4 a `gbrp` alpha track encodes to) therefore goes to the C++ core, and so does a VP9 file once other players hold the hardware decoder's instances (2 each). A forced value reports an error rather than fall back. The player holds its decoders until `unload()`, and `onLoad` reports them.
 
 ## High-Level Flow
 
 ```
 React (JS) AlphaVideoView props
-   │  source {uri|path}, cacheKey?, autoPlay, loop, paused, mode, verbose
+   │  source {uri|path}, cacheKey?, autoPlay, loop, paused, mode, decoder, verbose
    │
    ├─ Android: AlphaVideoViewManager → AlphaVideoView (TextureView)
    │      ├─ download/cache (WebMDownloader, cacheKey-aware) → load, or loadFromDownload while it runs
-   │      ├─ if dual-stream + HW decoder → BufferedDualStreamPlayer (MediaCodec)
-   │      └─ if single-stream or no HW   → WebMAlphaPlayer (C++/FFmpeg)
+   │      ├─ if colour + alpha VP9/AV1 streams + MediaCodecDecoders reserves 2 decoders → BufferedDualStreamPlayer (MediaCodec)
+   │      └─ otherwise (decoder auto or ffmpeg)                                      → WebMAlphaPlayer (C++/FFmpeg)
    │
    ├─ iOS: RNAlphaVideoViewManager → RNAlphaVideoView (an AlphaVideoView) → AlphaVideoMetalView
    │      └─ download/cache (AlphaVideoDownload, NSURLSession→Caches) → loadFromPath / loadFromDownloadPath → WebMAlphaPlayer (C++)
@@ -38,7 +41,7 @@ React (JS) AlphaVideoView props
 
 ### JS/React
 
-- Sends props (`source`, `cacheKey`, `autoPlay`, `loop`, `paused`, `playbackSpeed`, `mode`, `verbose`) to native view managers.
+- Sends props (`source`, `cacheKey`, `autoPlay`, `loop`, `paused`, `playbackSpeed`, `mode`, `decoder`, `verbose`) to native view managers.
 - Exposes `getDecoderStatus()`, `getDecoderInfo()`, `getMaxDecoderInstances()` for runtime capability queries (Android).
 - No decoding logic; platform detection is automatic.
 
@@ -47,7 +50,8 @@ React (JS) AlphaVideoView props
 - **`AlphaVideoViewManager`** — Creates `AlphaVideoView`, handles prop dispatch, manages download executor (4 threads).
 - **`AlphaVideoView`** — TextureView subclass, owns the EGL context and GL render thread. Routes to software or hardware path based on stream detection. Handles view lifecycle (attach/detach/z-index reorder) with deferred source reloading.
 - **`BufferedDualStreamPlayer`** — Hardware decode orchestrator. Manages the demux loop, codec thread, playback loop, and delegates rendering to the GL thread. Handles loop transitions (flush + seek).
-- **`SurfaceTextureVideoDecoder`** — Codec-agnostic MediaCodec wrapper. Supports VP9 and AV1. Creates OES texture + SurfaceTexture per instance. Implements one-frame-per-cycle release gate for synchronized output.
+- **`MediaCodecDecoders`** — Picks the MediaCodec decoder for each track by kind, profile and free instances, and counts the instances players hold.
+- **`SurfaceTextureVideoDecoder`** — Codec-agnostic MediaCodec wrapper around the decoder it is given. Supports VP9 and AV1. Creates OES texture + SurfaceTexture per instance. Implements one-frame-per-cycle release gate for synchronized output.
 - **`AlphaVideoModule`** — Native module exposing `getDecoderInfo()`, `getDecoderStatus()`, `getMaxDecoderInstances()` to JS.
 
 ### iOS (Objective-C++)
@@ -245,14 +249,14 @@ if remote → download thread(s)
    ↓ cache file
    ↓ UI thread: loadFromFile
    ↓
-Auto-detect: nativeDualStreamTracks?
-   ├─ YES + profiles MediaCodec lists + HW decoder available:
+Auto-detect: nativeColorAlphaTracks?
+   ├─ YES + profiles MediaCodec lists + HW decoder available (VP9: with 2 instances free):
    │    BufferedDualStreamPlayer
    │    ├─ demux thread: FFmpeg → raw packets
    │    ├─ 2× MediaCodec → OES textures
    │    └─ GL thread: composite + present
    │
-   └─ NO (or no HW decoder):
+   └─ otherwise:
         WebMAlphaPlayer (C++)
         ├─ decode thread: FFmpeg → YUVA frames → FrameCache
         └─ playback loop → texture upload → GPU shader → present

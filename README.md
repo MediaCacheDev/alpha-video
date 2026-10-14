@@ -1,6 +1,6 @@
 # alpha-video
 
-Transparent video for iOS, Android, React Native and the web. Plays **software-decoded VP9 with alpha** (single-stream YUVA WebM) everywhere, and **hardware-decoded dual-stream VP9/AV1** (color and alpha in separate video tracks, decoded by MediaCodec) on Android.
+Transparent video for iOS, Android, React Native and the web. Plays **VP9 WebM with alpha** (standard YUVA WebM) everywhere, and **dual-stream VP9/AV1** (color and alpha in separate video tracks). On Android, two MediaCodec decoders decode colour and alpha in hardware where they can; otherwise, and on iOS, an FFmpeg-based C++ core decodes in software.
 
 One repository, three packages:
 
@@ -13,8 +13,8 @@ One repository, three packages:
 ## Features
 
 - **VP9 Alpha Transparency** - Full support for WebM videos with embedded YUVA alpha channel
-- **Dual-Stream Hardware Decode** - Color + alpha as separate VP9 or AV1 streams, decoded via Android MediaCodec with zero CPU involvement
-- **AV1 Support** - Dual-stream AV1 hardware decode on devices with AV1 MediaCodec support
+- **Hardware Decode on Android** - Color and alpha decoded by two MediaCodec instances, from a standard alpha WebM (the alpha is a second VP9 stream in each block's BlockAdditional) or from separate VP9 or AV1 tracks
+- **AV1 Support** - Dual-stream AV1 on Android, decoded by MediaCodec (in hardware where the device has an AV1 decoder)
 - **High Performance** - Native C++ core (FFmpeg) with GPU-accelerated rendering
 - **iOS** - Metal-based rendering with YUVA-to-RGBA GPU shader
 - **Android** - TextureView with OpenGL ES 2.0, proper z-ordering and ScrollView support
@@ -23,10 +23,11 @@ One repository, three packages:
 
 ## Decision Matrix
 
-Choosing the right encoding format depends on your use case:
+The player picks the decode path itself. On Android it uses MediaCodec when a hardware decoder lists the file's VP9 or AV1 profiles and has 2 instances free, and the C++ core otherwise (a Snapdragon 778G's VP9 decoder allows 3 instances, so one MediaCodec player at a time). AV1 has no decoder in the C++ core, so it falls back to MediaCodec's software decoder. The [`decoder` prop](#choosing-the-decoder-android) forces an engine. iOS always uses the C++ core.
 
-| | Single-Stream YUVA (Software) | Dual-Stream VP9/AV1 (Hardware) |
+| | Software path (C++ core) | Hardware path (MediaCodec, Android) |
 |---|---|---|
+| **Files** | Single-stream YUVA VP9; dual-stream VP9 | Single-stream YUVA VP9; dual-stream VP9 or AV1 |
 | **Decoding** | CPU (FFmpeg libvpx) | GPU (MediaCodec) |
 | **CPU usage during playback** | Depends on `mode`: none once `preload` has decoded every frame (upload and render only); continuous decoding in `stream`; first pass only in `streamAndPreload` | Near-zero (decode offloaded) |
 | **Looping** | Seamless | Tiny stall at loop boundary (MediaCodec flush) |
@@ -34,9 +35,9 @@ Choosing the right encoding format depends on your use case:
 | **Best for** | Short loops, small animations, many simultaneous players | Long-duration, high-res, single-instance playback |
 | **iOS support** | Yes (Metal) | No (Android only) |
 | **Codec** | VP9 only | VP9 or AV1 |
-| **Instances** | Unlimited (CPU bound) | Limited by MediaCodec slots (typically 8-16 per codec) |
+| **Instances** | Unlimited (CPU bound) | 2 decoder instances each, of the decoder's limit (3 on a Snapdragon 778G, often more); further VP9 players use the software path |
 
-**Rule of thumb**: Use single-stream YUVA for short looping effects (glows, particles, badges). Use dual-stream for hero videos, full-screen overlays, or anything over 720p / 10 seconds.
+**Rule of thumb**: Standard YUVA WebM plays everywhere, including in Chrome and Firefox, and gets the hardware path on Android when it's free. Use dual-stream for AV1, or to encode alpha at its own quality; browsers show only its colour track.
 
 ## Installation
 
@@ -91,8 +92,9 @@ dependencies {
 ```kotlin
 val view = AlphaVideoView(context)
 view.setMode("preload")
+view.setDecoder("auto")     // see Choosing the Decoder
 view.setCallback(object : AlphaVideoView.PlayerCallback {
-    override fun onLoad(totalFrames: Int, width: Int, height: Int) {}
+    override fun onLoad(totalFrames: Int, width: Int, height: Int, decoder: String) {}
     override fun onError(error: String) {}
     override fun onEnd() {}
     override fun onPreloadComplete(frames: Int, timeMs: Double) {}
@@ -155,7 +157,7 @@ function MyComponent() {
 }
 ```
 
-The player automatically detects whether a file contains a single YUVA stream (software decode) or dual video streams (hardware decode via MediaCodec). No prop changes are needed.
+The player automatically detects whether a file contains a single YUVA stream or dual video streams, and on Android whether MediaCodec can decode it (see [Decision Matrix](#decision-matrix)). No prop changes are needed.
 
 ### Props
 
@@ -168,10 +170,11 @@ The player automatically detects whether a file contains a single YUVA stream (s
 | `paused` | `boolean` | `false` | Pause video playback |
 | `playbackSpeed` | `number` | `1.0` | Playback speed multiplier. Changeable while playing, and does **not** move the playhead — see below |
 | `style` | `ViewStyle` | - | Container style. On Android `backgroundColor` is ignored (the view is a `TextureView`); put a background on a parent view |
-| `onLoad` | `function` | - | Callback when video loads (`{ totalFrames, width, height }`) |
+| `onLoad` | `function` | - | Callback when video loads (`{ totalFrames, width, height, decoder }`); `decoder` names the engine and decoders, e.g. `'mediacodec-hw (c2.qti.vp9.decoder)'`, `'ffmpeg (libvpx-vp9)'`, or `'browser'` on web |
 | `onError` | `function` | - | Callback when error occurs (`{ error }`) |
 | `onEnd` | `function` | - | Callback when playback reaches the end with `loop` off |
 | `mode` | `'preload' \| 'stream' \| 'streamAndPreload'` | `'preload'` | Playback mode (software path only, see below) |
+| `decoder` | `'auto' \| 'mediacodec' \| 'mediacodec-hw' \| 'mediacodec-sw' \| 'ffmpeg'` | `'auto'` | Android: the decoding engine (see [Choosing the Decoder](#choosing-the-decoder-android)). iOS and web accept it and use FFmpeg and the browser |
 | `streamCacheSize` | `number` | `30` | Frames to keep in LRU cache when streaming |
 | `streamPrefetchAhead` | `number` | `15` | Frames to decode ahead of playback position |
 | `useDecodeQueue` | `boolean` | `true` | Serialize decoding across all players (prevents CPU saturation) |
@@ -219,6 +222,22 @@ player keeps playing from there or stays paused showing that frame. In `stream` 
 from the playhead jumps the decoder to the nearest keyframe before it, so the wait depends on the
 keyframe interval. A seek before `onLoad` is ignored.
 
+### Choosing the Decoder (Android)
+
+MediaCodec takes files whose colour and alpha are separate VP9 or AV1 bitstreams: standard YUVA WebM (the alpha is a second VP9 stream inside each block) and dual-stream files. Each player needs 2 decoder instances. The `decoder` prop picks the engine at the next load:
+
+| Value | Engine |
+|---|---|
+| `'auto'` (default) | MediaCodec hardware decoders that list every track's profile and have instances free; else FFmpeg (VP9 only); else MediaCodec's software decoders |
+| `'mediacodec'` | MediaCodec, per track: a hardware decoder if one lists the profile and has an instance free, else a software one. With a 3-instance limit, a second player can get one of each |
+| `'mediacodec-hw'` | MediaCodec hardware decoders only, for both tracks |
+| `'mediacodec-sw'` | MediaCodec software decoders only (Google's `c2.android.*`), for both tracks |
+| `'ffmpeg'` | The C++ core (VP9 only) |
+
+Every value but `'auto'` reports `onError` rather than fall back when it can't play the file, so a forced engine can be trusted for testing and benchmarks. A file MediaCodec can't take (a single VP9 track without alpha, say) plays on FFmpeg under `'auto'`. `onLoad`'s `decoder` says what was used: `'mediacodec-hw (c2.qti.vp9.decoder)'`, `'mediacodec-sw (c2.android.vp9.decoder)'`, `'mediacodec (c2.qti.vp9.decoder, c2.android.vp9.decoder)'` for one of each, or `'ffmpeg (libvpx-vp9)'`.
+
+`mode` applies to FFmpeg only; MediaCodec always streams. On a GPU without `GL_EXT_YUV_target`, frames from MediaCodec's software decoders can show BT.601 colours for BT.709 video, because the driver ignores their colour tag.
+
 ### Decoder Status API (Android)
 
 Query hardware decoder capabilities at runtime:
@@ -258,7 +277,7 @@ In `stream` and `streamAndPreload` mode (and on the Android hardware path in tho
 
 ### Web
 
-On the web the component renders a muted HTML5 `<video>`, so the browser does the decoding and streaming. It honours `source`, `autoPlay`, `loop`, `paused`, `playbackSpeed`, `onLoad`, `onError`, `onEnd` and the ref methods; `mode`, `cacheKey` and the stream and queue props have no effect.
+On the web the component renders a muted HTML5 `<video>`, so the browser does the decoding and streaming. It honours `source`, `autoPlay`, `loop`, `paused`, `playbackSpeed`, `onLoad`, `onError`, `onEnd` and the ref methods; `mode`, `decoder`, `cacheKey` and the stream and queue props have no effect. `onLoad` reports `decoder: 'browser'`.
 
 - **Chrome, Edge and Firefox** play single-stream YUVA VP9 WebM with its transparency.
 - **Safari** doesn't show WebM's alpha channel. For Safari, serve a separate HEVC-with-alpha file.
@@ -282,14 +301,14 @@ On the web the component renders a muted HTML5 `<video>`, so the browser does th
 
 ### Decode Paths
 
-**Software (single-stream YUVA)** — works on all platforms:
-1. FFmpeg demuxes WebM, libvpx decodes VP9 with embedded alpha
+**Software (C++ core)** — works on all platforms:
+1. FFmpeg demuxes WebM, libvpx decodes VP9 with embedded alpha, or the colour and alpha tracks of a dual-stream VP9 file
 2. YUVA420P frames cached in LRU `FrameCache`
 3. Uploaded to GPU as 4 textures (Y, U, V, A) per frame
 4. Fragment shader converts YUVA to RGBA on Metal (iOS) / OpenGL ES (Android)
 
-**Hardware (dual-stream VP9/AV1)** — Android only:
-1. FFmpeg demuxes WebM into color packets (stream 0) and alpha packets (stream 1)
+**Hardware (MediaCodec)** — Android only:
+1. FFmpeg demuxes WebM into color packets (stream 0) and alpha packets (stream 1): the two tracks of a dual-stream file, or each block's main data and its BlockAdditional in a standard alpha WebM
 2. Two `MediaCodec` instances decode in parallel, outputting to `SurfaceTexture` (OES textures)
 3. One-frame-per-cycle release gate ensures color and alpha stay in sync
 4. Fragment shader samples both OES textures: `gl_FragColor = vec4(color.rgb, alpha.r)`
@@ -310,14 +329,14 @@ On the web the component renders a muted HTML5 `<video>`, so the browser does th
 
 **`SurfaceTextureVideoDecoder`** — codec-agnostic MediaCodec wrapper
 - Supports VP9 (`video/x-vnd.on2.vp9`) and AV1 (`video/av01`)
-- Automatically selects best hardware decoder, falls back to software
+- Opens the decoder `MediaCodecDecoders` reserved for its track (see [Choosing the Decoder](#choosing-the-decoder-android))
 - Creates OES texture + SurfaceTexture per decoder instance
 - One-frame-per-cycle release gate prevents output buffer flooding
 
 **`AlphaVideoView`** — Android view
 - TextureView-based (proper z-ordering, ScrollView support)
 - Dedicated GL thread for EGL context and rendering
-- Auto-detects single vs dual stream and routes to correct backend
+- Routes each file to MediaCodec or the C++ core (see [Decision Matrix](#decision-matrix))
 - Handles view lifecycle (attach/detach/z-index reorder) gracefully
 
 **iOS (Metal)** — software decode only
@@ -329,7 +348,7 @@ On the web the component renders a muted HTML5 `<video>`, so the browser does th
 
 ## Playback Modes (Software Path)
 
-The `mode` prop controls the software decode path. The hardware dual-stream path always streams.
+The `mode` prop controls the software decode path. The hardware path on Android always streams, whatever the mode.
 
 ```tsx
 <AlphaVideoView source={{ uri: 'video.webm' }} mode="preload" />
@@ -364,7 +383,7 @@ When spawning many players simultaneously in `preload` or `streamAndPreload` mod
 | Many players spawned at once | `true` (default) | Prevents freezing and crashes |
 | Single player, fastest load time | `false` | No queue overhead |
 | `mode="stream"` | N/A | Queue is automatically bypassed |
-| Dual-stream hardware path | N/A | Not applicable (MediaCodec handles scheduling) |
+| Hardware path (Android) | N/A | Not applicable (MediaCodec handles scheduling) |
 
 ## Creating Alpha Videos
 

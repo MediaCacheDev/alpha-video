@@ -18,6 +18,8 @@
 
 // `source` prop: { uri }
 @property (nonatomic, copy) NSDictionary *reactSource;
+// `decoder` prop: accepted for the shared JS API; iOS always decodes on the C++ core
+@property (nonatomic, copy) NSString *decoder;
 
 @property (nonatomic, copy) RCTDirectEventBlock onLoad;
 @property (nonatomic, copy) RCTDirectEventBlock onError;
@@ -45,7 +47,8 @@
         self.onLoad(@{
             @"totalFrames": @(totalFrames),
             @"width": @(width),
-            @"height": @(height)
+            @"height": @(height),
+            @"decoder": @"ffmpeg (libvpx-vp9)"
         });
     }
 }
@@ -88,6 +91,7 @@ RCT_EXPORT_VIEW_PROPERTY(paused, BOOL)
 RCT_EXPORT_VIEW_PROPERTY(playbackSpeed, double)
 RCT_EXPORT_VIEW_PROPERTY(cacheKey, NSString)
 RCT_EXPORT_VIEW_PROPERTY(mode, NSString)
+RCT_EXPORT_VIEW_PROPERTY(decoder, NSString)
 RCT_EXPORT_VIEW_PROPERTY(streamCacheSize, int)
 RCT_EXPORT_VIEW_PROPERTY(streamPrefetchAhead, int)
 RCT_EXPORT_VIEW_PROPERTY(useDecodeQueue, BOOL)

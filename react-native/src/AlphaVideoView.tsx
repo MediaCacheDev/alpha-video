@@ -15,7 +15,9 @@ import {
   StyleProp,
   ViewStyle,
 } from 'react-native';
-import NativeAlphaVideoView, { Commands } from './AlphaVideoViewNativeComponent';
+import NativeAlphaVideoView, { Commands, type Decoder } from './AlphaVideoViewNativeComponent';
+
+export type { Decoder };
 
 // Web video element type
 type VideoElement = HTMLVideoElement;
@@ -39,6 +41,18 @@ export interface AlphaVideoSource {
  * Playback mode for the WebM player.
  */
 export type PlaybackMode = 'preload' | 'stream' | 'streamAndPreload';
+
+export interface AlphaVideoLoadEvent {
+  totalFrames: number;
+  width: number;
+  height: number;
+  /**
+   * The engine and decoders playing the file: `'ffmpeg (libvpx-vp9)'`,
+   * `'mediacodec-hw (c2.qti.vp9.decoder)'`, `'mediacodec-sw (...)'`, `'mediacodec (hardware, software)'`
+   * for one of each, or `'browser'` on web.
+   */
+  decoder: string;
+}
 
 export interface AlphaVideoViewProps extends ViewProps {
   /** Video source URL or path */
@@ -65,9 +79,16 @@ export interface AlphaVideoViewProps extends ViewProps {
    * - 'stream': Decode frames on-demand with a sliding window cache.
    * - 'streamAndPreload': Start playing immediately while decoding in background.
    *
-   * Ignored for dual-stream files on Android: MediaCodec decodes them as it reads, in hardware.
+   * Applies to FFmpeg only: a file MediaCodec plays on Android (see `decoder`) decodes as it is read.
    */
   mode?: PlaybackMode;
+
+  /**
+   * Android: the decoder for files with colour and alpha as separate VP9/AV1 bitstreams
+   * (default `'auto'`; see {@link Decoder}). `onLoad` reports the one used. iOS always uses
+   * FFmpeg and web the browser.
+   */
+  decoder?: Decoder;
   
   /**
    * @deprecated Use `mode` instead.
@@ -109,7 +130,7 @@ export interface AlphaVideoViewProps extends ViewProps {
   /** Container style */
   style?: StyleProp<ViewStyle>;
   /** Callback when video loads */
-  onLoad?: (event: { totalFrames: number; width: number; height: number }) => void;
+  onLoad?: (event: AlphaVideoLoadEvent) => void;
   /** Callback when error occurs */
   onError?: (event: { error: string }) => void;
   /** Callback when video ends */
@@ -216,6 +237,7 @@ const WebVideoPlayer = forwardRef<AlphaVideoViewRef, AlphaVideoViewProps>(
         totalFrames,
         width: video.videoWidth,
         height: video.videoHeight,
+        decoder: 'browser',
       });
 
       if (autoPlay && !paused) {
@@ -279,7 +301,7 @@ const NativePlayer = forwardRef<AlphaVideoViewRef, AlphaVideoViewProps>(
 
     // Wrap native event handlers to extract nativeEvent data
     const handleNativeLoad = props.onLoad 
-      ? (event: { nativeEvent: { totalFrames: number; width: number; height: number } }) => {
+      ? (event: { nativeEvent: AlphaVideoLoadEvent }) => {
           props.onLoad?.(event.nativeEvent);
         }
       : undefined;
@@ -306,6 +328,7 @@ const NativePlayer = forwardRef<AlphaVideoViewRef, AlphaVideoViewProps>(
         playbackSpeed={props.playbackSpeed}
         cacheKey={props.cacheKey}
         mode={resolveMode(props.mode, props.stream)}
+        decoder={props.decoder}
         streamCacheSize={props.streamCacheSize}
         streamPrefetchAhead={props.streamPrefetchAhead}
         useDecodeQueue={props.useDecodeQueue}

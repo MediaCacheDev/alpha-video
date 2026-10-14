@@ -945,6 +945,7 @@ Java_dev_mediacache_alphavideo_WebMAlphaPlayerNative_nativeGetFFmpegVersion(JNIE
 extern "C" {
 #include <libavformat/avformat.h>
 #include <libavcodec/avcodec.h>
+#include <libavutil/intreadwrite.h>
 }
 
 namespace {
@@ -975,6 +976,13 @@ struct DualStreamDemuxer {
     // Track frame indices for each stream
     int colorFrameIndex = 0;
     int alphaFrameIndex = 0;
+    
+    // A single VP9 track whose alpha is a second VP9 stream in each block's BlockAdditional. Each
+    // read of a colour packet leaves its alpha payload here for the next read.
+    bool alphaInBlockAdditional = false;
+    bool hasPendingAlpha = false;
+    std::vector<uint8_t> pendingAlpha;
+    long pendingAlphaPtsUs = 0;
     
     AVIOContext* io = nullptr;  // Owned; must outlive formatCtx
     // Set on destroy so a read waiting on a download returns
@@ -1030,17 +1038,50 @@ static bool openDownloadInput(const std::string& path, const std::atomic<bool>* 
     return openInput(formatCtx, io);
 }
 
-// For each VP9/AV1 video stream of the opened input, its codec (0 VP9, 1 AV1) and FFmpeg profile,
-// in pairs; null unless there are 2 or more. Closes the input.
-static jintArray dualStreamTracks(JNIEnv* env, AVFormatContext* formatCtx, AVIOContext* io) {
+// The alpha payload of a packet's BlockAdditional (ID 1, after FFmpeg's 8-byte BlockAddID), or null.
+static const uint8_t* blockAdditionalAlpha(const AVPacket* packet, size_t* size) {
+    size_t sideSize = 0;
+    const uint8_t* side = av_packet_get_side_data(packet, AV_PKT_DATA_MATROSKA_BLOCKADDITIONAL, &sideSize);
+    if (!side || sideSize <= 8 || AV_RB64(side) != 1) return nullptr;
+    *size = sideSize - 8;
+    return side + 8;
+}
+// Whether the first packet of a VP9 stream carries alpha in its BlockAdditional. Leaves the read
+// position past that packet.
+static bool hasBlockAdditionalAlpha(AVFormatContext* formatCtx, int streamIndex) {
+    if (formatCtx->streams[streamIndex]->codecpar->codec_id != AV_CODEC_ID_VP9) return false;
+    AVPacket* packet = av_packet_alloc();
+    bool found = false;
+    while (packet && av_read_frame(formatCtx, packet) >= 0) {
+        bool ours = packet->stream_index == streamIndex;
+        size_t size = 0;
+        found = ours && blockAdditionalAlpha(packet, &size) != nullptr;
+        av_packet_unref(packet);
+        if (ours) break;
+    }
+    av_packet_free(&packet);
+    return found;
+}
+
+// The colour and alpha bitstreams of the opened input, for MediaCodec: each one's codec (0 VP9,
+// 1 AV1) and FFmpeg profile, in pairs. They come from 2+ VP9/AV1 tracks, or from one VP9 track
+// with alpha in BlockAdditional (the alpha stream takes the track's profile). Null otherwise.
+// Closes the input.
+static jintArray colorAlphaTracks(JNIEnv* env, AVFormatContext* formatCtx, AVIOContext* io) {
     std::vector<jint> tracks;
+    int firstTrack = -1;
     if (avformat_find_stream_info(formatCtx, nullptr) >= 0) {
         for (unsigned i = 0; i < formatCtx->nb_streams; i++) {
             AVCodecParameters* par = formatCtx->streams[i]->codecpar;
             if (par->codec_type == AVMEDIA_TYPE_VIDEO && isSupportedVideoCodec(par->codec_id)) {
+                if (firstTrack < 0) firstTrack = static_cast<int>(i);
                 tracks.push_back(par->codec_id == AV_CODEC_ID_AV1 ? 1 : 0);
                 tracks.push_back(par->profile);
             }
+        }
+        if (tracks.size() == 2 && hasBlockAdditionalAlpha(formatCtx, firstTrack)) {
+            tracks.push_back(tracks[0]);
+            tracks.push_back(tracks[1]);
         }
     }
     avformat_close_input(&formatCtx);
@@ -1112,7 +1153,15 @@ jlong registerDemuxer(std::shared_ptr<DualStreamDemuxer> demuxer) {
         return 0;
     }
     
-    int streamCount = (demuxer->alphaStreamIndex >= 0) ? 2 : 1;
+    if (demuxer->alphaStreamIndex < 0 && hasBlockAdditionalAlpha(demuxer->formatCtx, demuxer->colorStreamIndex)) {
+        demuxer->alphaInBlockAdditional = true;
+        // libvpx's alpha stream says limited range but holds alpha as-is, 0-255
+        demuxer->alphaRange = AVCOL_RANGE_JPEG;
+        demuxer->alphaSpace = demuxer->colorSpace;
+        av_seek_frame(demuxer->formatCtx, demuxer->colorStreamIndex, 0, AVSEEK_FLAG_BACKWARD);
+    }
+    
+    int streamCount = (demuxer->alphaStreamIndex >= 0 || demuxer->alphaInBlockAdditional) ? 2 : 1;
     LOGI("[Buffered] Demuxer created: %dx%d, %d frames, %.2f fps, %d streams, codec=%d",
          demuxer->width, demuxer->height, demuxer->totalFrames, demuxer->frameRate, streamCount, (int)demuxer->codecId);
     
@@ -1126,7 +1175,7 @@ jlong registerDemuxer(std::shared_ptr<DualStreamDemuxer> demuxer) {
 } // anonymous namespace
 
 JNIEXPORT jintArray JNICALL
-Java_dev_mediacache_alphavideo_BufferedDualStreamPlayer_nativeDualStreamTracks(
+Java_dev_mediacache_alphavideo_BufferedDualStreamPlayer_nativeColorAlphaTracks(
     JNIEnv* env,
     jclass clazz,
     jint fd,
@@ -1138,11 +1187,11 @@ Java_dev_mediacache_alphavideo_BufferedDualStreamPlayer_nativeDualStreamTracks(
     if (!openRangeInput(fd, offset, length, &formatCtx, &io)) {
         return nullptr;
     }
-    return dualStreamTracks(env, formatCtx, io);
+    return colorAlphaTracks(env, formatCtx, io);
 }
 
 JNIEXPORT jintArray JNICALL
-Java_dev_mediacache_alphavideo_BufferedDualStreamPlayer_nativeDualStreamTracksDownload(
+Java_dev_mediacache_alphavideo_BufferedDualStreamPlayer_nativeColorAlphaTracksDownload(
     JNIEnv* env,
     jclass clazz,
     jstring path
@@ -1152,7 +1201,7 @@ Java_dev_mediacache_alphavideo_BufferedDualStreamPlayer_nativeDualStreamTracksDo
     if (!openDownloadInput(stringFromJava(env, path), nullptr, &formatCtx, &io)) {
         return nullptr;
     }
-    return dualStreamTracks(env, formatCtx, io);
+    return colorAlphaTracks(env, formatCtx, io);
 }
 
 // ============================================================================
@@ -1217,7 +1266,7 @@ Java_dev_mediacache_alphavideo_BufferedDualStreamPlayer_nativeGetVideoInfo(
     if (it == demuxers.end()) return nullptr;
     
     auto& demuxer = it->second;
-    int streamCount = (demuxer->alphaStreamIndex >= 0) ? 2 : 1;
+    int streamCount = (demuxer->alphaStreamIndex >= 0 || demuxer->alphaInBlockAdditional) ? 2 : 1;
     
     // Return: [width, height, totalFrames, frameRate*1000, streamCount, codecId]
     jintArray result = env->NewIntArray(6);
@@ -1249,6 +1298,43 @@ Java_dev_mediacache_alphavideo_BufferedDualStreamPlayer_nativeGetColorInfo(
     return result;
 }
 
+// [Integer streamIndex, ByteBuffer data (a copy), Integer size, Long pts, Integer frameIndex]
+static jobjectArray packetArray(JNIEnv* env, int streamIndex, const uint8_t* data, int size,
+                                long presentationTimeUs, int frameIndex) {
+    jclass objectClass = env->FindClass("java/lang/Object");
+    jobjectArray result = env->NewObjectArray(5, objectClass, nullptr);
+    
+    // [0] Integer streamIndex
+    jclass integerClass = env->FindClass("java/lang/Integer");
+    jmethodID intValueOf = env->GetStaticMethodID(integerClass, "valueOf", "(I)Ljava/lang/Integer;");
+    env->SetObjectArrayElement(result, 0, env->CallStaticObjectMethod(integerClass, intValueOf, streamIndex));
+    
+    // [1] ByteBuffer data, copied since the packet will be freed
+    jclass byteBufferClass = env->FindClass("java/nio/ByteBuffer");
+    jmethodID allocate = env->GetStaticMethodID(byteBufferClass, "allocate", "(I)Ljava/nio/ByteBuffer;");
+    jobject copyBuffer = env->CallStaticObjectMethod(byteBufferClass, allocate, size);
+    if (size > 0) {
+        jobject byteBuffer = env->NewDirectByteBuffer(const_cast<uint8_t*>(data), size);
+        jmethodID putMethod = env->GetMethodID(byteBufferClass, "put", "(Ljava/nio/ByteBuffer;)Ljava/nio/ByteBuffer;");
+        env->CallObjectMethod(copyBuffer, putMethod, byteBuffer);
+        jmethodID rewindMethod = env->GetMethodID(byteBufferClass, "rewind", "()Ljava/nio/Buffer;");
+        env->CallObjectMethod(copyBuffer, rewindMethod);
+    }
+    env->SetObjectArrayElement(result, 1, copyBuffer);
+    
+    // [2] Integer size
+    env->SetObjectArrayElement(result, 2, env->CallStaticObjectMethod(integerClass, intValueOf, size));
+    
+    // [3] Long pts
+    jclass longClass = env->FindClass("java/lang/Long");
+    jmethodID longValueOf = env->GetStaticMethodID(longClass, "valueOf", "(J)Ljava/lang/Long;");
+    env->SetObjectArrayElement(result, 3, env->CallStaticObjectMethod(longClass, longValueOf, presentationTimeUs));
+    
+    // [4] Integer frameIndex
+    env->SetObjectArrayElement(result, 4, env->CallStaticObjectMethod(integerClass, intValueOf, frameIndex));
+    return result;
+}
+
 JNIEXPORT jobjectArray JNICALL
 Java_dev_mediacache_alphavideo_BufferedDualStreamPlayer_nativeReadPacket(
     JNIEnv* env,
@@ -1258,6 +1344,13 @@ Java_dev_mediacache_alphavideo_BufferedDualStreamPlayer_nativeReadPacket(
     // Returns Object[] with: [Integer streamIndex, ByteBuffer data, Integer size, Long pts, Integer frameIndex]
     std::shared_ptr<DualStreamDemuxer> demuxer = findDemuxer(demuxerId);
     if (!demuxer) return nullptr;
+    
+    // A colour packet read last time left its BlockAdditional alpha. Empty when it had none.
+    if (demuxer->hasPendingAlpha) {
+        demuxer->hasPendingAlpha = false;
+        return packetArray(env, 1, demuxer->pendingAlpha.data(), static_cast<int>(demuxer->pendingAlpha.size()),
+                           demuxer->pendingAlphaPtsUs, demuxer->alphaFrameIndex++);
+    }
     
     AVPacket* packet = av_packet_alloc();
     if (!packet) return nullptr;
@@ -1285,38 +1378,16 @@ Java_dev_mediacache_alphavideo_BufferedDualStreamPlayer_nativeReadPacket(
                                                   AVRational{1, 1000000});
             }
             
-            // Create Object[5] array
-            jclass objectClass = env->FindClass("java/lang/Object");
-            jobjectArray result = env->NewObjectArray(5, objectClass, nullptr);
+            if (demuxer->alphaInBlockAdditional) {
+                size_t alphaSize = 0;
+                const uint8_t* alpha = blockAdditionalAlpha(packet, &alphaSize);
+                demuxer->pendingAlpha.assign(alpha, alpha + (alpha ? alphaSize : 0));
+                demuxer->pendingAlphaPtsUs = presentationTimeUs;
+                demuxer->hasPendingAlpha = true;
+            }
             
-            // [0] Integer streamIndex
-            jclass integerClass = env->FindClass("java/lang/Integer");
-            jmethodID intValueOf = env->GetStaticMethodID(integerClass, "valueOf", "(I)Ljava/lang/Integer;");
-            env->SetObjectArrayElement(result, 0, env->CallStaticObjectMethod(integerClass, intValueOf, mappedStreamIndex));
-            
-            // [1] ByteBuffer data (direct buffer)
-            jobject byteBuffer = env->NewDirectByteBuffer(packet->data, packet->size);
-            // Make a copy since packet will be freed
-            jclass byteBufferClass = env->FindClass("java/nio/ByteBuffer");
-            jmethodID allocate = env->GetStaticMethodID(byteBufferClass, "allocate", "(I)Ljava/nio/ByteBuffer;");
-            jobject copyBuffer = env->CallStaticObjectMethod(byteBufferClass, allocate, packet->size);
-            jmethodID putMethod = env->GetMethodID(byteBufferClass, "put", "(Ljava/nio/ByteBuffer;)Ljava/nio/ByteBuffer;");
-            env->CallObjectMethod(copyBuffer, putMethod, byteBuffer);
-            jmethodID rewindMethod = env->GetMethodID(byteBufferClass, "rewind", "()Ljava/nio/Buffer;");
-            env->CallObjectMethod(copyBuffer, rewindMethod);
-            env->SetObjectArrayElement(result, 1, copyBuffer);
-            
-            // [2] Integer size
-            env->SetObjectArrayElement(result, 2, env->CallStaticObjectMethod(integerClass, intValueOf, packet->size));
-            
-            // [3] Long pts
-            jclass longClass = env->FindClass("java/lang/Long");
-            jmethodID longValueOf = env->GetStaticMethodID(longClass, "valueOf", "(J)Ljava/lang/Long;");
-            env->SetObjectArrayElement(result, 3, env->CallStaticObjectMethod(longClass, longValueOf, presentationTimeUs));
-            
-            // [4] Integer frameIndex
-            env->SetObjectArrayElement(result, 4, env->CallStaticObjectMethod(integerClass, intValueOf, frameIndex));
-            
+            jobjectArray result = packetArray(env, mappedStreamIndex, packet->data, packet->size,
+                                              presentationTimeUs, frameIndex);
             av_packet_unref(packet);
             av_packet_free(&packet);
             
@@ -1343,6 +1414,7 @@ Java_dev_mediacache_alphavideo_BufferedDualStreamPlayer_nativeSeekToStart(
     av_seek_frame(demuxer->formatCtx, demuxer->colorStreamIndex, 0, AVSEEK_FLAG_BACKWARD);
     demuxer->colorFrameIndex = 0;
     demuxer->alphaFrameIndex = 0;
+    demuxer->hasPendingAlpha = false;
     
     LOGI("[Buffered] Demuxer %lld seeked to start", demuxerId);
 }
@@ -1362,6 +1434,7 @@ Java_dev_mediacache_alphavideo_BufferedDualStreamPlayer_nativeSeekToTime(
     AVStream* stream = demuxer->formatCtx->streams[demuxer->colorStreamIndex];
     int64_t ts = av_rescale_q(timeUs, AVRational{1, 1000000}, stream->time_base);
     av_seek_frame(demuxer->formatCtx, demuxer->colorStreamIndex, ts, AVSEEK_FLAG_BACKWARD);
+    demuxer->hasPendingAlpha = false;
 }
 
 } // extern "C"

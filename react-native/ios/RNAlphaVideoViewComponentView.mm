@@ -98,7 +98,8 @@ static const std::shared_ptr<const RNAlphaVideoViewProps> &RNAlphaVideoViewDefau
 - (void)alphaVideoView:(AlphaVideoView *)view didLoadFrames:(int)totalFrames width:(int)width height:(int)height
 {
   if (auto emitter = [self playerEventEmitter]) {
-    emitter->onLoad({.totalFrames = totalFrames, .width = width, .height = height});
+    // iOS always decodes on the C++ core, so the decoder prop has nothing to choose
+    emitter->onLoad({.totalFrames = totalFrames, .width = width, .height = height, .decoder = "ffmpeg (libvpx-vp9)"});
   }
 }
 

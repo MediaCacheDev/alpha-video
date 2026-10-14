@@ -25,10 +25,27 @@ import codegenNativeComponent from 'react-native/Libraries/Utilities/codegenNati
  */
 export type PlaybackMode = 'preload' | 'stream' | 'streamAndPreload';
 
+/**
+ * Decoder for files with colour and alpha as separate VP9/AV1 bitstreams (two tracks, or a
+ * standard alpha WebM's BlockAdditional). Android only; iOS always uses FFmpeg and web the browser.
+ *
+ * - `'auto'` (default): MediaCodec hardware decoders that list every track's profile, else
+ *   FFmpeg (VP9 only), else MediaCodec's software decoders.
+ * - `'mediacodec'`: per track, a hardware decoder if one lists the profile and has an instance
+ *   free, else a software one.
+ * - `'mediacodec-hw'` / `'mediacodec-sw'`: hardware / software decoders only, for both tracks.
+ * - `'ffmpeg'`: the C++ core (VP9 only).
+ *
+ * A forced engine never falls back: a file it can't play calls `onError`.
+ */
+export type Decoder = 'auto' | 'mediacodec' | 'mediacodec-hw' | 'mediacodec-sw' | 'ffmpeg';
+
 type LoadEvent = Readonly<{
   totalFrames: Int32;
   width: Int32;
   height: Int32;
+  /** The engine and decoders playing the file, e.g. `'mediacodec-hw (c2.qti.vp9.decoder)'`. */
+  decoder: string;
 }>;
 
 type ErrorEvent = Readonly<{
@@ -54,6 +71,9 @@ export interface NativeProps extends ViewProps {
 
   /** See {@link PlaybackMode}. */
   mode?: WithDefault<'preload' | 'stream' | 'streamAndPreload', 'preload'>;
+
+  /** See {@link Decoder}. */
+  decoder?: WithDefault<'auto' | 'mediacodec' | 'mediacodec-hw' | 'mediacodec-sw' | 'ffmpeg', 'auto'>;
 
   /**
    * Number of frames to keep in cache when streaming.

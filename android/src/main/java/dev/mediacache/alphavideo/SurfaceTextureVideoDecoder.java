@@ -48,6 +48,7 @@ public class SurfaceTextureVideoDecoder implements SurfaceTexture.OnFrameAvailab
     
     private final String label;
     private final String mimeType;
+    private final String decoderName;
     private MediaCodec codec;
     private MediaFormat format;
     private Surface outputSurface;
@@ -71,6 +72,7 @@ public class SurfaceTextureVideoDecoder implements SurfaceTexture.OnFrameAvailab
     // PTS-gated release
     private final AtomicLong targetPresentationTimeUs = new AtomicLong(0);
     private final AtomicBoolean frameReleasedSinceConsume = new AtomicBoolean(false);
+    private volatile long releasedPtsUs = -1;
     // Outputs before this are discarded unshown: after a seek, the frames from the keyframe up to the target
     private final AtomicLong dropBeforeUs = new AtomicLong(Long.MIN_VALUE);
     
@@ -104,14 +106,11 @@ public class SurfaceTextureVideoDecoder implements SurfaceTexture.OnFrameAvailab
         void onDecoderError(SurfaceTextureVideoDecoder decoder, String error);
     }
     
-    public SurfaceTextureVideoDecoder(String label) {
-        this.label = label;
-        this.mimeType = MIME_VP9;
-    }
-    
-    public SurfaceTextureVideoDecoder(String label, String mimeType) {
+    /** @param decoderName the MediaCodec decoder to open, e.g. "c2.qti.vp9.decoder" */
+    public SurfaceTextureVideoDecoder(String label, String mimeType, String decoderName) {
         this.label = label;
         this.mimeType = mimeType;
+        this.decoderName = decoderName;
     }
     
     // -------------------------------------------------------------------------
@@ -170,30 +169,6 @@ public class SurfaceTextureVideoDecoder implements SurfaceTexture.OnFrameAvailab
                             return true;
                         }
                     }
-                }
-            }
-        }
-        return false;
-    }
-    
-    /**
-     * Whether a decoder for {@code mime} lists the stream's FFmpeg profile. Android VP9 decoders
-     * rarely list the 4:4:4 profiles 1 and 3, and MediaCodec has no AV1 profile beyond Main.
-     * An unknown (negative) profile counts as supported.
-     */
-    public static boolean isProfileSupported(String mime, int avProfile) {
-        if (avProfile < 0) return true;
-        if (MIME_AV1.equalsIgnoreCase(mime)) return avProfile == 0;
-        if (avProfile > 3) return false;
-        int profile = MediaCodecInfo.CodecProfileLevel.VP9Profile0 << avProfile;  // 1, 2, 4, 8
-        
-        MediaCodecList codecList = new MediaCodecList(MediaCodecList.REGULAR_CODECS);
-        for (MediaCodecInfo info : codecList.getCodecInfos()) {
-            if (info.isEncoder()) continue;
-            for (String type : info.getSupportedTypes()) {
-                if (!type.equalsIgnoreCase(mime)) continue;
-                for (MediaCodecInfo.CodecProfileLevel pl : info.getCapabilitiesForType(type).profileLevels) {
-                    if (pl.profile == profile) return true;
                 }
             }
         }
@@ -321,20 +296,6 @@ public class SurfaceTextureVideoDecoder implements SurfaceTexture.OnFrameAvailab
             surfaceTexture.setOnFrameAvailableListener(this);
             
             outputSurface = new Surface(surfaceTexture);
-            
-            String decoderName = findBestDecoder();
-            if (decoderName == null) {
-                Log.e(TAG, "[" + label + "] No decoder found for " + mimeType);
-                return false;
-            }
-            
-            int maxInstances = getMaxInstances(mimeType);
-            int currentActive = activeDecoderCount.get();
-            logV("[" + label + "] Decoder instances: " + currentActive + "/" + maxInstances + " (mime=" + mimeType + ")");
-            
-            if (maxInstances > 0 && currentActive >= maxInstances) {
-                Log.w(TAG, "[" + label + "] WARNING: At max decoder limit!");
-            }
             
             logV("[" + label + "] Using decoder: " + decoderName + " for " + width + "x" + height + " (" + mimeType + ")");
             codec = MediaCodec.createByCodecName(decoderName);
@@ -506,6 +467,7 @@ public class SurfaceTextureVideoDecoder implements SurfaceTexture.OnFrameAvailab
                         continue;
                     }
                     if (pts <= target) {
+                        releasedPtsUs = pts;
                         codec.releaseOutputBuffer(outputIndex, true);
                         frameReleasedSinceConsume.set(true);
                         
@@ -571,6 +533,7 @@ public class SurfaceTextureVideoDecoder implements SurfaceTexture.OnFrameAvailab
             long target = targetPresentationTimeUs.get();
             if (heldOutputPts <= target) {
                 try {
+                    releasedPtsUs = heldOutputPts;
                     codec.releaseOutputBuffer(heldOutputIndex, true);
                     frameReleasedSinceConsume.set(true);
                     
@@ -635,6 +598,23 @@ public class SurfaceTextureVideoDecoder implements SurfaceTexture.OnFrameAvailab
                 Log.w(TAG, "[" + label + "] updateTexImage error: " + e.getMessage());
             }
         }
+    }
+    
+    /**
+     * Latches the newest frame on the SurfaceTexture; GL thread.
+     *
+     * @return whether that is the frame last released, which may not have arrived yet
+     */
+    public boolean latchReleasedFrame() {
+        if (surfaceTexture == null) return false;
+        hasNewFrame.set(false);
+        try {
+            surfaceTexture.updateTexImage();
+        } catch (Exception e) {
+            Log.w(TAG, "[" + label + "] updateTexImage error: " + e.getMessage());
+            return false;
+        }
+        return surfaceTexture.getTimestamp() == releasedPtsUs * 1000;
     }
     
     public boolean hasNewFrame() {
@@ -810,49 +790,5 @@ public class SurfaceTextureVideoDecoder implements SurfaceTexture.OnFrameAvailab
     public boolean isConfigured() { return isConfigured.get(); }
     public boolean isStarted() { return isStarted.get(); }
     public boolean isReleased() { return isReleased.get(); }
-    
-    private String findBestDecoder() {
-        MediaCodecList codecList = new MediaCodecList(MediaCodecList.REGULAR_CODECS);
-        MediaCodecInfo[] codecInfos = codecList.getCodecInfos();
-        
-        String hwDecoder = null;
-        String swDecoder = null;
-        
-        for (MediaCodecInfo codecInfo : codecInfos) {
-            if (codecInfo.isEncoder()) continue;
-            
-            for (String type : codecInfo.getSupportedTypes()) {
-                if (type.equalsIgnoreCase(mimeType)) {
-                    String name = codecInfo.getName();
-                    
-                    if (name.contains(".secure")) continue;
-                    
-                    boolean isHardware = false;
-                    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
-                        isHardware = codecInfo.isHardwareAccelerated();
-                    } else {
-                        isHardware = !name.toLowerCase().contains("sw") && 
-                                    !name.toLowerCase().contains("google") &&
-                                    !name.toLowerCase().contains("android");
-                    }
-                    
-                    if (isHardware) {
-                        if (hwDecoder == null) {
-                            hwDecoder = name;
-                            logV("Found hardware decoder for " + mimeType + ": " + name);
-                        }
-                    } else {
-                        if (swDecoder == null) {
-                            swDecoder = name;
-                            logV("Found software decoder for " + mimeType + ": " + name);
-                        }
-                    }
-                }
-            }
-        }
-        
-        String selected = hwDecoder != null ? hwDecoder : swDecoder;
-        logV("Selected decoder for " + mimeType + ": " + selected + " (hw=" + hwDecoder + ", sw=" + swDecoder + ")");
-        return selected;
-    }
+    public String getDecoderName() { return decoderName; }
 }

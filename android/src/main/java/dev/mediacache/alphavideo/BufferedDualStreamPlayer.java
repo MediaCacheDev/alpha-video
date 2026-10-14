@@ -12,6 +12,9 @@ import java.util.concurrent.atomic.AtomicInteger;
 /**
  * Direct OES dual-stream VP9 alpha player.
  * 
+ * Colour and alpha come from two tracks, or from one VP9 track whose alpha is in each block's
+ * BlockAdditional (a standard alpha WebM); the native demuxer hands both out as stream 0 and 1.
+ * 
  * Architecture (per instructions3.json):
  * - FFmpeg demux → MediaCodec (Surface) → SurfaceTexture → OES texture
  * - Single GL draw call composites both OES textures in fragment shader
@@ -34,6 +37,7 @@ public class BufferedDualStreamPlayer implements SurfaceTextureVideoDecoder.Fram
     
     // Native demuxer handle
     private long nativeDemuxerPtr = 0;
+    private String[] decoderNames;
     
     // Surface-based decoders (OES texture output)
     private SurfaceTextureVideoDecoder colorDecoder;
@@ -240,8 +244,14 @@ public class BufferedDualStreamPlayer implements SurfaceTextureVideoDecoder.Fram
             }
             
             // Create decoders with detected MIME type — OES textures are created here (must be on GL thread)
-            colorDecoder = new SurfaceTextureVideoDecoder("color", mimeType);
-            alphaDecoder = new SurfaceTextureVideoDecoder("alpha", mimeType);
+            if (decoderNames == null) {
+                Log.e(TAG, "No decoders reserved");
+                nativeDestroyDemuxer(nativeDemuxerPtr);
+                nativeDemuxerPtr = 0;
+                return false;
+            }
+            colorDecoder = new SurfaceTextureVideoDecoder("color", mimeType, decoderNames[0]);
+            alphaDecoder = new SurfaceTextureVideoDecoder("alpha", mimeType, decoderNames[1]);
             colorDecoder.setVerbose(verbose);
             alphaDecoder.setVerbose(verbose);
             
@@ -361,6 +371,8 @@ public class BufferedDualStreamPlayer implements SurfaceTextureVideoDecoder.Fram
         isPlaying.set(false);
         isLoaded.set(false);
         cleanup();
+        MediaCodecDecoders.release(decoderNames);
+        decoderNames = null;
     }
     
     /**
@@ -405,20 +417,16 @@ public class BufferedDualStreamPlayer implements SurfaceTextureVideoDecoder.Fram
         // Only consume when BOTH decoders have released a frame.
         // This guarantees color and alpha are from the same temporal position.
         // If one decoder is slightly slower, we wait until next render cycle.
-        boolean colorReady = cd.wasFrameReleased();
-        boolean alphaReady = ad.wasFrameReleased();
-        
-        if (!colorReady || !alphaReady) {
-            // One or both decoders haven't released yet for this cycle.
-            // Still call updateTexImage() to avoid blocking the SurfaceTexture
-            // pipeline, but don't clear flags — let the slow decoder catch up.
+        if (!cd.wasFrameReleased() || !ad.wasFrameReleased()) {
+            // Don't clear flags — let the slow decoder catch up.
             // Return false to indicate no new synchronized frame pair.
             return false;
         }
         
-        // Both decoders have released exactly one frame — consume them
-        cd.updateTexImage();
-        ad.updateTexImage();
+        // A released frame may not have reached its SurfaceTexture yet; the next render latches it
+        boolean colorLatched = cd.latchReleasedFrame();
+        boolean alphaLatched = ad.latchReleasedFrame();
+        if (!colorLatched || !alphaLatched) return false;
         
         // Clear release flags so the decoder output loop can release
         // the next frame on the next playback cycle
@@ -433,7 +441,6 @@ public class BufferedDualStreamPlayer implements SurfaceTextureVideoDecoder.Fram
         consumedPairs.incrementAndGet();
         return true;
     }
-    
     /**
      * Get color OES texture ID for use in compositor shader.
      */
@@ -590,6 +597,15 @@ public class BufferedDualStreamPlayer implements SurfaceTextureVideoDecoder.Fram
                 Log.e(TAG, "Stream mismatch: got " + stream1 + "," + stream2 + 
                       " for frame " + decodeFrameIndex);
                 continue;
+            }
+            
+            if ((Integer) alphaPacket[2] == 0) {
+                // A BlockAdditional alpha stream that skips a frame can't be decoded on from here
+                Log.e(TAG, "No alpha for frame " + decodeFrameIndex);
+                if (eventCallback != null) {
+                    eventCallback.onError("No alpha for frame " + decodeFrameIndex);
+                }
+                break;
             }
             
             ByteBuffer colorData = (ByteBuffer) colorPacket[1];
@@ -788,23 +804,22 @@ public class BufferedDualStreamPlayer implements SurfaceTextureVideoDecoder.Fram
             }
             
             // The first frame after load or a seek: hold both decoders at it until each has
-            // released it, draw it once, and start the clock from there.
+            // released it, render until the view has drawn it, and start the clock from there.
             int present = presentFrame.get();
             if (present >= 0) {
                 long presentPtsUs = present * frameDurationUs + frameDurationUs / 2;
                 cd.setTargetPresentationTimeUs(presentPtsUs);
                 ad.setTargetPresentationTimeUs(presentPtsUs);
                 boolean drawn = consumedPairs.get() != consumedPairsAtPresent;
-                boolean ready = drawn || (cd.wasFrameReleased() && ad.wasFrameReleased());
-                if (ready && presentFrame.compareAndSet(present, -1)) {
-                    if (!drawn && renderCallback != null) {
-                        renderCallback.onRenderRequested(present);
-                    }
+                if (drawn && presentFrame.compareAndSet(present, -1)) {
                     playbackFrameIndex.set(present + 1);
                     nextFrameTimeNs = System.nanoTime() + frameDurationNs;
-                } else {
-                    try { Thread.sleep(2); } catch (InterruptedException e) { break; }
+                    continue;
                 }
+                if (!drawn && cd.wasFrameReleased() && ad.wasFrameReleased() && renderCallback != null) {
+                    renderCallback.onRenderRequested(present);
+                }
+                try { Thread.sleep(2); } catch (InterruptedException e) { break; }
                 continue;
             }
             
@@ -939,23 +954,22 @@ public class BufferedDualStreamPlayer implements SurfaceTextureVideoDecoder.Fram
     public static final int TRACK_AV1 = 1;
     
     /**
-     * The VP9 and AV1 video tracks in bytes [offset, offset + length) of fd, as pairs of codec
-     * ({@link #TRACK_VP9} or {@link #TRACK_AV1}) and FFmpeg profile; null unless there are 2
-     * or more (colour + alpha).
+     * The colour and alpha bitstreams in bytes [offset, offset + length) of fd, as pairs of codec
+     * ({@link #TRACK_VP9} or {@link #TRACK_AV1}) and FFmpeg profile. They come from 2 or more
+     * VP9/AV1 tracks, or from one VP9 track with its alpha in BlockAdditional (a standard alpha
+     * WebM). Null for any other file.
      */
-    public static native int[] nativeDualStreamTracks(int fd, long offset, long length);
+    public static native int[] nativeColorAlphaTracks(int fd, long offset, long length);
     
     /** The same for a {@link WebMDownloader} cache file; waits for its first bytes if still downloading. */
-    public static native int[] nativeDualStreamTracksDownload(String path);
+    public static native int[] nativeColorAlphaTracksDownload(String path);
     
-    /** Whether MediaCodec lists the profile of every track from {@link #nativeDualStreamTracks}. */
-    public static boolean mediaCodecDecodes(int[] tracks) {
-        for (int i = 0; i + 1 < tracks.length; i += 2) {
-            String mime = tracks[i] == TRACK_AV1
-                ? SurfaceTextureVideoDecoder.MIME_AV1 : SurfaceTextureVideoDecoder.MIME_VP9;
-            if (!SurfaceTextureVideoDecoder.isProfileSupported(mime, tracks[i + 1])) return false;
-        }
-        return true;
+    /**
+     * The decoders to load with, colour then alpha, reserved by {@link MediaCodecDecoders#reserve}.
+     * Call before loading; the player gives them back in {@link #unload}.
+     */
+    void useDecoders(String[] names) {
+        decoderNames = names;
     }
     
     static {
