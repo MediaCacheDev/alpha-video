@@ -743,7 +743,7 @@ bool WebMAlphaPlayer::finishLoad() {
         // The playback loop will handle frame-not-ready gracefully by waiting/retrying.
         VLOGI("📺 StreamAndPreload started (non-blocking), decode thread running in background");
     } else {
-        // Preload mode (default): decode all frames upfront before playback
+        // Preload mode: decode all frames upfront before playback
         decodeAllFrames();
     }
     

@@ -7,8 +7,29 @@ One repository, three packages:
 | Package | For | Install |
 |---|---|---|
 | `react-native-alpha-video` (npm) | React Native, and react-native-web | [React Native](#react-native) |
-| `dev.mediacache:alpha-video` (Maven Central) | Android apps without React Native | [Android](#android-without-react-native) |
-| `AlphaVideo` (Swift Package Manager), `alpha-video` (CocoaPods) | iOS apps without React Native | [iOS](#ios-without-react-native) |
+| `dev.mediacache:alpha-video` (Maven Central) | Android | [Android](#android) |
+| `AlphaVideo` (Swift Package Manager), `alpha-video` (CocoaPods) | iOS | [iOS](#ios) |
+
+See it next to the other formats in the [demo app](#demo-and-related-packages).
+
+## alpha-video or alpha-video-gpu?
+
+Both play transparent videos on Android, iOS and the web, and they suit different jobs. alpha-video plays video codecs. [alpha-video-gpu](https://github.com/danielkpl2/alpha-video-gpu) doesn't decode anything: its frames are ASTC textures, which the GPU samples as they are.
+
+| | alpha-video (this package) | [alpha-video-gpu](https://github.com/danielkpl2/alpha-video-gpu) |
+|---|---|---|
+| **Format** | WebM: VP9 with alpha, or dual-stream VP9/AV1 | KTX2: an ASTC texture array, one layer per frame |
+| **Made with** | ffmpeg, or any tool that exports alpha WebM | [alpha-video-gpu-encoder](https://github.com/danielkpl2/alpha-video-gpu-encoder) (`texenc`) |
+| **Decoding** | Every frame: libvpx or dav1d on the CPU, or MediaCodec on Android | None |
+| **CPU and battery** | A decode per frame, or one pass up front with `mode="preload"` | Near zero |
+| **What the device needs** | Nothing for software decoding. Hardware decoding needs a VP9 or AV1 decoder (Android only), and each player takes 2 of its few instances | ASTC texture support: every iPhone and iPad since the A8 (2014), nearly every Android GPU, Apple silicon Macs and mobile browsers. That covers more devices than VP9 or AV1 hardware decoding |
+| **Many players at once** | Limited by the CPU, or by the hardware decoder's instances | Dozens: each one is just a texture |
+| **File size** | Smallest | Several times larger |
+| **Seeking** | Decodes from the previous keyframe | Any frame directly |
+| **Web** | `<video>` in Chrome and Firefox | WebGL where the browser has ASTC |
+| **Best for** | Long or large clips, downloads where size matters, files from standard video tools | UI effects, stickers and glows, many simultaneous loops, short to medium videos |
+
+[alpha-video-ffmpegkit](https://github.com/danielkpl2/alpha-video-ffmpegkit) was the first attempt at transparent WebM, built on FFmpegKit. It still works and stays as a reference implementation, but alpha-video does everything it does, and more.
 
 ## Features
 
@@ -30,9 +51,9 @@ The player picks the decode path itself. On Android it uses MediaCodec when deco
 | **Files** | Single-stream YUVA VP9; dual-stream VP9 (8-bit) or AV1 (8- to 12-bit) | Single-stream YUVA VP9; dual-stream VP9 or AV1 |
 | **Decoding** | CPU (FFmpeg: libvpx for VP9, dav1d for AV1) | GPU (MediaCodec), or MediaCodec's software decoders |
 | **CPU usage during playback** | Depends on `mode`: none once `preload` has decoded every frame (upload and render only); continuous decoding in `stream`; first pass only in `streamAndPreload` | Near-zero (decode offloaded) |
-| **Looping** | Seamless | Tiny stall at loop boundary (MediaCodec flush) |
+| **Looping** | Seamless | Seamless |
 | **Max resolution** | ~720p practical limit | 1080p+ (hardware limited) |
-| **Best for** | Short loops, small animations, many simultaneous players | Long-duration, high-res, single-instance playback |
+| **Best for** | Short loops, small videos, many simultaneous players | Long-duration, high-res, single-instance playback |
 | **iOS support** | Yes (Metal) | No (Android only) |
 | **Codec** | VP9 or AV1 | VP9 or AV1 |
 | **Instances** | Unlimited (CPU bound) | 2 decoder instances each, of the decoder's limit (3 on a Snapdragon 778G, often more); further players use MediaCodec's software decoders, then the software path |
@@ -41,33 +62,23 @@ The player picks the decode path itself. On Android it uses MediaCodec when deco
 
 ## Installation
 
+One package per platform, all built from this repository.
+
 ### React Native
+
+**npm**, package `react-native-alpha-video`:
 
 ```bash
 npm install react-native-alpha-video
-# or
-yarn add react-native-alpha-video
 ```
 
-The npm package carries the prebuilt FFmpeg libraries, so nothing else is downloaded.
-
-The package works on both React Native architectures: the new one (a Fabric view, and a TurboModule for the [decoder status API](#decoder-status-api-android); the default since 0.76) and the old one (`newArchEnabled=false`, up to 0.81). It is tested on 0.83, and on 0.81 with the new architecture turned off.
-
-### Expo / Managed Workflow
-
-- **Expo Go:** Not supported (needs custom native modules and FFmpeg binaries).
-- **Expo with custom dev client / EAS Build:** Supported. Run `expo prebuild` (or use EAS Build) so pods/Gradle deps are compiled in, then open the native projects or build a custom dev client.
-- **Bare React Native:** Fully supported.
-
-### iOS Setup
+**iOS:** install the pods. The view builds from the podspec inside the npm package.
 
 ```bash
 cd ios && pod install
 ```
 
-### Android Setup
-
-Android autolinking should handle everything. If you encounter issues, make sure your `android/app/build.gradle` has:
+**Android:** autolinking adds the library, so there's nothing else to do. Its native library is built for `arm64-v8a`, `armeabi-v7a` and `x86_64`. If your app also ships 32-bit `x86`, limit it to those three in `android/app/build.gradle`:
 
 ```gradle
 android {
@@ -79,7 +90,42 @@ android {
 }
 ```
 
-### Android without React Native
+```tsx
+import { AlphaVideoView } from 'react-native-alpha-video';
+
+<AlphaVideoView
+  source={{ uri: 'https://example.com/video.webm' }}
+  cacheKey="videos/intro.webm" // http(s) only: the cache file's name; default, a hash of the URL
+  style={{ width: 300, height: 300 }}
+  autoPlay={true}              // the default; false shows the first frame and waits for play()
+  loop={true}                  // the default; false plays once, then calls onEnd
+  paused={false}               // a hold, for example while the screen is hidden
+  playbackSpeed={1.0}          // changeable while playing; doesn't move the playhead
+  decoder="auto"               // Android only; see Choosing the Decoder
+  mode="stream"                // decodes a few frames ahead (default), or 'preload', 'streamAndPreload'
+  streamCacheSize={30}         // 'stream': decoded frames kept
+  streamPrefetchAhead={15}     // 'stream' and 'streamAndPreload': frames decoded ahead
+  useDecodeQueue={true}        // 'preload' and 'streamAndPreload': one clip decodes at a time, app-wide
+  verbose={false}              // true logs lifecycle and per-frame events; errors always log
+  onLoad={({ totalFrames, width, height, decoder }) => console.log(totalFrames, decoder)}
+  onError={({ error }) => console.error(error)}
+  onEnd={() => console.log('played once')}
+/>
+```
+
+The example sets every option; [Options](#options) says when each one takes effect.
+
+The npm package carries the prebuilt FFmpeg libraries, so nothing else is downloaded.
+
+The package works on both React Native architectures: the new one (a Fabric view, and a TurboModule for the [decoder status API](#decoder-status-api-android); the default since 0.76) and the old one (`newArchEnabled=false`, up to 0.81). It is tested on 0.83, and on 0.81 with the new architecture turned off.
+
+**Expo:**
+- Expo Go: not supported, as the package has native code and FFmpeg binaries.
+- A development build or EAS Build: supported. Run `npx expo prebuild` (EAS Build does it for you), so the pods and Gradle dependencies are compiled in.
+
+### Android
+
+**Maven Central**, artifact `dev.mediacache:alpha-video`:
 
 ```gradle
 dependencies {
@@ -87,77 +133,127 @@ dependencies {
 }
 ```
 
+The AAR includes FFmpeg, built for `arm64-v8a`, `armeabi-v7a` and `x86_64`. Android 7.0 (API 24) or later.
+
 `dev.mediacache.alphavideo.AlphaVideoView` is a `TextureView`. It takes the same sources and options as the React Native component, through setters:
 
 ```kotlin
 val view = AlphaVideoView(context)
-view.setMode("preload")
-view.setDecoder("auto")     // see Choosing the Decoder
+view.setCacheKey("videos/intro.webm")  // http(s) only: the cache file's name; default, a hash of the URL
+view.setAutoPlay(true)                 // the default; false shows the first frame and waits for play()
+view.setLoop(true)                     // the default; false plays once, then calls onEnd
+view.setPaused(false)                  // a hold, for example while the screen is hidden
+view.setPlaybackSpeed(1.0)             // changeable while playing; doesn't move the playhead
+view.setDecoder("auto")                // see Choosing the Decoder
+view.setMode("stream")                 // decodes a few frames ahead (default), or "preload", "streamAndPreload"
+view.setStreamCacheSize(30)            // "stream": decoded frames kept
+view.setStreamPrefetchAhead(15)        // "stream" and "streamAndPreload": frames decoded ahead
+view.setUseDecodeQueue(true)           // "preload" and "streamAndPreload": one clip decodes at a time, app-wide
+view.setVerbose(false)                 // true logs lifecycle and per-frame events to Logcat
 view.setCallback(object : AlphaVideoView.PlayerCallback {
     override fun onLoad(totalFrames: Int, width: Int, height: Int, decoder: String) {}
     override fun onError(error: String) {}
     override fun onEnd() {}
-    override fun onPreloadComplete(frames: Int, timeMs: Double) {}
+    override fun onPreloadComplete(frames: Int, timeMs: Double) {}  // every frame decoded
 })
-view.setSource("asset://videos/glow.webm")  // loads on the next main-thread turn
+view.setSource("https://example.com/video.webm")  // loads on the next main-thread turn
 container.addView(view)
 
 // When the view is gone for good. Detaching keeps the player so the view can be re-attached.
 view.release()
 ```
 
-Control playback with `play()`, `pause()`, `stop()`, `seekToFrame(frame)` and `seekToTime(seconds)`, and hold it with `setPaused(paused)`; seeks behave as described under [Ref Methods](#ref-methods). Callbacks arrive on the main thread. http(s) sources need the `INTERNET` permission in the app's manifest.
+Control playback with `play()`, `pause()`, `stop()`, `seekToFrame(frame)` and `seekToTime(seconds)`, and hold it with `setPaused(paused)`, as described under [Starting and pausing](#starting-and-pausing); seeks behave as described under [Ref Methods](#ref-methods). Callbacks arrive on the main thread. http(s) sources need the `INTERNET` permission in the app's manifest.
 
-### iOS without React Native
+### iOS
 
-In Xcode, **File > Add Package Dependencies…** with `https://github.com/danielkpl2/alpha-video`, or in `Package.swift`:
-
-```swift
-.package(url: "https://github.com/danielkpl2/alpha-video", from: "1.0.0")
-// target dependency:
-.product(name: "AlphaVideo", package: "alpha-video")
-```
-
-Or with CocoaPods:
+**CocoaPods**, pod `alpha-video`:
 
 ```ruby
 pod 'alpha-video', '1.0.0'
 ```
 
-CocoaPods trunk is read-only from 2 December 2026, so later versions are used through the podspec at their tag: `pod 'alpha-video', :podspec => 'https://raw.githubusercontent.com/danielkpl2/alpha-video/v<version>/alpha-video.podspec'`. The module is `AlphaVideo` either way.
+**Swift Package Manager**, package `alpha-video`, product `AlphaVideo`:
 
-FFmpeg comes as a prebuilt `FFmpegVPX.xcframework` from the GitHub Release. `AlphaVideoView` is a `UIView`:
+```swift
+.package(url: "https://github.com/danielkpl2/alpha-video", from: "1.0.0")
+// in the target's dependencies:
+.product(name: "AlphaVideo", package: "alpha-video")
+```
+
+The module is `AlphaVideo` either way. FFmpeg comes with it, prebuilt. `AlphaVideoView` is a `UIView`:
 
 ```swift
 import AlphaVideo
 
 let view = AlphaVideoView(frame: bounds)
-view.delegate = self       // AlphaVideoViewDelegate: didLoadFrames, didFailWithError, didEnd
-view.mode = "preload"
-view.source = "asset://videos/glow.webm"  // loads on the next main-queue turn
+view.delegate = self                   // see below
+view.cacheKey = "videos/intro.webm"    // http(s) only: the cache file's name; default, a hash of the URL
+view.autoPlay = true                   // the default; false shows the first frame and waits for play
+view.loop = true                       // the default; false plays once, then calls didEnd
+view.paused = false                    // a hold, for example while the screen is hidden
+view.playbackSpeed = 1.0               // changeable while playing; doesn't move the playhead
+view.mode = "stream"                   // decodes a few frames ahead (default), or "preload", "streamAndPreload"
+view.streamCacheSize = 30              // "stream": decoded frames kept
+view.streamPrefetchAhead = 15          // "stream" and "streamAndPreload": frames decoded ahead
+view.useDecodeQueue = true             // "preload" and "streamAndPreload": one clip decodes at a time, app-wide
+view.verbose = false                   // true logs lifecycle and per-frame events to the Xcode console
+// No decoder setting: iOS always decodes in software, with the C++ core
+view.source = "https://example.com/video.webm"  // loads on the next main-queue turn
 addSubview(view)
+
+extension MyViewController: AlphaVideoViewDelegate {
+    func alphaVideoView(_ view: AlphaVideoView, didLoadFrames totalFrames: Int32, width: Int32, height: Int32) {}
+    func alphaVideoView(_ view: AlphaVideoView, didFailWithError error: String) {}
+    func alphaVideoViewDidEnd(_ view: AlphaVideoView) {}
+}
 ```
 
-Control playback with `play`, `pause`, `stop`, `seekToFrame:` and `seekToTime:`, and hold it with `paused`; seeks behave as described under [Ref Methods](#ref-methods). Delegate calls arrive on the main queue. iOS 13 or later.
+Control playback with `play`, `pause`, `stop`, `seekToFrame:` and `seekToTime:`, and hold it with `paused`, as described under [Starting and pausing](#starting-and-pausing); seeks behave as described under [Ref Methods](#ref-methods). Delegate calls arrive on the main queue. iOS 13 or later.
 
 ## Usage
 
 ```tsx
-import { AlphaVideoView } from 'react-native-alpha-video';
+import { useRef } from 'react';
+import { AlphaVideoView, AlphaVideoViewRef } from 'react-native-alpha-video';
 
 function MyComponent() {
+  const player = useRef<AlphaVideoViewRef>(null);  // play, pause, stop, seekToFrame, seekToTime
   return (
     <AlphaVideoView
+      ref={player}
       source={{ uri: 'https://example.com/video.webm' }}
-      autoPlay={true}
-      loop={true}
+      cacheKey="videos/intro.webm" // http(s) only: the cache file's name; default, a hash of the URL
       style={{ width: 300, height: 300 }}
+      autoPlay={true}              // the default; false shows the first frame and waits for play()
+      loop={true}                  // the default; false plays once, then calls onEnd
+      paused={false}               // a hold, for example while the screen is hidden
+      playbackSpeed={1.0}          // changeable while playing; doesn't move the playhead
+      decoder="auto"               // Android only; see Choosing the Decoder
+      mode="stream"                // decodes a few frames ahead (default), or 'preload', 'streamAndPreload'
+      streamCacheSize={30}         // 'stream': decoded frames kept
+      streamPrefetchAhead={15}     // 'stream' and 'streamAndPreload': frames decoded ahead
+      useDecodeQueue={true}        // 'preload' and 'streamAndPreload': one clip decodes at a time, app-wide
+      verbose={false}              // true logs lifecycle and per-frame events; errors always log
+      onLoad={({ totalFrames, width, height, decoder }) => console.log(totalFrames, decoder)}
+      onError={({ error }) => console.error(error)}
+      onEnd={() => console.log('played once')}
     />
   );
 }
 ```
 
-The player automatically detects whether a file contains a single YUVA stream or dual video streams, and on Android whether MediaCodec can decode it (see [Decision Matrix](#decision-matrix)). No prop changes are needed.
+The player automatically detects whether a file contains a single YUVA stream or dual video streams, and on Android whether MediaCodec can decode it (see [Decision Matrix](#decision-matrix)). No prop changes are needed; `decoder` only overrides the choice on Android.
+
+### Starting and pausing
+
+`autoPlay` sets how a video starts. Off, it loads, shows its first frame and waits for `play()`. `paused` is a hold to turn on and off, for example while the screen is hidden or the app is in the background. A video that starts paused also loads and shows its first frame, and unpausing plays it when `autoPlay` is on. With `autoPlay` off, unpausing leaves it where it is; call `play()`.
+
+### Options
+
+The examples under [Installation](#installation) and [Usage](#usage) set every option, each to its default. `paused`, `playbackSpeed` and `verbose` change at once; the others are read when a source loads, so set them before the source.
+
+iOS has no `decoder`: it always decodes in software. The cache, prefetch and queue settings apply to the C++ core's software decoding; MediaCodec on Android streams with its own buffers and ignores them, and so does the web, where the browser plays the file. On the web only `source`, `autoPlay`, `loop`, `paused` and `playbackSpeed` apply (see [Web](#web)).
 
 ### Props
 
@@ -165,20 +261,20 @@ The player automatically detects whether a file contains a single YUVA stream or
 |------|------|---------|-------------|
 | `source` | `{ uri: string }` | required | Video source URL or local file path (see [Supported Source Types](#supported-source-types)) |
 | `cacheKey` | `string` | hash of the URL | Cache file path for an http(s) source, relative to the app's cache directory (may include subfolders, must stay inside it) |
-| `autoPlay` | `boolean` | `true` | Auto-play video when loaded |
+| `autoPlay` | `boolean` | `true` | Start playing once loaded. Off, the first frame shows and waits for `play()` |
 | `loop` | `boolean` | `true` | Loop video playback |
-| `paused` | `boolean` | `false` | Pause video playback |
+| `paused` | `boolean` | `false` | Hold playback. Unpausing plays on when `autoPlay` is on |
 | `playbackSpeed` | `number` | `1.0` | Playback speed multiplier. Changeable while playing, and does **not** move the playhead — see below |
 | `style` | `ViewStyle` | - | Container style. On Android `backgroundColor` is ignored (the view is a `TextureView`); put a background on a parent view |
-| `onLoad` | `function` | - | Callback when video loads (`{ totalFrames, width, height, decoder }`); `decoder` names the engine and decoders, e.g. `'mediacodec-hw (c2.qti.vp9.decoder)'`, `'ffmpeg (libvpx-vp9)'`, `'ffmpeg (libdav1d)'`, or `'browser'` on web |
+| `onLoad` | `function` | - | Callback when video loads (`{ totalFrames, width, height, decoder }`); `decoder` names the engine and decoders, e.g. `'mediacodec-hw (c2.qti.vp9.decoder)'`, `'software (libvpx-vp9)'`, `'software (libdav1d)'`, or `'browser'` on web |
 | `onError` | `function` | - | Callback when error occurs (`{ error }`) |
 | `onEnd` | `function` | - | Callback when playback reaches the end with `loop` off |
-| `mode` | `'preload' \| 'stream' \| 'streamAndPreload'` | `'preload'` | Playback mode (software path only, see below) |
-| `decoder` | `'auto' \| 'mediacodec' \| 'mediacodec-hw' \| 'mediacodec-sw' \| 'ffmpeg'` | `'auto'` | Android: the decoding engine (see [Choosing the Decoder](#choosing-the-decoder-android)). iOS and web accept it and use FFmpeg and the browser |
-| `streamCacheSize` | `number` | `30` | Frames to keep in LRU cache when streaming |
-| `streamPrefetchAhead` | `number` | `15` | Frames to decode ahead of playback position |
-| `useDecodeQueue` | `boolean` | `true` | Serialize decoding across all players (prevents CPU saturation) |
-| `verbose` | `boolean` | `false` | Enable per-frame debug logging |
+| `mode` | `'preload' \| 'stream' \| 'streamAndPreload'` | `'stream'` | Playback mode (software path only, see below) |
+| `decoder` | `'auto' \| 'mediacodec' \| 'mediacodec-hw' \| 'mediacodec-sw' \| 'software'` | `'auto'` | Android: the decoding engine (see [Choosing the Decoder](#choosing-the-decoder-android)). iOS and web accept it and use the C++ core and the browser |
+| `streamCacheSize` | `number` | `30` | Decoded frames kept in `stream` mode (an LRU cache) |
+| `streamPrefetchAhead` | `number` | `15` | Frames decoded ahead of the playhead in `stream` and `streamAndPreload` mode |
+| `useDecodeQueue` | `boolean` | `true` | In `preload` and `streamAndPreload` mode, decode one clip at a time across all players, so many at once don't saturate the CPU (see [Global Decode Queue](#global-decode-queue)) |
+| `verbose` | `boolean` | `false` | Log lifecycle and per-frame events (Logcat, the Xcode console); errors always log |
 
 ### Playback speed
 
@@ -186,7 +282,7 @@ The player automatically detects whether a file contains a single YUVA stream or
 frame is shown. The playhead stays exactly where it was:
 
 ```tsx
-// Speeds the animation up from wherever it currently is. No seek, no restart.
+// Speeds the video up from wherever it currently is. No seek, no restart.
 <AlphaVideoView source={source} playbackSpeed={hovered ? 2 : 1} />
 ```
 
@@ -224,19 +320,42 @@ keyframe interval. A seek before `onLoad` is ignored.
 
 ### Choosing the Decoder (Android)
 
-MediaCodec takes files whose colour and alpha are separate VP9 or AV1 bitstreams: standard YUVA WebM (the alpha is a second VP9 stream inside each block) and dual-stream files. Each player needs 2 decoder instances. The `decoder` prop picks the engine at the next load:
+`decoder` picks the engine on Android: MediaCodec (the platform's decoders, in hardware where the device has them) or the C++ core's own software decoders. iOS has no such setting and always uses the C++ core; the web uses the browser. `decoder` is read when a source loads, so set it before or together with `source`. Changing it on its own doesn't reload the video.
+
+```tsx
+<AlphaVideoView source={source} decoder="auto" />          // the default
+<AlphaVideoView source={source} decoder="mediacodec-hw" /> // hardware only, or onError
+```
 
 | Value | Engine |
 |---|---|
-| `'auto'` (default) | MediaCodec hardware decoders that list every track's profile and have instances free; else MediaCodec's software decoders; else FFmpeg |
-| `'mediacodec'` | MediaCodec, per track: a hardware decoder if one lists the profile and has an instance free, else a software one. With a 3-instance limit, a second player can get one of each |
-| `'mediacodec-hw'` | MediaCodec hardware decoders only, for both tracks |
-| `'mediacodec-sw'` | MediaCodec software decoders only (Google's `c2.android.*`), for both tracks |
-| `'ffmpeg'` | The C++ core: libvpx for 8-bit VP9, dav1d for 8- to 12-bit AV1 (drawn at 8 bits) |
+| `'auto'` (default) | Hardware MediaCodec for both tracks; else software MediaCodec for both; else the C++ core (`'software'`) |
+| `'mediacodec'` | MediaCodec, chosen per track: hardware if one is free, else software, so the two tracks can get one of each |
+| `'mediacodec-hw'` | Hardware MediaCodec for both tracks |
+| `'mediacodec-sw'` | Software MediaCodec for both tracks (Google's `c2.android.*` decoders) |
+| `'software'` | The C++ core's software decoders: libvpx for 8-bit VP9, dav1d for 8- to 12-bit AV1 (drawn at 8 bits) |
 
-Every value but `'auto'` reports `onError` rather than fall back when it can't play the file, so a forced engine can be trusted for testing and benchmarks. A file MediaCodec can't take (a single VP9 track without alpha, say) plays on FFmpeg under `'auto'`. `onLoad`'s `decoder` says what was used: `'mediacodec-hw (c2.qti.vp9.decoder)'`, `'mediacodec-sw (c2.android.vp9.decoder)'`, `'mediacodec (c2.qti.vp9.decoder, c2.android.vp9.decoder)'` for one of each, `'ffmpeg (libvpx-vp9)'` or `'ffmpeg (libdav1d)'`.
+`'software'` is the player's own decoding, the same as on iOS, so it doesn't depend on what the device has. `'mediacodec-sw'` is Android's software decoders, run through MediaCodec.
 
-`mode` applies to FFmpeg only; MediaCodec always streams. On a GPU without `GL_EXT_YUV_target`, frames from MediaCodec's software decoders can show BT.601 colours for BT.709 video, because the driver ignores their colour tag.
+At each load the player decides in this order:
+
+1. **`'software'`** goes straight to the C++ core.
+2. **Can MediaCodec take the file?** It needs colour and alpha as separate VP9 or AV1 bitstreams: standard YUVA WebM (the alpha is a second VP9 stream inside each block) or a dual-stream file. If the file has neither (a VP9 track without alpha, say), `'auto'` plays it on the C++ core and the `mediacodec` values report `onError`.
+3. **Reserve 2 decoders, one per track.** A decoder qualifies if it decodes the track's codec, lists its profile (VP9 profiles 0 to 3, AV1 Main) and has an instance free. Instances are counted across every player in the app, and decoders cap them: a Snapdragon 778G's VP9 hardware decoder allows 3. Hardware decoders are tried in the order Android lists them.
+4. **Fall back, or not.** `'auto'` tries MediaCodec hardware for both tracks, then MediaCodec software for both, then the C++ core; it doesn't mix hardware and software. Every other value stops at its own engine and reports `onError` when it can't get one, so a forced engine can be trusted for testing and benchmarks.
+
+A player gives its decoders back when it unloads, or when its view loads a new source, before the new one reserves its own. With the Snapdragon 778G's 3 VP9 hardware instances:
+
+| Players with VP9 files | `'auto'` | `'mediacodec'` |
+|---|---|---|
+| First | `mediacodec-hw` | `mediacodec-hw` |
+| Second (1 hardware instance left) | `mediacodec-sw` | `mediacodec`: one hardware, one software |
+| Third | `mediacodec-sw` | `mediacodec-sw` |
+| Once MediaCodec's software instances run out | `software` | `onError` |
+
+`onLoad`'s `decoder` says what was used: `'mediacodec-hw (c2.qti.vp9.decoder)'`, `'mediacodec-sw (c2.android.vp9.decoder)'`, `'mediacodec (c2.qti.vp9.decoder, c2.android.vp9.decoder)'` for one of each, `'software (libvpx-vp9)'` or `'software (libdav1d)'`. 10-bit VP9 plays only on MediaCodec, since the C++ core decodes 8-bit VP9.
+
+`mode` applies to the C++ core only; MediaCodec always streams. On a GPU without `GL_EXT_YUV_target`, frames from MediaCodec's software decoders can show BT.601 colours for BT.709 video, because the driver ignores their colour tag.
 
 ### Decoder Status API (Android)
 
@@ -348,23 +467,23 @@ On the web the component renders a muted HTML5 `<video>`, so the browser does th
 
 ## Playback Modes (Software Path)
 
-The `mode` prop controls the software decode path. The hardware path on Android always streams, whatever the mode.
+The `mode` prop controls the software decode path; the default is `stream`. The hardware path on Android always streams, whatever the mode.
 
 ```tsx
-<AlphaVideoView source={{ uri: 'video.webm' }} mode="preload" />
 <AlphaVideoView source={{ uri: 'long-video.webm' }} mode="stream" />
+<AlphaVideoView source={{ uri: 'video.webm' }} mode="preload" />
 <AlphaVideoView source={{ uri: 'video.webm' }} mode="streamAndPreload" />
 ```
 
 | Mode | Startup | Memory | Looping | Best For |
 |------|---------|--------|---------|----------|
+| `stream` (default) | Immediate | Low (cache only) | Re-decode | Long videos, memory-constrained |
 | `preload` | Wait for full decode | High (all frames) | Seamless | Short loops, many simultaneous players |
-| `stream` | Immediate | Low (cache only) | Re-decode | Long videos, memory-constrained |
 | `streamAndPreload` | Immediate | High (after 1st pass) | Seamless | Fast start + smooth loops |
 
 For http(s) sources, "Immediate" means as soon as the first bytes have downloaded, and `preload` also waits for the download ([Playing while downloading](#playing-while-downloading)).
 
-**Key insight**: `preload` mode has **zero CPU cost during playback** since all frames are already decoded. This means 20+ preloaded animations can play simultaneously with minimal CPU impact (only GPU rendering).
+**Key insight**: `preload` mode has **zero CPU cost during playback** since all frames are already decoded. This means 20+ preloaded videos can play simultaneously with minimal CPU impact (only GPU rendering).
 
 ## Global Decode Queue
 
@@ -514,6 +633,26 @@ A release carries the prebuilt archive, `FFmpegVPX.xcframework.zip`, the CocoaPo
 | `ios/Sources/AlphaVideo/` | The iOS library: `AlphaVideoView` and the Metal renderer |
 | `react-native/` | The React Native component (`src/`) and its thin native view managers |
 | `Package.swift`, `react-native-alpha-video.podspec`, `package.json` | The SwiftPM, CocoaPods and npm packages |
+
+## Demo and related packages
+
+[alpha-video-test](https://github.com/danielkpl2/alpha-video-test) is a React Native app (Android, iOS and web) that plays the same video in each of these formats side by side, with FPS, CPU and memory readouts, so you can compare them on your own device.
+
+- [alpha-video-gpu](https://github.com/danielkpl2/alpha-video-gpu): ASTC texture arrays in KTX2, drawn without decoding. The lowest CPU and battery use.
+- [alpha-video-gpu-encoder](https://github.com/danielkpl2/alpha-video-gpu-encoder): makes the KTX2 files for alpha-video-gpu (`texenc`).
+- [alpha-video-ffmpegkit](https://github.com/danielkpl2/alpha-video-ffmpegkit): the first attempt at WebM alpha, on FFmpegKit, kept as a reference.
+- [react-native-apng-avif](https://github.com/danielkpl2/react-native-apng-avif): animated APNG and AVIF with alpha.
+- [alpha-glow-button](https://github.com/danielkpl2/alpha-glow-button): buttons whose glow is a transparent video, played by alpha-video, react-native-apng-avif or a `<video>`.
+
+## Potential future work
+
+Ideas, not plans:
+
+- **Drop FFmpeg.** Demux with [libwebm](https://chromium.googlesource.com/webm/libwebm) and call libvpx and dav1d directly. Every dependency would then be BSD, which removes the LGPL obligations, and the binaries would get smaller.
+- **Hardware decoding of dual-stream files on iOS.** Two VideoToolbox sessions, one per track, composited in the Metal shader, as Android does with MediaCodec, with FFmpeg as the fallback. AV1 decodes in hardware on recent Apple chips (A17 Pro, M3 and later). VP9 likely can't, since VideoToolbox's VP9 decoder isn't available to iOS apps.
+- **Audio.** Decode a WebM's Opus or Vorbis track, keep video in sync with it, and drop frames when decoding falls behind.
+- **More codecs.** VP8 (libvpx already has it; alpha VP8 WebM is common from older encoders) and AV2 once it's final, in software and through platform decoders where they exist.
+- **DRM.** Unlikely: Widevine and FairPlay decode into protected surfaces, which the alpha shader can't read.
 
 ## License
 

@@ -13,7 +13,7 @@ The player has two completely separate decode backends, selected automatically b
 | **Decoder** | FFmpeg (C++; libvpx for VP9, dav1d for AV1) | Android MediaCodec (hardware or software codec) |
 | **Rendering** | YUVA textures → fragment shader | OES textures → fragment shader |
 | **Platforms** | iOS + Android | Android only |
-| **Looping** | Seamless (frames stay in cache) | Tiny stall (MediaCodec flush + refill) |
+| **Looping** | Seamless (frames stay in cache) | Seamless |
 | **Key class** | `WebMAlphaPlayer` (C++) | `BufferedDualStreamPlayer` (Java) |
 
 Detection happens in `AlphaVideoView.loadProbedSource()`: the JNI function `nativeColorAlphaTracks()` lists the colour and alpha bitstreams with their profiles. They come from 2 VP9/AV1 tracks, or from a standard alpha WebM: one VP9 track whose alpha is a second VP9 stream in each block's BlockAdditional. The demuxer then hands each block's main data to the colour decoder and its BlockAdditional to the alpha decoder, as if they were 2 tracks.
@@ -164,7 +164,7 @@ Demux thread detects EOF
        5. Resume demux + playback from frame 0
 ```
 
-This causes a brief stall (~10-20ms) as the MediaCodec pipelines refill. Inherent to hardware decode; the software path avoids this since frames stay in the LRU cache.
+The flush happens once the last frame has been drawn, and the new pass is held until the playback loop asks for frame 0, so the last frame stays up for its full duration while the decoders refill. The loop is seamless, as on the software path.
 
 ## Software Decode Path — Detailed Flow
 

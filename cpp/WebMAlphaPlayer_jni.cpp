@@ -121,13 +121,13 @@ Java_dev_mediacache_alphavideo_WebMAlphaPlayerNative_nativeCreate(
     auto player = std::make_shared<webm::WebMAlphaPlayer>();
     
     // Parse mode string
-    webm::PlaybackMode mode = webm::PlaybackMode::Preload;
+    webm::PlaybackMode mode = webm::PlaybackMode::Stream;
     if (modeStr != nullptr) {
         const char* modeChars = env->GetStringUTFChars(modeStr, nullptr);
         if (modeChars) {
             std::string modeString(modeChars);
-            if (modeString == "stream") {
-                mode = webm::PlaybackMode::Stream;
+            if (modeString == "preload") {
+                mode = webm::PlaybackMode::Preload;
             } else if (modeString == "streamAndPreload") {
                 mode = webm::PlaybackMode::StreamAndPreload;
             }

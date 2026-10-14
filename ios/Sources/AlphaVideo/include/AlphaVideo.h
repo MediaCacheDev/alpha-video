@@ -82,13 +82,13 @@ NS_ASSUME_NONNULL_BEGIN
 @property (nonatomic) double playbackSpeed;   // Default: 1.0
 
 // Playback mode: "preload", "stream", or "streamAndPreload"
-// - preload (default): decode all frames upfront, then play
-// - stream: decode on-demand with sliding window cache
+// - preload: decode all frames upfront, then play
+// - stream (default): decode on-demand with sliding window cache
 // - streamAndPreload: start playing immediately, cache all frames for smooth looping
-@property (nonatomic, copy) NSString *mode;   // Default: "preload"
+@property (nonatomic, copy) NSString *mode;   // Default: "stream"
 
 // Legacy stream property (deprecated, use mode instead)
-@property (nonatomic) BOOL stream;            // Default: NO
+@property (nonatomic) BOOL stream;            // Default: YES
 @property (nonatomic) int streamCacheSize;    // Default: 30 (frames to keep in cache when streaming)
 @property (nonatomic) int streamPrefetchAhead; // Default: 15 (frames to decode ahead)
 
@@ -175,7 +175,7 @@ NS_ASSUME_NONNULL_BEGIN
 @property (nonatomic, copy, nullable) NSString *sourcePath;
 
 // Playback configuration
-@property (nonatomic) BOOL autoplay;
+@property (nonatomic) BOOL autoPlay;
 @property (nonatomic) BOOL loop;
 @property (nonatomic) double playbackSpeed;
 
@@ -229,8 +229,8 @@ NS_ASSUME_NONNULL_BEGIN
 // Cache file name for http(s) sources, which may include subfolders; default: a hash of the URL
 @property (nonatomic, copy, nullable) NSString *cacheKey;
 
-// "preload" (default) decodes every frame before playing; "stream" decodes a few frames ahead
-// while playing; "streamAndPreload" starts like stream and keeps every frame after the first
+// "stream" (default) decodes a few frames ahead while playing; "preload" decodes every frame
+// before playing; "streamAndPreload" starts like stream and keeps every frame after the first
 // pass. The stream modes play http(s) sources while they download.
 @property (nonatomic, copy) NSString *mode;
 @property (nonatomic) int streamCacheSize;      // Frames kept while streaming. Default: 30
@@ -246,7 +246,7 @@ NS_ASSUME_NONNULL_BEGIN
 @property (nonatomic) BOOL verbose;
 
 @property (nonatomic, strong, readonly) AlphaVideoMetalView *metalView;
-// The engine and decoder playing the loaded clip, as Android's onLoad names it: "ffmpeg (libdav1d)"
+// The engine and decoder playing the loaded clip, as Android's onLoad names it: "software (libdav1d)"
 @property (nonatomic, readonly) NSString *loadedDecoder;
 
 - (void)play;

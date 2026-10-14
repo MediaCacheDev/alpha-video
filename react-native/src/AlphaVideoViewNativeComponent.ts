@@ -12,12 +12,12 @@ import codegenNativeComponent from 'react-native/Libraries/Utilities/codegenNati
 /**
  * Playback mode for the WebM player.
  * 
- * - `'preload'` (default): Decode all frames upfront before playback starts.
- *   Best for short loops. Zero CPU during playback, instant looping.
- * 
- * - `'stream'`: Decode frames on-demand with a sliding window cache.
+ * - `'stream'` (default): Decode frames on-demand with a sliding window cache.
  *   Best for long videos or memory-constrained devices. Frames are evicted
  *   from cache, so looping requires re-decoding.
+ * 
+ * - `'preload'`: Decode all frames upfront before playback starts.
+ *   Best for short loops. Zero CPU during playback, instant looping.
  * 
  * - `'streamAndPreload'`: Start playing immediately while decoding in background.
  *   After first pass completes, all frames are cached for instant looping.
@@ -34,11 +34,11 @@ export type PlaybackMode = 'preload' | 'stream' | 'streamAndPreload';
  * - `'mediacodec'`: per track, a hardware decoder if one lists the profile and has an instance
  *   free, else a software one.
  * - `'mediacodec-hw'` / `'mediacodec-sw'`: hardware / software decoders only, for both tracks.
- * - `'ffmpeg'`: the C++ core (libvpx for 8-bit VP9, dav1d for 8- to 12-bit AV1).
+ * - `'software'`: the C++ core (libvpx for 8-bit VP9, dav1d for 8- to 12-bit AV1).
  *
  * A forced engine never falls back: a file it can't play calls `onError`.
  */
-export type Decoder = 'auto' | 'mediacodec' | 'mediacodec-hw' | 'mediacodec-sw' | 'ffmpeg';
+export type Decoder = 'auto' | 'mediacodec' | 'mediacodec-hw' | 'mediacodec-sw' | 'software';
 
 type LoadEvent = Readonly<{
   totalFrames: Int32;
@@ -70,10 +70,10 @@ export interface NativeProps extends ViewProps {
   cacheKey?: string;
 
   /** See {@link PlaybackMode}. */
-  mode?: WithDefault<'preload' | 'stream' | 'streamAndPreload', 'preload'>;
+  mode?: WithDefault<'preload' | 'stream' | 'streamAndPreload', 'stream'>;
 
   /** See {@link Decoder}. */
-  decoder?: WithDefault<'auto' | 'mediacodec' | 'mediacodec-hw' | 'mediacodec-sw' | 'ffmpeg', 'auto'>;
+  decoder?: WithDefault<'auto' | 'mediacodec' | 'mediacodec-hw' | 'mediacodec-sw' | 'software', 'auto'>;
 
   /**
    * Number of frames to keep in cache when streaming.

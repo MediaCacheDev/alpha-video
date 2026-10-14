@@ -71,7 +71,7 @@ static void releaseGlobalDecodeQueue(void) {
     _loop = YES;
     _paused = NO;
     _playbackSpeed = 1.0;
-    _mode = @"preload";
+    _mode = @"stream";
     _streamCacheSize = 30;
     _streamPrefetchAhead = 15;
     _useDecodeQueue = YES;
@@ -92,7 +92,7 @@ static void releaseGlobalDecodeQueue(void) {
 #pragma mark - Properties
 
 - (NSString *)loadedDecoder {
-    return [NSString stringWithFormat:@"ffmpeg (%@)", self.metalView.player.decoderName];
+    return [NSString stringWithFormat:@"software (%@)", self.metalView.player.decoderName];
 }
 
 - (void)setSource:(NSString *)source {
@@ -107,7 +107,7 @@ static void releaseGlobalDecodeQueue(void) {
 
 - (void)setAutoPlay:(BOOL)autoPlay {
     _autoPlay = autoPlay;
-    self.metalView.autoplay = autoPlay && !_paused;
+    self.metalView.autoPlay = autoPlay && !_paused;
 }
 
 - (void)setLoop:(BOOL)loop {
@@ -118,7 +118,7 @@ static void releaseGlobalDecodeQueue(void) {
 - (void)setPaused:(BOOL)paused {
     _paused = paused;
     // A view paused before it loads must not start on load
-    self.metalView.autoplay = _autoPlay && !paused;
+    self.metalView.autoPlay = _autoPlay && !paused;
     if (paused) {
         [self.metalView pause];
     } else if (self.autoPlay) {
@@ -137,10 +137,10 @@ static void releaseGlobalDecodeQueue(void) {
 }
 
 - (void)setMode:(NSString *)mode {
-    if ([mode isEqualToString:@"stream"] || [mode isEqualToString:@"streamAndPreload"]) {
+    if ([mode isEqualToString:@"preload"] || [mode isEqualToString:@"streamAndPreload"]) {
         _mode = [mode copy];
     } else {
-        _mode = @"preload";
+        _mode = @"stream";
     }
     [self updatePlayerConfig];
 }

@@ -47,7 +47,7 @@ export interface AlphaVideoLoadEvent {
   width: number;
   height: number;
   /**
-   * The engine and decoders playing the file: `'ffmpeg (libvpx-vp9)'`, `'ffmpeg (libdav1d)'` (AV1),
+   * The engine and decoders playing the file: `'software (libvpx-vp9)'`, `'software (libdav1d)'` (AV1),
    * `'mediacodec-hw (c2.qti.vp9.decoder)'`, `'mediacodec-sw (...)'`, `'mediacodec (hardware, software)'`
    * for one of each, or `'browser'` on web.
    */
@@ -75,8 +75,8 @@ export interface AlphaVideoViewProps extends ViewProps {
   
   /**
    * Playback mode for the player.
-   * - 'preload' (default): Decode all frames upfront before playback starts.
-   * - 'stream': Decode frames on-demand with a sliding window cache.
+   * - 'stream' (default): Decode frames on-demand with a sliding window cache.
+   * - 'preload': Decode all frames upfront before playback starts.
    * - 'streamAndPreload': Start playing immediately while decoding in background.
    *
    * Applies to FFmpeg only: a file MediaCodec plays on Android (see `decoder`) decodes as it is read.
@@ -94,7 +94,8 @@ export interface AlphaVideoViewProps extends ViewProps {
    * @deprecated Use `mode` instead.
    * Enable streaming mode for low RAM usage.
    * When true: decode on-demand with sliding window cache (good for long videos like YouTube)
-   * When false (default): preload all frames to RAM (good for short loops like glow effects)
+   * When false: preload all frames to RAM (good for short loops like glow effects)
+   * When omitted, `mode` (default 'stream') applies.
    */
   stream?: boolean;
   

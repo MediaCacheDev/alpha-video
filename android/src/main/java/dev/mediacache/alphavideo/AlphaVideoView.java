@@ -100,7 +100,7 @@ public class AlphaVideoView extends TextureView implements
     private ByteBuffer reuseY, reuseU, reuseV, reuseA;
     
     // Configuration
-    private boolean autoplay = true;
+    private boolean autoPlay = true;
     // Kept so that a source loading after the paused prop was set doesn't start playing
     private boolean paused = false;
     private boolean loop = true;
@@ -112,21 +112,21 @@ public class AlphaVideoView extends TextureView implements
     private int cacheSize = 90;
     
     // Playback mode:
-    // - "preload" (default): decode all frames upfront, then play
-    // - "stream": decode on-demand with sliding window cache
+    // - "preload": decode all frames upfront, then play
+    // - "stream" (default): decode on-demand with sliding window cache
     // - "streamAndPreload": start playing immediately, cache all frames for smooth looping
     public static final String MODE_PRELOAD = "preload";
     public static final String MODE_STREAM = "stream";
     public static final String MODE_STREAM_AND_PRELOAD = "streamAndPreload";
     
-    private String mode = MODE_PRELOAD;
+    private String mode = MODE_STREAM;
     
     // Decoder for files with colour and alpha as separate VP9/AV1 bitstreams; see setDecoder()
     public static final String DECODER_AUTO = "auto";
     public static final String DECODER_MEDIACODEC = "mediacodec";
     public static final String DECODER_MEDIACODEC_HW = "mediacodec-hw";
     public static final String DECODER_MEDIACODEC_SW = "mediacodec-sw";
-    public static final String DECODER_FFMPEG = "ffmpeg";
+    public static final String DECODER_SOFTWARE = "software";
     
     private String decoder = DECODER_AUTO;
     private int streamCacheSize = 30;      // Frames to keep in cache when streaming
@@ -180,7 +180,7 @@ public class AlphaVideoView extends TextureView implements
     /** Called on the main thread. */
     public interface PlayerCallback {
         /**
-         * @param decoder the engine and decoders playing the file, e.g. "ffmpeg (libvpx-vp9)" or
+         * @param decoder the engine and decoders playing the file, e.g. "software (libvpx-vp9)" or
          *     "mediacodec-hw (c2.qti.vp9.decoder)"
          */
         void onLoad(int totalFrames, int width, int height, String decoder);
@@ -281,8 +281,8 @@ public class AlphaVideoView extends TextureView implements
         this.callback = callback;
     }
     
-    public void setAutoplay(boolean autoplay) {
-        this.autoplay = autoplay;
+    public void setAutoPlay(boolean autoPlay) {
+        this.autoPlay = autoPlay;
     }
     
     public void setLoop(boolean loop) {
@@ -312,17 +312,17 @@ public class AlphaVideoView extends TextureView implements
     
     /**
      * Set the playback mode.
-     * - "preload" (default): decode all frames upfront, then play
-     * - "stream": decode on-demand with sliding window cache
+     * - "preload": decode all frames upfront, then play
+     * - "stream" (default): decode on-demand with sliding window cache
      * - "streamAndPreload": start playing immediately, cache all frames for smooth looping
      * Must be called before player is initialized (before surface is available)
      */
     public void setMode(String mode) {
         String oldMode = this.mode;
-        if (MODE_STREAM.equals(mode) || MODE_STREAM_AND_PRELOAD.equals(mode)) {
+        if (MODE_PRELOAD.equals(mode) || MODE_STREAM_AND_PRELOAD.equals(mode)) {
             this.mode = mode;
         } else {
-            this.mode = MODE_PRELOAD; // Default
+            this.mode = MODE_STREAM; // Default
         }
         logV("setMode called: " + oldMode + " -> " + this.mode + " (playerId=" + playerId + ")");
     }
@@ -330,11 +330,11 @@ public class AlphaVideoView extends TextureView implements
     /**
      * Sets the decoder for the next load:
      * - "auto" (default): MediaCodec hardware decoders that list every track's profile, else
-     *   MediaCodec's software decoders, else the C++ core's FFmpeg (libvpx-vp9, dav1d for AV1)
+     *   MediaCodec's software decoders, else the C++ core (libvpx-vp9, dav1d for AV1)
      * - "mediacodec": per track, a hardware decoder if one lists the profile and has an instance
      *   free, else a software one
      * - "mediacodec-hw" / "mediacodec-sw": hardware / software decoders only, for both tracks
-     * - "ffmpeg": the C++ core
+     * - "software": the C++ core
      * A forced engine never falls back: a file it can't play reports onError. MediaCodec plays
      * only files with colour and alpha as separate VP9/AV1 bitstreams; FFmpeg plays 8-bit VP9 and
      * 8- to 12-bit AV1.
@@ -344,7 +344,7 @@ public class AlphaVideoView extends TextureView implements
             case DECODER_MEDIACODEC:
             case DECODER_MEDIACODEC_HW:
             case DECODER_MEDIACODEC_SW:
-            case DECODER_FFMPEG:
+            case DECODER_SOFTWARE:
                 this.decoder = decoder;
                 break;
             default:
@@ -405,7 +405,7 @@ public class AlphaVideoView extends TextureView implements
         this.paused = paused;
         if (paused) {
             pause();
-        } else if (autoplay) {
+        } else if (autoPlay) {
             play();
         }
     }
@@ -533,7 +533,7 @@ public class AlphaVideoView extends TextureView implements
             }
             return;
         }
-        if (DECODER_FFMPEG.equals(decoder)) {
+        if (DECODER_SOFTWARE.equals(decoder)) {
             loadSingleStream(source);
             return;
         }
@@ -628,7 +628,7 @@ public class AlphaVideoView extends TextureView implements
                         if (callback != null && !isReleased) {
                             callback.onLoad(totalFrames, width, height, MediaCodecDecoders.describe(decoderNames));
                         }
-                        if (autoplay && !paused && bufferedPlayer != null) {
+                        if (autoPlay && !paused && bufferedPlayer != null) {
                             bufferedPlayer.play();
                         }
                     });
@@ -1467,7 +1467,7 @@ public class AlphaVideoView extends TextureView implements
             if (isReleased) return;
             
             if (callback != null) {
-                callback.onLoad(totalFrames, width, height, "ffmpeg (" + decoderName + ")");
+                callback.onLoad(totalFrames, width, height, "software (" + decoderName + ")");
             }
             
             // Render first frame
@@ -1497,7 +1497,7 @@ public class AlphaVideoView extends TextureView implements
                 }
             }
             
-            if (autoplay && !paused && playerId != 0 && !isReleased) {
+            if (autoPlay && !paused && playerId != 0 && !isReleased) {
                 play();
             }
         });

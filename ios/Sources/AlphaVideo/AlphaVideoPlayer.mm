@@ -110,8 +110,8 @@
     config.preloadAllFrames = YES;
     config.loopPlayback = YES;
     config.playbackSpeed = 1.0;
-    config.mode = @"preload";
-    config.stream = NO;
+    config.mode = @"stream";
+    config.stream = YES;
     config.streamCacheSize = 30;
     config.streamPrefetchAhead = 15;
     return config;
@@ -126,15 +126,15 @@
     cfg.playbackSpeed = self.playbackSpeed;
     
     // Parse mode string to enum
-    if ([self.mode isEqualToString:@"stream"]) {
-        cfg.mode = webm::PlaybackMode::Stream;
-        cfg.stream = true;
+    if ([self.mode isEqualToString:@"preload"]) {
+        cfg.mode = webm::PlaybackMode::Preload;
+        cfg.stream = false;
     } else if ([self.mode isEqualToString:@"streamAndPreload"]) {
         cfg.mode = webm::PlaybackMode::StreamAndPreload;
         cfg.stream = false;  // Not pure streaming
     } else {
-        cfg.mode = webm::PlaybackMode::Preload;
-        cfg.stream = false;
+        cfg.mode = webm::PlaybackMode::Stream;
+        cfg.stream = true;
     }
     
     cfg.streamCacheSize = self.streamCacheSize > 0 ? self.streamCacheSize : 30;
@@ -278,14 +278,14 @@
     
     // Convert mode enum back to string
     switch (cfg.mode) {
-        case webm::PlaybackMode::Stream:
-            config.mode = @"stream";
+        case webm::PlaybackMode::Preload:
+            config.mode = @"preload";
             break;
         case webm::PlaybackMode::StreamAndPreload:
             config.mode = @"streamAndPreload";
             break;
         default:
-            config.mode = @"preload";
+            config.mode = @"stream";
             break;
     }
     return config;
@@ -432,7 +432,7 @@
         _metalDevice = device;
         _player = [[AlphaVideoPlayer alloc] initWithConfig:config];
         _player.delegate = self;
-        _autoplay = YES;
+        _autoPlay = YES;
         _loop = YES;
         _playbackSpeed = 1.0;
         _currentTextureIndex = 0;
@@ -864,7 +864,7 @@
         WEBM_VLOG(@"First frame rendered via C++ → Metal GPU pipeline");
     }
     
-    if (_autoplay) {
+    if (_autoPlay) {
         [_player play];
         // Start MTKView's continuous rendering loop
         self.paused = NO;

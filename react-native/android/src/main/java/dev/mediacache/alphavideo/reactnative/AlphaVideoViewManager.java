@@ -94,7 +94,7 @@ public class AlphaVideoViewManager extends AlphaVideoViewManagerSpec<AlphaVideoV
     @ReactProp(name = "autoPlay", defaultBoolean = true)
     @Override
     public void setAutoPlay(AlphaVideoView view, boolean autoPlay) {
-        view.setAutoplay(autoPlay);
+        view.setAutoPlay(autoPlay);
     }
     
     @ReactProp(name = "loop", defaultBoolean = true)
@@ -127,17 +127,17 @@ public class AlphaVideoViewManager extends AlphaVideoViewManagerSpec<AlphaVideoV
     
     /**
      * Set the playback mode.
-     * - "preload" (default): decode all frames upfront, then play
-     * - "stream": decode on-demand with sliding window cache
+     * - "preload": decode all frames upfront, then play
+     * - "stream" (default): decode on-demand with sliding window cache
      * - "streamAndPreload": start playing immediately, cache all frames for smooth looping
      */
     @ReactProp(name = "mode")
     @Override
     public void setMode(AlphaVideoView view, @Nullable String mode) {
-        view.setMode(mode != null ? mode : "preload");
+        view.setMode(mode != null ? mode : "stream");
     }
     
-    /** "auto" (default), "mediacodec", "mediacodec-hw", "mediacodec-sw" or "ffmpeg"; see AlphaVideoView.setDecoder. */
+    /** "auto" (default), "mediacodec", "mediacodec-hw", "mediacodec-sw" or "software"; see AlphaVideoView.setDecoder. */
     @ReactProp(name = "decoder")
     @Override
     public void setDecoder(AlphaVideoView view, @Nullable String decoder) {

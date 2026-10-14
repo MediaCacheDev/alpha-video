@@ -212,13 +212,13 @@ struct PlayerConfig {
     double playbackSpeed = 1.0;     // Playback speed multiplier
     
     // Playback mode:
-    // - Preload (default): decode all frames upfront, then play
-    // - Stream: decode on-demand with sliding window cache (frames evicted on loop)
+    // - Preload: decode all frames upfront, then play
+    // - Stream (default): decode on-demand with sliding window cache (frames evicted on loop)
     // - StreamAndPreload: start playing immediately, cache all frames for smooth looping
-    PlaybackMode mode = PlaybackMode::Preload;
+    PlaybackMode mode = PlaybackMode::Stream;
     
     // Legacy: kept for backwards compatibility, use mode instead
-    bool stream = false;
+    bool stream = true;
     
     int streamCacheSize = 30;       // Frames to keep in cache when streaming (default: ~1 second at 30fps)
     int streamPrefetchAhead = 15;   // Frames to decode ahead of playback position
