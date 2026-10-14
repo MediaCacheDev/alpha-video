@@ -1255,9 +1255,9 @@ public class AlphaVideoView extends TextureView implements
         ByteBuffer y, u, v, a;
         int width, height;
         synchronized (frameDataLock) {
+            // Two requests can arrive for one frame (a seek as the preload finishes); swapping
+            // the cleared buffer for the second would blank a paused view.
             if (isReleased || !hasNewFrame || pendingY == null) {
-                // Still need to swap buffers to show cleared frame
-                EGL14.eglSwapBuffers(eglDisplay, eglSurface);
                 return;
             }
             
@@ -1271,7 +1271,6 @@ public class AlphaVideoView extends TextureView implements
         }
         
         if (y == null || u == null || v == null || a == null || width <= 0 || height <= 0) {
-            EGL14.eglSwapBuffers(eglDisplay, eglSurface);
             return;
         }
         
