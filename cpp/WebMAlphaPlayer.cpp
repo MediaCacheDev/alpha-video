@@ -25,6 +25,7 @@ extern "C" {
 #include <array>
 #include <deque>
 #include <fstream>
+#include <map>
 
 #ifdef __APPLE__
 #include <sys/mman.h>
@@ -1233,6 +1234,38 @@ void WebMAlphaPlayer::decodeAllFrames() {
     bool hasMoreColorFrames = true;
     bool hasMoreAlphaFrames = (alphaCodecCtx_ != nullptr);
     
+    // Two-stream files: getFrame() can hand out a cached frame while this runs, so a colour frame
+    // is cached only once the alpha frame with its index is in. Whichever decodes first waits here.
+    std::map<int, std::shared_ptr<YUVAFrame>> colourAwaitingAlpha;
+    std::map<int, AVFrame*> alphaAwaitingColour;
+    auto cacheFrame = [&](int index, const std::shared_ptr<YUVAFrame>& frame) {
+        frameCache_->put(makeFrameKey(index), frame);
+        stats_.framesDecoded++;
+        stats_.framesCached++;
+    };
+    auto addColour = [&](int index, const std::shared_ptr<YUVAFrame>& frame) {
+        auto alpha = alphaAwaitingColour.find(index);
+        if (alpha != alphaAwaitingColour.end()) {
+            frame->copyAlphaFromAVFrame(alpha->second);
+            av_frame_free(&alpha->second);
+            alphaAwaitingColour.erase(alpha);
+        } else if (alphaCodecCtx_) {
+            colourAwaitingAlpha[index] = frame;
+            return;
+        }
+        cacheFrame(index, frame);
+    };
+    auto addAlpha = [&](int index, const AVFrame* alpha) {
+        auto colour = colourAwaitingAlpha.find(index);
+        if (colour == colourAwaitingAlpha.end()) {
+            alphaAwaitingColour[index] = av_frame_clone(alpha);
+            return;
+        }
+        colour->second->copyAlphaFromAVFrame(alpha);
+        cacheFrame(index, colour->second);
+        colourAwaitingAlpha.erase(colour);
+    };
+    
     while ((hasMoreColorFrames || hasMoreAlphaFrames) && !shouldStop_) {
         int ret = av_read_frame(formatCtx_, packet);
         if (ret < 0) {
@@ -1255,23 +1288,19 @@ void WebMAlphaPlayer::decodeAllFrames() {
                 yuvFrame->pts = colorFrame->pts;
                 yuvFrame->timeBase = timeBase_;
                 
-                // Try to get matching alpha frame
-                if (alphaCodecCtx_) {
-                    avcodec_receive_frame(alphaCodecCtx_, alphaFrame);
-                }
-                
                 // copyFromAVFrame handles both YUVA420P (with alpha) and YUV420P (fills alpha with 255)
-                yuvFrame->copyFromAVFrame(colorFrame, alphaFrame);
+                yuvFrame->copyFromAVFrame(colorFrame, nullptr);
                 
                 // Check before cache access - unload() may have been called
                 if (shouldStop_ || !frameCache_) {
                     break;
                 }
-                frameCache_->put(makeFrameKey(frameIndex), yuvFrame);
-                
+                addColour(frameIndex, yuvFrame);
                 frameIndex++;
-                stats_.framesDecoded++;
-                stats_.framesCached++;
+            }
+            while (alphaCodecCtx_ && !shouldStop_ && frameCache_ &&
+                   avcodec_receive_frame(alphaCodecCtx_, alphaFrame) >= 0) {
+                addAlpha(alphaFrameIndex++, alphaFrame);
             }
             break;
         }
@@ -1331,12 +1360,8 @@ void WebMAlphaPlayer::decodeAllFrames() {
                         break;
                     }
                     
-                    // Store temporarily - alpha might come later
-                    frameCache_->put(makeFrameKey(frameIndex), yuvFrame);
-                    
+                    addColour(frameIndex, yuvFrame);
                     frameIndex++;
-                    stats_.framesDecoded++;
-                    stats_.framesCached++;
                 }
             }
         } else if (packet->stream_index == alphaStreamIndex_ && alphaCodecCtx_) {
@@ -1356,25 +1381,22 @@ void WebMAlphaPlayer::decodeAllFrames() {
                         break;
                     }
                     
-                    // Update corresponding color frame with alpha
-                    auto existingFrame = frameCache_->get(makeFrameKey(alphaFrameIndex));
-                    if (existingFrame) {
-                        if (alphaFrameIndex == 0) {
-                            VLOGI("Copying alpha: src linesize=%d, dst stride=%d, range=%s",
-                                 alphaFrame->linesize[0], existingFrame->aStride,
-                                 av_color_range_name(alphaFrame->color_range));
-                        }
-                        existingFrame->copyAlphaFromAVFrame(alphaFrame);
-                    } else if (alphaFrameIndex < 3) {
-                        VLOGI("WARNING: No color frame found for alpha frame %d", alphaFrameIndex);
+                    if (alphaFrameIndex == 0) {
+                        VLOGI("Alpha range=%s", av_color_range_name(alphaFrame->color_range));
                     }
-                    alphaFrameIndex++;
+                    addAlpha(alphaFrameIndex++, alphaFrame);
                 }
             }
         }
         
         av_packet_unref(packet);
     }
+    
+    // A colour frame whose alpha stream ended early shows opaque, as copyFromAVFrame left it
+    if (!shouldStop_ && frameCache_) {
+        for (auto& [index, frame] : colourAwaitingAlpha) cacheFrame(index, frame);
+    }
+    for (auto& [index, alpha] : alphaAwaitingColour) av_frame_free(&alpha);
     
     av_packet_free(&packet);
     av_frame_free(&colorFrame);
