@@ -127,8 +127,6 @@ public class AlphaVideoView extends TextureView implements
     public static final String DECODER_MEDIACODEC_HW = "mediacodec-hw";
     public static final String DECODER_MEDIACODEC_SW = "mediacodec-sw";
     public static final String DECODER_FFMPEG = "ffmpeg";
-    // What onLoad reports for the C++ core
-    private static final String FFMPEG_DECODER_NAME = "ffmpeg (libvpx-vp9)";
     
     private String decoder = DECODER_AUTO;
     private int streamCacheSize = 30;      // Frames to keep in cache when streaming
@@ -331,14 +329,15 @@ public class AlphaVideoView extends TextureView implements
     
     /**
      * Sets the decoder for the next load:
-     * - "auto" (default): MediaCodec hardware decoders that list every track's profile, else the
-     *   C++ core's FFmpeg (VP9 only), else MediaCodec's software decoders
+     * - "auto" (default): MediaCodec hardware decoders that list every track's profile, else
+     *   MediaCodec's software decoders, else the C++ core's FFmpeg (libvpx-vp9, dav1d for AV1)
      * - "mediacodec": per track, a hardware decoder if one lists the profile and has an instance
      *   free, else a software one
      * - "mediacodec-hw" / "mediacodec-sw": hardware / software decoders only, for both tracks
      * - "ffmpeg": the C++ core
      * A forced engine never falls back: a file it can't play reports onError. MediaCodec plays
-     * only files with colour and alpha as separate VP9/AV1 bitstreams; FFmpeg has no AV1.
+     * only files with colour and alpha as separate VP9/AV1 bitstreams; FFmpeg plays 8-bit VP9 and
+     * 8- to 12-bit AV1.
      */
     public void setDecoder(String decoder) {
         switch (decoder == null ? DECODER_AUTO : decoder) {
@@ -534,14 +533,8 @@ public class AlphaVideoView extends TextureView implements
             }
             return;
         }
-        boolean ffmpegDecodes = colorAlphaTracks[0] == BufferedDualStreamPlayer.TRACK_VP9
-            && colorAlphaTracks[2] == BufferedDualStreamPlayer.TRACK_VP9;
         if (DECODER_FFMPEG.equals(decoder)) {
-            if (ffmpegDecodes) {
-                loadSingleStream(source);
-            } else {
-                reportError("decoder \"ffmpeg\" has no AV1 decoder for " + source);
-            }
+            loadSingleStream(source);
             return;
         }
         
@@ -563,13 +556,13 @@ public class AlphaVideoView extends TextureView implements
                 break;
             default:
                 names = MediaCodecDecoders.reserve(colorAlphaTracks, MediaCodecDecoders.Kind.HARDWARE);
-                if (names == null && ffmpegDecodes) {
-                    logV("No MediaCodec hardware decoders free that list the profiles; decoding on FFmpeg");
-                    loadSingleStream(source);
-                    return;
-                }
                 if (names == null) {
                     names = MediaCodecDecoders.reserve(colorAlphaTracks, MediaCodecDecoders.Kind.SOFTWARE);
+                }
+                if (names == null) {
+                    logV("No MediaCodec decoders free that list the profiles; decoding on FFmpeg");
+                    loadSingleStream(source);
+                    return;
                 }
         }
         if (names == null) {
@@ -1468,12 +1461,13 @@ public class AlphaVideoView extends TextureView implements
         logV("Loaded: " + totalFrames + " frames, " + width + "x" + height);
         float[] clipYuvToRgb = WebMAlphaPlayerNative.nativeGetYuvToRgb(playerId);
         if (clipYuvToRgb != null) yuvToRgb = clipYuvToRgb;
+        String decoderName = WebMAlphaPlayerNative.nativeGetDecoderName(playerId);
         
         post(() -> {
             if (isReleased) return;
             
             if (callback != null) {
-                callback.onLoad(totalFrames, width, height, FFMPEG_DECODER_NAME);
+                callback.onLoad(totalFrames, width, height, "ffmpeg (" + decoderName + ")");
             }
             
             // Render first frame

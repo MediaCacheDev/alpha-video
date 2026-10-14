@@ -134,7 +134,7 @@ static std::vector<Fixture> fixtures() {
     std::vector<Fixture> all;
     for (auto [w, h] : {std::pair{383, 217}, std::pair{256, 256}}) {
         std::string card = "card_" + std::to_string(w) + "x" + std::to_string(h);
-        for (const char* file : {"yuva.webm", "dual_vp9.webm", "dual_vp9_p0.webm"}) {
+        for (const char* file : {"yuva.webm", "dual_vp9.webm", "dual_vp9_p0.webm", "dual_av1.webm", "dual_av1_10bit.webm"}) {
             all.push_back({card + "/" + file, std::string(FIXTURES_DIR) + "/" + card + "/" + file, Card::forSize(w, h)});
         }
     }
@@ -235,6 +235,8 @@ static void registerTests() {
             CHECK(p->getTotalFrames() == fx.card.frames, p->getTotalFrames());
             CHECK(std::abs(p->getFrameRate() - fx.card.fps) < 0.01, p->getFrameRate());
             CHECK(std::abs(p->getDuration() - fx.card.frames / fx.card.fps) < 0.05, p->getDuration());
+            std::string decoder = fx.name.find("av1") != std::string::npos ? "libdav1d" : "libvpx-vp9";
+            CHECK(p->getDecoderName() == decoder, p->getDecoderName());
         });
 
         add("every frame in order", [](const Fixture& fx) {
@@ -336,6 +338,27 @@ static void registerTests() {
             CHECK(waiter.alphaMismatches.empty(), "frames with the wrong alpha (colour/alpha code): "
                   << waiter.alphaMismatches.size() << ", first " << waiter.alphaMismatches.front());
             CHECK(waiter.codes.size() >= static_cast<size_t>(fx.card.frames / 2), "only " << waiter.codes.size() << " frames shown");
+        });
+
+        add("stream mode loops back to frame 0", [](const Fixture& fx) {
+            // Past the last frame, which a decoder with frame delay gives only once drained
+            PlayerConfig config;
+            config.mode = PlaybackMode::Stream;
+            config.loopPlayback = true;
+            config.playbackSpeed = 4;
+            auto p = std::make_unique<WebMAlphaPlayer>();
+            p->setConfig(config);
+            FrameWaiter waiter;
+            waiter.card = fx.card;
+            waiter.attach(*p);
+            CHECK(p->loadFromFile(fx.path), fx.path);
+            p->play();
+            CHECK(waiter.waitFor(fx.card.frames - 1, std::chrono::seconds(10)), "playback never reached the last frame");
+            waiter.clear();
+            CHECK(waiter.waitFor(5, std::chrono::seconds(5)), "playback didn't loop to frame 5");
+            std::lock_guard<std::mutex> lock(waiter.mutex);
+            CHECK(waiter.alphaMismatches.empty(), "frames with the wrong alpha (colour/alpha code): "
+                  << waiter.alphaMismatches.size() << ", first " << waiter.alphaMismatches.front());
         });
 
         add("alpha plane range", [](const Fixture& fx) {
@@ -489,15 +512,14 @@ static void registerTests() {
         CHECK(std::memcmp(&untaggedSd, &limited601, sizeof(YuvToRgb)) == 0, "untagged SD is limited BT.601");
     }});
 
-    tests().push_back({"AV1 is refused with an error event", [] {
-        // The core decodes VP9 only; dual-stream AV1 plays through MediaCodec on Android.
+    tests().push_back({"10-bit VP9 is refused with an error event", [] {
         WebMAlphaPlayer p;
         std::string error;
         p.setEventCallback([&](const std::string& event, const std::string& data) {
             if (event == "error") error = data;
         });
-        CHECK(!p.loadFromFile(std::string(FIXTURES_DIR) + "/card_383x217/dual_av1.webm"), "an AV1 file loaded");
-        CHECK(!error.empty(), "no error event");
+        CHECK(!p.loadFromFile(std::string(FIXTURES_DIR) + "/vp9_10bit.webm"), "a 10-bit VP9 file loaded");
+        CHECK(error.find("10-bit") != std::string::npos, "error: " << error);
         CHECK(!p.isLoaded(), "isLoaded() after a failed load");
     }});
 

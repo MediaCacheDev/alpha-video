@@ -366,6 +366,7 @@
 - (int)width { return _player->getWidth(); }
 - (int)height { return _player->getHeight(); }
 - (double)frameRate { return _player->getFrameRate(); }
+- (NSString *)decoderName { return [NSString stringWithUTF8String:_player->getDecoderName().c_str()]; }
 - (webm::YuvToRgb)yuvToRgb { return _player->getYuvToRgb(); }
 
 + (NSString *)ffmpegVersion {

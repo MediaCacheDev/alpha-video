@@ -32,6 +32,9 @@ add_library(${PROJECT_NAME} SHARED ${NATIVE_SOURCES})
 
 # Google Play requires 16 KB-aligned segments for Android 15+; NDK r27 and older link 4 KB by default.
 target_link_options(${PROJECT_NAME} PRIVATE "-Wl,-z,max-page-size=16384")
+# FFmpeg, libvpx and dav1d stay private to this library, so an app that also ships another
+# FFmpeg (ffmpeg-kit's libavcodec.so) can't interpose on them, or they on it.
+target_link_options(${PROJECT_NAME} PRIVATE "-Wl,--exclude-libs,ALL")
 
 # Find Android log library
 find_library(log-lib log)
@@ -43,6 +46,7 @@ target_link_libraries(${PROJECT_NAME}
     ${FFMPEG_ROOT}/lib/libavcodec.a
     ${FFMPEG_ROOT}/lib/libavutil.a
     ${FFMPEG_ROOT}/lib/libvpx.a
+    ${FFMPEG_ROOT}/lib/libdav1d.a
     
     # Android system libraries
     ${log-lib}

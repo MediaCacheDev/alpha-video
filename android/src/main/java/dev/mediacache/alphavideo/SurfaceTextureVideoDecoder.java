@@ -303,6 +303,13 @@ public class SurfaceTextureVideoDecoder implements SurfaceTexture.OnFrameAvailab
             
             format = MediaFormat.createVideoFormat(mimeType, width, height);
             MediaCodecColor.apply(format, avColorRange, avColorSpace, width, height);
+            // Software decoders otherwise output 10-bit clips as P010, which draws blank on Adreno
+            // (c2.android.av1-dav1d on the A52s). Asked for flexible YUV420, AOSP's software
+            // decoders convert to 8-bit; 8-bit clips are unaffected.
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q && codec.getCodecInfo().isSoftwareOnly()) {
+                format.setInteger(MediaFormat.KEY_COLOR_FORMAT,
+                        MediaCodecInfo.CodecCapabilities.COLOR_FormatYUV420Flexible);
+            }
             codec.configure(format, outputSurface, null, 0);
             
             codecThread = new HandlerThread("Codec-" + label);

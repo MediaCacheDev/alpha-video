@@ -2,7 +2,8 @@
 #
 # build_ffmpeg_android.sh
 # Downloads and builds FFmpeg for Android (arm64-v8a, armeabi-v7a, x86_64)
-# With VP9 (libvpx) support for WebM alpha playback
+# With VP9 (libvpx) and AV1 (dav1d, 8- and 10-bit) decoders for WebM alpha playback
+# Needs meson and ninja for dav1d (brew install meson ninja), and nasm for x86_64
 #
 
 set -e
@@ -11,6 +12,7 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_DIR="$(dirname "$SCRIPT_DIR")"
 FFMPEG_VERSION="6.1"
 LIBVPX_VERSION="1.14.0"
+DAV1D_VERSION="1.5.1"
 BUILD_DIR="$SCRIPT_DIR/build/android"
 OUTPUT_DIR="$PROJECT_DIR/prebuilt/android"
 
@@ -60,6 +62,23 @@ download_libvpx() {
     fi
 }
 
+# Download dav1d source
+download_dav1d() {
+    if [ ! -d "$BUILD_DIR/dav1d-$DAV1D_VERSION" ]; then
+        echo "📥 Downloading dav1d $DAV1D_VERSION..."
+        cd "$BUILD_DIR"
+        curl -L "https://github.com/videolan/dav1d/archive/refs/tags/$DAV1D_VERSION.tar.gz" -o dav1d.tar.gz
+        tar xf dav1d.tar.gz
+        rm dav1d.tar.gz
+    fi
+}
+
+# libvpx and dav1d install into one staging root per ABI, so that FFmpeg's pkg-config
+# (PKG_CONFIG_SYSROOT_DIR) finds both.
+deps_stage() {
+    echo "$BUILD_DIR/deps-$1"
+}
+
 # Build libvpx for Android
 build_libvpx_android() {
     local ABI=$1
@@ -70,9 +89,7 @@ build_libvpx_android() {
     
     cd "$BUILD_DIR/libvpx-$LIBVPX_VERSION"
     
-    local STAGE="$BUILD_DIR/libvpx-$ABI"
-    rm -rf "$STAGE"
-    mkdir -p "$STAGE"
+    local STAGE="$(deps_stage "$ABI")"
     
     make clean 2>/dev/null || true
     
@@ -138,6 +155,48 @@ build_libvpx_android() {
     make install DESTDIR="$STAGE"
 }
 
+# Build dav1d for Android: the AV1 decoder, 8-bit and 10/12-bit (16bpc)
+build_dav1d_android() {
+    local ABI=$1
+    local TARGET=$2
+    local CPU_FAMILY=$3
+    
+    echo "🔨 Building dav1d for $ABI..."
+    
+    local BUILD="$BUILD_DIR/dav1d-build-$ABI"
+    local CROSS_FILE="$BUILD_DIR/dav1d-$ABI.meson"
+    rm -rf "$BUILD"
+    
+    cat > "$CROSS_FILE" <<EOF
+[binaries]
+c = '${TARGET}${ANDROID_API}-clang'
+ar = 'llvm-ar'
+strip = 'llvm-strip'
+
+[properties]
+needs_exe_wrapper = true
+
+[host_machine]
+system = 'android'
+cpu_family = '$CPU_FAMILY'
+cpu = '$CPU_FAMILY'
+endian = 'little'
+EOF
+    
+    meson setup "$BUILD" "$BUILD_DIR/dav1d-$DAV1D_VERSION" \
+        --cross-file "$CROSS_FILE" \
+        --prefix="$INSTALL_PREFIX" \
+        --libdir=lib \
+        --buildtype=release \
+        --default-library=static \
+        -Db_pie=true \
+        -Dbitdepths=8,16 \
+        -Denable_tools=false \
+        -Denable_tests=false
+    ninja -C "$BUILD"
+    DESTDIR="$(deps_stage "$ABI")" meson install -C "$BUILD" --no-rebuild
+}
+
 # Build FFmpeg for Android
 build_ffmpeg_android() {
     local ABI=$1
@@ -151,11 +210,11 @@ build_ffmpeg_android() {
     
     local STAGE="$BUILD_DIR/ffmpeg-$ABI"
     # Relative to the FFmpeg source dir, where configure and make run.
-    local LIBVPX_DIR="../libvpx-$ABI$INSTALL_PREFIX"
-    # pkg-config must find the libvpx built above, never one installed on the host.
+    local DEPS_DIR="../deps-$ABI$INSTALL_PREFIX"
+    # pkg-config must find the libvpx and dav1d built above, never ones installed on the host.
     export PKG_CONFIG_PATH=""
-    export PKG_CONFIG_LIBDIR="$BUILD_DIR/libvpx-$ABI$INSTALL_PREFIX/lib/pkgconfig"
-    export PKG_CONFIG_SYSROOT_DIR="$BUILD_DIR/libvpx-$ABI"
+    export PKG_CONFIG_LIBDIR="$(deps_stage "$ABI")$INSTALL_PREFIX/lib/pkgconfig"
+    export PKG_CONFIG_SYSROOT_DIR="$(deps_stage "$ABI")"
     
     rm -rf "$STAGE"
     mkdir -p "$STAGE"
@@ -165,8 +224,8 @@ build_ffmpeg_android() {
     local CC="${TARGET}${ANDROID_API}-clang"
     local CXX="${TARGET}${ANDROID_API}-clang++"
     
-    local EXTRA_CFLAGS="-fPIC -I$LIBVPX_DIR/include"
-    local EXTRA_LDFLAGS="-L$LIBVPX_DIR/lib"
+    local EXTRA_CFLAGS="-fPIC -I$DEPS_DIR/include"
+    local EXTRA_LDFLAGS="-L$DEPS_DIR/lib"
     
     # Architecture-specific flags
     case $ABI in
@@ -182,6 +241,7 @@ build_ffmpeg_android() {
         --prefix="$INSTALL_PREFIX" \
         --enable-cross-compile \
         --cross-prefix="llvm-" \
+        --pkg-config=pkg-config \
         --target-os=android \
         --arch=$ARCH \
         --cc="$CC" \
@@ -202,10 +262,11 @@ build_ffmpeg_android() {
         --disable-swresample \
         --disable-swscale \
         --enable-demuxer=matroska,webm \
-        --enable-decoder=vp9,libvpx_vp9 \
+        --enable-decoder=vp9,libvpx_vp9,libdav1d \
         --enable-parser=vp9 \
         --enable-protocol=file \
         --enable-libvpx \
+        --enable-libdav1d \
         --enable-static \
         --disable-shared \
         --enable-pic \
@@ -223,20 +284,20 @@ package_output() {
     
     local OUT="$OUTPUT_DIR/$ABI"
     local FFMPEG_DIR="$BUILD_DIR/ffmpeg-$ABI$INSTALL_PREFIX"
-    local LIBVPX_DIR="$BUILD_DIR/libvpx-$ABI$INSTALL_PREFIX"
+    local DEPS_DIR="$(deps_stage "$ABI")$INSTALL_PREFIX"
     rm -rf "$OUT/lib"
     mkdir -p "$OUT/lib"
     
     # Copy static archives (.a)
     cp "$FFMPEG_DIR/lib/"*.a "$OUT/lib/"
-    cp "$LIBVPX_DIR/lib/"*.a "$OUT/lib/"
+    cp "$DEPS_DIR/lib/"*.a "$OUT/lib/"
     
     # Copy headers to common prebuilt/include (same for all platforms)
     local COMMON_INCLUDE="$PROJECT_DIR/prebuilt/include"
     if [ ! -d "$COMMON_INCLUDE/libavcodec" ]; then
         mkdir -p "$COMMON_INCLUDE"
         cp -R "$FFMPEG_DIR/include/"* "$COMMON_INCLUDE/"
-        cp -R "$LIBVPX_DIR/include/"* "$COMMON_INCLUDE/"
+        cp -R "$DEPS_DIR/include/"* "$COMMON_INCLUDE/"
     fi
 }
 
@@ -244,21 +305,35 @@ package_output() {
 main() {
     echo "🚀 Starting Android FFmpeg build..."
     
+    for tool in meson ninja; do
+        if ! command -v "$tool" >/dev/null 2>&1; then
+            echo "❌ $tool not found on PATH; dav1d needs it (brew install meson ninja)"
+            exit 1
+        fi
+    done
+    
     download_ffmpeg
     download_libvpx
+    download_dav1d
     
     # Build for arm64-v8a (most common)
+    rm -rf "$(deps_stage arm64-v8a)"
     build_libvpx_android "arm64-v8a" "aarch64" "aarch64-linux-android"
+    build_dav1d_android "arm64-v8a" "aarch64-linux-android" "aarch64"
     build_ffmpeg_android "arm64-v8a" "aarch64" "aarch64-linux-android" "aarch64-linux-android-"
     package_output "arm64-v8a"
     
     # Build for armeabi-v7a (older devices)
+    rm -rf "$(deps_stage armeabi-v7a)"
     build_libvpx_android "armeabi-v7a" "arm" "armv7a-linux-androideabi"
+    build_dav1d_android "armeabi-v7a" "armv7a-linux-androideabi" "arm"
     build_ffmpeg_android "armeabi-v7a" "arm" "armv7a-linux-androideabi" "arm-linux-androideabi-"
     package_output "armeabi-v7a"
     
     # Build for x86_64 (emulator)
+    rm -rf "$(deps_stage x86_64)"
     build_libvpx_android "x86_64" "x86_64" "x86_64-linux-android"
+    build_dav1d_android "x86_64" "x86_64-linux-android" "x86_64"
     build_ffmpeg_android "x86_64" "x86_64" "x86_64-linux-android" "x86_64-linux-android-"
     package_output "x86_64"
     

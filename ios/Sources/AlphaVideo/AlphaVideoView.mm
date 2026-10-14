@@ -91,6 +91,10 @@ static void releaseGlobalDecodeQueue(void) {
 
 #pragma mark - Properties
 
+- (NSString *)loadedDecoder {
+    return [NSString stringWithFormat:@"ffmpeg (%@)", self.metalView.player.decoderName];
+}
+
 - (void)setSource:(NSString *)source {
     if (source == _source || [source isEqualToString:_source]) return;
     _source = [source copy];

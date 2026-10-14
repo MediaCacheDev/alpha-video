@@ -111,6 +111,8 @@ NS_ASSUME_NONNULL_BEGIN
 @property (nonatomic, readonly) int width;
 @property (nonatomic, readonly) int height;
 @property (nonatomic, readonly) double frameRate;
+// FFmpeg's decoder for the loaded clip, e.g. "libvpx-vp9" or "libdav1d" (AV1)
+@property (nonatomic, readonly) NSString *decoderName;
 
 // Initialization
 - (instancetype)init;
@@ -244,6 +246,8 @@ NS_ASSUME_NONNULL_BEGIN
 @property (nonatomic) BOOL verbose;
 
 @property (nonatomic, strong, readonly) AlphaVideoMetalView *metalView;
+// The engine and decoder playing the loaded clip, as Android's onLoad names it: "ffmpeg (libdav1d)"
+@property (nonatomic, readonly) NSString *loadedDecoder;
 
 - (void)play;
 - (void)pause;

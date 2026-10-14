@@ -30,11 +30,11 @@ export type PlaybackMode = 'preload' | 'stream' | 'streamAndPreload';
  * standard alpha WebM's BlockAdditional). Android only; iOS always uses FFmpeg and web the browser.
  *
  * - `'auto'` (default): MediaCodec hardware decoders that list every track's profile, else
- *   FFmpeg (VP9 only), else MediaCodec's software decoders.
+ *   MediaCodec's software decoders, else FFmpeg.
  * - `'mediacodec'`: per track, a hardware decoder if one lists the profile and has an instance
  *   free, else a software one.
  * - `'mediacodec-hw'` / `'mediacodec-sw'`: hardware / software decoders only, for both tracks.
- * - `'ffmpeg'`: the C++ core (VP9 only).
+ * - `'ffmpeg'`: the C++ core (libvpx for 8-bit VP9, dav1d for 8- to 12-bit AV1).
  *
  * A forced engine never falls back: a file it can't play calls `onError`.
  */

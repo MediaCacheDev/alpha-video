@@ -48,7 +48,7 @@
             @"totalFrames": @(totalFrames),
             @"width": @(width),
             @"height": @(height),
-            @"decoder": @"ffmpeg (libvpx-vp9)"
+            @"decoder": view.loadedDecoder
         });
     }
 }

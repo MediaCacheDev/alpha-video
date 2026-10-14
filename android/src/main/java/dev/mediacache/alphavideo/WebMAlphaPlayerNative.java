@@ -77,6 +77,8 @@ public class WebMAlphaPlayerNative {
     public static native double nativeGetFrameRate(long playerId);
     /** The loaded clip's YUV to RGB for the shader: a column-major mat4, or null if no player. */
     public static native float[] nativeGetYuvToRgb(long playerId);
+    /** FFmpeg's decoder for the loaded clip, e.g. "libdav1d", or null if no player. */
+    public static native String nativeGetDecoderName(long playerId);
     /** The same matrix for a stream's FFmpeg AVColorRange and AVColorSpace, by the core's rules. */
     public static native float[] nativeYuvToRgbFor(int colorRange, int colorSpace, int width, int height);
     

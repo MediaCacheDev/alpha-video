@@ -44,11 +44,15 @@ Pod::Spec.new do |s|
   
   # Propagate linker flags to the user target (app). The prebuilt libs differ per SDK, so they
   # can't be vendored; the app links them by path, relative to the Podfile's directory.
+  # FFmpeg and dav1d are force-loaded: an app that also links another FFmpeg (ffmpeg-kit's
+  # frameworks) or dav1d (libavif's pod) would otherwise bind the core's calls to whichever
+  # comes first on the link line, without dav1d or 10-bit AV1.
   user_target_xcconfig = {}
   { 'iphoneos' => 'ios', 'iphonesimulator' => 'ios-simulator' }.each do |sdk, dir|
     lib_dir = "$(PODS_ROOT)/../#{pod_dir}/prebuilt/#{dir}/lib"
+    force_load = %w[avformat avcodec avutil dav1d].map { |lib| "-force_load \"#{lib_dir}/lib#{lib}.a\"" }.join(' ')
     user_target_xcconfig["LIBRARY_SEARCH_PATHS[sdk=#{sdk}*]"] = "$(inherited) \"#{lib_dir}\""
-    user_target_xcconfig["OTHER_LDFLAGS[sdk=#{sdk}*]"] = '$(inherited) -lavformat -lavcodec -lavutil -lvpx'
+    user_target_xcconfig["OTHER_LDFLAGS[sdk=#{sdk}*]"] = "$(inherited) #{force_load} -lvpx"
   end
   s.user_target_xcconfig = user_target_xcconfig
   

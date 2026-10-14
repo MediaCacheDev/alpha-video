@@ -2,7 +2,8 @@
 #
 # build_ffmpeg_ios_simulator.sh
 # Builds FFmpeg for iOS Simulator (universal: arm64 + x86_64)
-# With VP9 (libvpx) support for WebM alpha playback
+# With VP9 (libvpx) and AV1 (dav1d, 8- and 10-bit) decoders for WebM alpha playback
+# Needs meson and ninja for dav1d (brew install meson ninja), and nasm for x86_64
 #
 
 set -e
@@ -11,6 +12,7 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_DIR="$(dirname "$SCRIPT_DIR")"
 FFMPEG_VERSION="6.1"
 LIBVPX_VERSION="1.14.0"
+DAV1D_VERSION="1.5.1"
 BUILD_DIR="$SCRIPT_DIR/build/ios-simulator"
 OUTPUT_DIR="$PROJECT_DIR/prebuilt/ios-simulator"
 
@@ -23,6 +25,12 @@ ARCHS=("arm64" "x86_64")
 # FFmpeg and libvpx embed their configure lines in the libraries, so installs are staged
 # with DESTDIR and libvpx is referenced by relative path; no local paths end up in them.
 INSTALL_PREFIX="/usr/local"
+
+# libvpx and dav1d install into one staging root per architecture, so that FFmpeg's
+# pkg-config (PKG_CONFIG_SYSROOT_DIR) finds both.
+deps_stage() {
+    echo "$BUILD_DIR/deps-$1-sim"
+}
 
 echo "🔧 Building FFmpeg $FFMPEG_VERSION for iOS Simulator (arm64 + x86_64)"
 echo "   Build dir: $BUILD_DIR"
@@ -54,6 +62,17 @@ download_libvpx() {
     fi
 }
 
+# Download dav1d source
+download_dav1d() {
+    if [ ! -d "$BUILD_DIR/dav1d-$DAV1D_VERSION" ]; then
+        echo "📥 Downloading dav1d $DAV1D_VERSION..."
+        cd "$BUILD_DIR"
+        curl -L "https://github.com/videolan/dav1d/archive/refs/tags/$DAV1D_VERSION.tar.gz" -o dav1d.tar.gz
+        tar xf dav1d.tar.gz
+        rm dav1d.tar.gz
+    fi
+}
+
 # Build libvpx for a specific architecture
 build_libvpx_arch() {
     local ARCH=$1
@@ -61,9 +80,7 @@ build_libvpx_arch() {
     
     cd "$BUILD_DIR/libvpx-$LIBVPX_VERSION"
     
-    local STAGE="$BUILD_DIR/libvpx-$ARCH-sim"
-    rm -rf "$STAGE"
-    mkdir -p "$STAGE"
+    local STAGE="$(deps_stage "$ARCH")"
     
     # Clean previous build
     make clean 2>/dev/null || true
@@ -108,6 +125,61 @@ build_libvpx_arch() {
     echo "✅ libvpx $ARCH simulator build complete: $STAGE"
 }
 
+# Build dav1d for a specific architecture: the AV1 decoder, 8-bit and 10/12-bit
+# (16bpc)
+build_dav1d_arch() {
+    local ARCH=$1
+    echo "🔨 Building dav1d for iOS Simulator ($ARCH)..."
+    
+    local BUILD="$BUILD_DIR/dav1d-build-$ARCH-sim"
+    local CROSS_FILE="$BUILD_DIR/dav1d-$ARCH-sim.meson"
+    rm -rf "$BUILD"
+    
+    local SDK_PATH=$(xcrun --sdk iphonesimulator --show-sdk-path)
+    local CC="$(xcrun --sdk iphonesimulator -f clang)"
+    local CPU_FAMILY="$ARCH"
+    [ "$ARCH" = "arm64" ] && CPU_FAMILY="aarch64"
+    
+    cat > "$CROSS_FILE" <<EOF
+[binaries]
+c = ['$CC', '-arch', '$ARCH', '-isysroot', '$SDK_PATH']
+ar = '$(xcrun --sdk iphonesimulator --find ar)'
+strip = '$(xcrun --sdk iphonesimulator --find strip)'
+
+[built-in options]
+c_args = ['-target', '$ARCH-apple-ios$IOS_MIN_VERSION-simulator']
+c_link_args = ['-target', '$ARCH-apple-ios$IOS_MIN_VERSION-simulator']
+
+[properties]
+needs_exe_wrapper = true
+
+[host_machine]
+system = 'darwin'
+subsystem = 'ios-simulator'
+kernel = 'xnu'
+cpu_family = '$CPU_FAMILY'
+cpu = '$CPU_FAMILY'
+endian = 'little'
+EOF
+    
+    # The flags libvpx exported are for the simulator; meson would apply them to the build
+    # machine's compiler.
+    env -u CC -u CXX -u CFLAGS -u CXXFLAGS -u LDFLAGS \
+    meson setup "$BUILD" "$BUILD_DIR/dav1d-$DAV1D_VERSION" \
+        --cross-file "$CROSS_FILE" \
+        --prefix="$INSTALL_PREFIX" \
+        --libdir=lib \
+        --buildtype=release \
+        --default-library=static \
+        -Dbitdepths=8,16 \
+        -Denable_tools=false \
+        -Denable_tests=false
+    ninja -C "$BUILD"
+    DESTDIR="$(deps_stage "$ARCH")" meson install -C "$BUILD" --no-rebuild
+    
+    echo "✅ dav1d $ARCH simulator build complete"
+}
+
 # Build FFmpeg for a specific architecture
 build_ffmpeg_arch() {
     local ARCH=$1
@@ -117,11 +189,11 @@ build_ffmpeg_arch() {
     
     local STAGE="$BUILD_DIR/ffmpeg-$ARCH-sim"
     # Relative to the FFmpeg source dir, where configure and make run.
-    local LIBVPX_DIR="../libvpx-$ARCH-sim$INSTALL_PREFIX"
-    # pkg-config must find the libvpx built above, never one installed on the host.
+    local DEPS_DIR="../deps-$ARCH-sim$INSTALL_PREFIX"
+    # pkg-config must find the libvpx and dav1d built above, never ones installed on the host.
     export PKG_CONFIG_PATH=""
-    export PKG_CONFIG_LIBDIR="$BUILD_DIR/libvpx-$ARCH-sim$INSTALL_PREFIX/lib/pkgconfig"
-    export PKG_CONFIG_SYSROOT_DIR="$BUILD_DIR/libvpx-$ARCH-sim"
+    export PKG_CONFIG_LIBDIR="$(deps_stage "$ARCH")$INSTALL_PREFIX/lib/pkgconfig"
+    export PKG_CONFIG_SYSROOT_DIR="$(deps_stage "$ARCH")"
     
     rm -rf "$STAGE"
     mkdir -p "$STAGE"
@@ -142,8 +214,8 @@ build_ffmpeg_arch() {
         --arch=$ARCH \
         --cc="$CC" \
         --sysroot="$SDK_PATH" \
-        --extra-cflags="$CFLAGS -I$LIBVPX_DIR/include" \
-        --extra-ldflags="$LDFLAGS -L$LIBVPX_DIR/lib" \
+        --extra-cflags="$CFLAGS -I$DEPS_DIR/include" \
+        --extra-ldflags="$LDFLAGS -L$DEPS_DIR/lib" \
         --disable-programs \
         --disable-doc \
         --disable-debug \
@@ -158,10 +230,11 @@ build_ffmpeg_arch() {
         --disable-swresample \
         --disable-swscale \
         --enable-demuxer=matroska,webm \
-        --enable-decoder=vp9,libvpx_vp9 \
+        --enable-decoder=vp9,libvpx_vp9,libdav1d \
         --enable-parser=vp9 \
         --enable-protocol=file \
         --enable-libvpx \
+        --enable-libdav1d \
         --enable-static \
         --disable-shared \
         --enable-pic \
@@ -184,7 +257,7 @@ create_universal_libs() {
     # Get list of libraries from first arch
     local FIRST_ARCH="${ARCHS[0]}"
     local FFMPEG_LIBS=$(ls "$BUILD_DIR/ffmpeg-$FIRST_ARCH-sim$INSTALL_PREFIX/lib/"*.a 2>/dev/null | xargs -n1 basename)
-    local VPX_LIBS=$(ls "$BUILD_DIR/libvpx-$FIRST_ARCH-sim$INSTALL_PREFIX/lib/"*.a 2>/dev/null | xargs -n1 basename)
+    local DEPS_LIBS=$(ls "$(deps_stage "$FIRST_ARCH")$INSTALL_PREFIX/lib/"*.a 2>/dev/null | xargs -n1 basename)
     
     # Create fat FFmpeg libraries
     for lib in $FFMPEG_LIBS; do
@@ -196,11 +269,11 @@ create_universal_libs() {
         lipo -create $inputs -output "$OUTPUT_DIR/lib/$lib"
     done
     
-    # Create fat libvpx library
-    for lib in $VPX_LIBS; do
+    # Create fat libvpx and dav1d libraries
+    for lib in $DEPS_LIBS; do
         local inputs=""
         for arch in "${ARCHS[@]}"; do
-            inputs="$inputs $BUILD_DIR/libvpx-$arch-sim$INSTALL_PREFIX/lib/$lib"
+            inputs="$inputs $(deps_stage "$arch")$INSTALL_PREFIX/lib/$lib"
         done
         echo "   Creating universal $lib..."
         lipo -create $inputs -output "$OUTPUT_DIR/lib/$lib"
@@ -210,7 +283,7 @@ create_universal_libs() {
     rm -rf "$OUTPUT_DIR/include"
     mkdir -p "$OUTPUT_DIR/include"
     cp -R "$BUILD_DIR/ffmpeg-$FIRST_ARCH-sim$INSTALL_PREFIX/include/"* "$OUTPUT_DIR/include/"
-    cp -R "$BUILD_DIR/libvpx-$FIRST_ARCH-sim$INSTALL_PREFIX/include/"* "$OUTPUT_DIR/include/"
+    cp -R "$(deps_stage "$FIRST_ARCH")$INSTALL_PREFIX/include/"* "$OUTPUT_DIR/include/"
     
     echo "📋 Universal libraries built:"
     for lib in "$OUTPUT_DIR/lib/"*.a; do
@@ -235,8 +308,16 @@ main() {
     echo "🚀 Starting iOS Simulator FFmpeg build (universal)..."
     echo ""
     
+    for tool in meson ninja; do
+        if ! command -v "$tool" >/dev/null 2>&1; then
+            echo "❌ $tool not found on PATH; dav1d needs it (brew install meson ninja)"
+            exit 1
+        fi
+    done
+    
     download_ffmpeg
     download_libvpx
+    download_dav1d
     
     # Build each architecture
     for arch in "${ARCHS[@]}"; do
@@ -244,7 +325,9 @@ main() {
         echo "================================================"
         echo "Building for $arch..."
         echo "================================================"
+        rm -rf "$(deps_stage "$arch")"
         build_libvpx_arch "$arch"
+        build_dav1d_arch "$arch"
         build_ffmpeg_arch "$arch"
     done
     

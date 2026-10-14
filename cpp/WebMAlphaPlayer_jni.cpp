@@ -816,6 +816,18 @@ Java_dev_mediacache_alphavideo_WebMAlphaPlayerNative_nativeGetFrameRate(JNIEnv* 
     return (it != players.end()) ? it->second->getFrameRate() : 0.0;
 }
 
+JNIEXPORT jstring JNICALL
+Java_dev_mediacache_alphavideo_WebMAlphaPlayerNative_nativeGetDecoderName(JNIEnv* env, jclass clazz, jlong playerId) {
+    std::string name;
+    {
+        std::lock_guard<std::mutex> lock(playersMutex);
+        auto it = players.find(playerId);
+        if (it == players.end()) return nullptr;
+        name = it->second->getDecoderName();
+    }
+    return env->NewStringUTF(name.c_str());
+}
+
 //==============================================================================
 // Direct Frame Access
 //==============================================================================

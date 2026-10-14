@@ -47,7 +47,7 @@ export interface AlphaVideoLoadEvent {
   width: number;
   height: number;
   /**
-   * The engine and decoders playing the file: `'ffmpeg (libvpx-vp9)'`,
+   * The engine and decoders playing the file: `'ffmpeg (libvpx-vp9)'`, `'ffmpeg (libdav1d)'` (AV1),
    * `'mediacodec-hw (c2.qti.vp9.decoder)'`, `'mediacodec-sw (...)'`, `'mediacodec (hardware, software)'`
    * for one of each, or `'browser'` on web.
    */

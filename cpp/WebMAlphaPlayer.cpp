@@ -262,6 +262,27 @@ bool YUVAFrame::allocate(int w, int h) {
 // Static counter for logging - only log first frame
 static int copyFrameLogCount = 0;
 
+static int sampleDepth(const AVFrame* frame) {
+    const AVPixFmtDescriptor* desc = av_pix_fmt_desc_get(static_cast<AVPixelFormat>(frame->format));
+    return desc ? desc->comp[0].depth : 8;
+}
+
+// The planes and textures are 8-bit: deeper samples (10- and 12-bit AV1, 16 bits each) are
+// rounded to 8 bits, which keeps the range, 64-940 in 10-bit becoming 16-235.
+static void copyPlane(uint8_t* dst, int dstStride, const uint8_t* src, int srcStride, int w, int h, int depth) {
+    if (depth <= 8) {
+        for (int y = 0; y < h; ++y) memcpy(dst + y * dstStride, src + y * srcStride, w);
+        return;
+    }
+    const int shift = depth - 8;
+    const int half = 1 << (shift - 1);
+    for (int y = 0; y < h; ++y) {
+        const uint16_t* row = reinterpret_cast<const uint16_t*>(src + y * srcStride);
+        uint8_t* out = dst + y * dstStride;
+        for (int x = 0; x < w; ++x) out[x] = static_cast<uint8_t>(std::min((row[x] + half) >> shift, 255));
+    }
+}
+
 void YUVAFrame::copyFromAVFrame(AVFrame* colorFrame, AVFrame* alphaFrame) {
     if (!colorFrame) return;
     
@@ -288,28 +309,13 @@ void YUVAFrame::copyFromAVFrame(AVFrame* colorFrame, AVFrame* alphaFrame) {
     int copyW = std::min(frameW, width);
     int copyH = std::min(frameH, height);
     
-    // Copy Y plane (line by line to handle stride differences)
-    for (int y = 0; y < copyH; ++y) {
-        memcpy(yPlane + y * yStride, 
-               colorFrame->data[0] + y * colorFrame->linesize[0],
-               copyW);
-    }
-    
-    // Copy U plane (half resolution for YUV420, rounded up)
+    // Chroma is half resolution for YUV420, rounded up
+    const int depth = sampleDepth(colorFrame);
     int uvWidth = (copyW + 1) / 2;
     int uvHeight = (copyH + 1) / 2;
-    for (int y = 0; y < uvHeight; ++y) {
-        memcpy(uPlane + y * uvStride,
-               colorFrame->data[1] + y * colorFrame->linesize[1],
-               uvWidth);
-    }
-    
-    // Copy V plane
-    for (int y = 0; y < uvHeight; ++y) {
-        memcpy(vPlane + y * uvStride,
-               colorFrame->data[2] + y * colorFrame->linesize[2],
-               uvWidth);
-    }
+    copyPlane(yPlane, yStride, colorFrame->data[0], colorFrame->linesize[0], copyW, copyH, depth);
+    copyPlane(uPlane, uvStride, colorFrame->data[1], colorFrame->linesize[1], uvWidth, uvHeight, depth);
+    copyPlane(vPlane, uvStride, colorFrame->data[2], colorFrame->linesize[2], uvWidth, uvHeight, depth);
     
     // Handle alpha - check for YUVA420P format first (alpha in data[3] of same frame)
     bool hasBuiltInAlpha = (colorFrame->format == AV_PIX_FMT_YUVA420P) && 
@@ -332,11 +338,7 @@ void YUVAFrame::copyFromAVFrame(AVFrame* colorFrame, AVFrame* alphaFrame) {
             DLOGI("Source alpha center (row %d, col %d): %02x %02x %02x %02x",
                  midRow, midCol, midAlpha[0], midAlpha[1], midAlpha[2], midAlpha[3]);
         }
-        for (int y = 0; y < copyH; ++y) {
-            memcpy(aPlane + y * aStride,
-                   colorFrame->data[3] + y * colorFrame->linesize[3],
-                   copyW);
-        }
+        copyPlane(aPlane, aStride, colorFrame->data[3], colorFrame->linesize[3], copyW, copyH, depth);
     } else if (alphaFrame && alphaFrame->data[0]) {
         copyAlphaFromAVFrame(alphaFrame);
     } else {
@@ -352,12 +354,8 @@ void YUVAFrame::copyAlphaFromAVFrame(const AVFrame* alphaFrame) {
     int alphaH = std::min(alphaFrame->height, height);
     const AVPixFmtDescriptor* desc = av_pix_fmt_desc_get(static_cast<AVPixelFormat>(alphaFrame->format));
     bool limitedRange = alphaFrame->color_range != AVCOL_RANGE_JPEG && desc && !(desc->flags & AV_PIX_FMT_FLAG_RGB);
-    if (!limitedRange) {
-        for (int y = 0; y < alphaH; ++y) {
-            memcpy(aPlane + y * aStride, alphaFrame->data[0] + y * alphaFrame->linesize[0], alphaW);
-        }
-        return;
-    }
+    copyPlane(aPlane, aStride, alphaFrame->data[0], alphaFrame->linesize[0], alphaW, alphaH, sampleDepth(alphaFrame));
+    if (!limitedRange) return;
     static const auto expand = [] {
         std::array<uint8_t, 256> lut{};
         for (int v = 0; v < 256; v++) {
@@ -366,9 +364,8 @@ void YUVAFrame::copyAlphaFromAVFrame(const AVFrame* alphaFrame) {
         return lut;
     }();
     for (int y = 0; y < alphaH; ++y) {
-        const uint8_t* src = alphaFrame->data[0] + y * alphaFrame->linesize[0];
-        uint8_t* dst = aPlane + y * aStride;
-        for (int x = 0; x < alphaW; ++x) dst[x] = expand[src[x]];
+        uint8_t* row = aPlane + y * aStride;
+        for (int x = 0; x < alphaW; ++x) row[x] = expand[row[x]];
     }
 }
 
@@ -607,6 +604,7 @@ bool WebMAlphaPlayer::loadFromFile(const std::string& path) {
     
     // Reset stop flag so decodeAllFrames doesn't exit immediately
     shouldStop_ = false;
+    ioAbort_ = false;
     
     // Use FFmpeg's native file handling - it's optimized and handles cleanup properly
     formatCtx_ = avformat_alloc_context();
@@ -633,6 +631,7 @@ bool WebMAlphaPlayer::loadFromFileRange(int fd, int64_t offset, int64_t length) 
     
     // Reset stop flag so decodeAllFrames doesn't exit immediately
     shouldStop_ = false;
+    ioAbort_ = false;
     
     AVIOContext* io = openFileRangeIO(fd, offset, length);
     if (!io) {
@@ -756,6 +755,7 @@ bool WebMAlphaPlayer::loadFromMemory(const uint8_t* data, size_t size) {
     
     // Reset stop flag so decodeAllFrames doesn't exit immediately
     shouldStop_ = false;
+    ioAbort_ = false;
     
     // Copy data (we need to own it)
     mappedData_ = static_cast<uint8_t*>(av_malloc(size));
@@ -909,6 +909,20 @@ void WebMAlphaPlayer::cleanupIO() {
     closeFileRangeIO(&rangeIO_);
 }
 
+// The pixel format is known when FFmpeg could decode a frame while probing. An AV1 track it
+// couldn't leaves it unset; its av1C header still says, in byte 2 (high_bitdepth 0x40,
+// twelve_bit 0x20).
+static int bitDepth(const AVCodecParameters* par) {
+    if (const AVPixFmtDescriptor* desc = av_pix_fmt_desc_get(static_cast<AVPixelFormat>(par->format))) {
+        return desc->comp[0].depth;
+    }
+    if (par->codec_id == AV_CODEC_ID_AV1 && par->extradata_size >= 4 && (par->extradata[0] & 0x80)) {
+        uint8_t flags = par->extradata[2];
+        return (flags & 0x40) ? ((flags & 0x20) ? 12 : 10) : 8;
+    }
+    return 8;
+}
+
 bool WebMAlphaPlayer::openStreams() {
     int ret = avformat_find_stream_info(formatCtx_, nullptr);
     if (ret < 0) {
@@ -942,6 +956,20 @@ bool WebMAlphaPlayer::openStreams() {
     }
     
     VLOGI("Using colorStreamIndex=%d, alphaStreamIndex=%d", colorStreamIndex_, alphaStreamIndex_);
+    
+    // dav1d decodes 10- and 12-bit AV1; the libvpx build is 8-bit only
+    for (int index : {colorStreamIndex_, alphaStreamIndex_}) {
+        if (index < 0) continue;
+        const AVCodecParameters* par = formatCtx_->streams[index]->codecpar;
+        int depth = bitDepth(par);
+        int maxDepth = par->codec_id == AV_CODEC_ID_AV1 ? 12 : 8;
+        if (depth > maxDepth) {
+            emitEvent("error", std::string(avcodec_get_name(par->codec_id)) + " track " + std::to_string(index) +
+                      " is " + std::to_string(depth) + "-bit; " + avcodec_get_name(par->codec_id) +
+                      " plays up to " + std::to_string(maxDepth) + "-bit");
+            return false;
+        }
+    }
     
     // Check for alpha side data in the stream
     AVStream* colorStream = formatCtx_->streams[colorStreamIndex_];
@@ -1005,86 +1033,56 @@ bool WebMAlphaPlayer::openStreams() {
     return true;
 }
 
+// VP9 decodes on libvpx, which also reads alpha from a BlockAdditional; AV1 on dav1d.
+static const AVCodec* findDecoder(AVCodecID id) {
+    const char* preferred = id == AV_CODEC_ID_VP9 ? "libvpx-vp9" : id == AV_CODEC_ID_AV1 ? "libdav1d" : nullptr;
+    const AVCodec* codec = preferred ? avcodec_find_decoder_by_name(preferred) : nullptr;
+    return codec ? codec : avcodec_find_decoder(id);
+}
+
+AVCodecContext* WebMAlphaPlayer::openDecoder(int streamIndex, const char* track) {
+    const AVCodecParameters* par = formatCtx_->streams[streamIndex]->codecpar;
+    const AVCodec* codec = findDecoder(par->codec_id);
+    if (!codec) {
+        emitEvent("error", std::string("No ") + avcodec_get_name(par->codec_id) + " decoder for the " + track + " track");
+        return nullptr;
+    }
+    AVCodecContext* ctx = avcodec_alloc_context3(codec);
+    if (!ctx || avcodec_parameters_to_context(ctx, par) < 0) {
+        avcodec_free_context(&ctx);
+        emitEvent("error", std::string("Failed to set up the ") + track + " decoder");
+        return nullptr;
+    }
+    ctx->thread_count = config_.decodeThreads;
+    ctx->thread_type = FF_THREAD_FRAME | FF_THREAD_SLICE;
+    // pix_fmt is left unset: libvpx-vp9 outputs YUVA420P when a BlockAdditional carries alpha,
+    // and setting it beforehand crashed on some devices.
+    if (avcodec_open2(ctx, codec, nullptr) < 0) {
+        avcodec_free_context(&ctx);
+        emitEvent("error", std::string("Failed to open the ") + track + " decoder (" + codec->name + ")");
+        return nullptr;
+    }
+    VLOGI("%s track: %s decoder", track, codec->name);
+    return ctx;
+}
+
 bool WebMAlphaPlayer::initCodecs() {
-    // Find VP9 decoder (prefer libvpx-vp9 for alpha support)
-    const AVCodec* vp9Codec = avcodec_find_decoder_by_name("libvpx-vp9");
-    if (!vp9Codec) {
-        VLOGI("libvpx-vp9 not found, falling back to generic VP9 decoder");
-        vp9Codec = avcodec_find_decoder(AV_CODEC_ID_VP9);
-    } else {
-        VLOGI("Using libvpx-vp9 decoder (supports alpha)");
-    }
-    
-    if (!vp9Codec) {
-        emitEvent("error", "VP9 codec not found");
-        return false;
-    }
-    
-    VLOGI("VP9 decoder: name=%s, id=%d, capabilities=0x%x", 
-         vp9Codec->name, vp9Codec->id, vp9Codec->capabilities);
-    
-    // List supported pixel formats for the decoder
-    if (vp9Codec->pix_fmts) {
-        VLOGI("VP9 decoder supported pixel formats:");
-        for (int i = 0; vp9Codec->pix_fmts[i] != AV_PIX_FMT_NONE; i++) {
-            VLOGI("  pix_fmt[%d] = %d (YUVA420P=%d, YUV420P=%d)", 
-                 i, vp9Codec->pix_fmts[i], AV_PIX_FMT_YUVA420P, AV_PIX_FMT_YUV420P);
-        }
-    } else {
-        VLOGI("VP9 decoder has no pix_fmts list (accepts any)");
-    }
-    
-    // Init color codec
-    colorCodecCtx_ = avcodec_alloc_context3(vp9Codec);
-    if (!colorCodecCtx_) {
-        emitEvent("error", "Failed to allocate color codec context");
-        return false;
-    }
-    
-    AVStream* colorStream = formatCtx_->streams[colorStreamIndex_];
-    avcodec_parameters_to_context(colorCodecCtx_, colorStream->codecpar);
-    
-    // Set threading options
-    colorCodecCtx_->thread_count = config_.decodeThreads;
-    colorCodecCtx_->thread_type = FF_THREAD_FRAME | FF_THREAD_SLICE;
-    
-    // Note: We do NOT set pix_fmt before opening the codec.
-    // libvpx-vp9 will automatically detect alpha from BlockAdditional data
-    // and output YUVA420P if alpha is present, or YUV420P if not.
-    // Setting pix_fmt beforehand can cause crashes on some devices.
-    
-    if (avcodec_open2(colorCodecCtx_, vp9Codec, nullptr) < 0) {
-        emitEvent("error", "Failed to open color codec");
-        return false;
-    }
-    
-    // Log the pixel format the codec will output
-    VLOGI("Codec opened - pix_fmt=%d (YUVA420P=%d, YUV420P=%d)", 
-         colorCodecCtx_->pix_fmt, AV_PIX_FMT_YUVA420P, AV_PIX_FMT_YUV420P);
-    
-    // copyFromAVFrame handles both YUVA420P (with alpha) and YUV420P (alpha filled with 255).
-    
-    // Init alpha codec if present
+    colorCodecCtx_ = openDecoder(colorStreamIndex_, "colour");
+    if (!colorCodecCtx_) return false;
+    std::string name = colorCodecCtx_->codec->name;
     if (alphaStreamIndex_ >= 0) {
-        alphaCodecCtx_ = avcodec_alloc_context3(vp9Codec);
-        if (!alphaCodecCtx_) {
-            emitEvent("error", "Failed to allocate alpha codec context");
-            return false;
-        }
-        
-        AVStream* alphaStream = formatCtx_->streams[alphaStreamIndex_];
-        avcodec_parameters_to_context(alphaCodecCtx_, alphaStream->codecpar);
-        
-        alphaCodecCtx_->thread_count = config_.decodeThreads;
-        alphaCodecCtx_->thread_type = FF_THREAD_FRAME | FF_THREAD_SLICE;
-        
-        if (avcodec_open2(alphaCodecCtx_, vp9Codec, nullptr) < 0) {
-            emitEvent("error", "Failed to open alpha codec");
-            return false;
-        }
+        alphaCodecCtx_ = openDecoder(alphaStreamIndex_, "alpha");
+        if (!alphaCodecCtx_) return false;
+        if (name != alphaCodecCtx_->codec->name) name += std::string(", ") + alphaCodecCtx_->codec->name;
     }
-    
+    std::lock_guard<std::mutex> lock(decoderNameMutex_);
+    decoderName_ = name;
     return true;
+}
+
+std::string WebMAlphaPlayer::getDecoderName() const {
+    std::lock_guard<std::mutex> lock(decoderNameMutex_);
+    return decoderName_;
 }
 
 void WebMAlphaPlayer::closeCodecs() {
@@ -1125,11 +1123,10 @@ std::shared_ptr<YUVAFrame> WebMAlphaPlayer::decodeFrame(int index) {
     
     auto startTime = std::chrono::high_resolution_clock::now();
     
-    // Seek to frame position
-    int64_t timestamp = static_cast<int64_t>(index / frameRate_ / timeBase_);
+    // Decode from the keyframe before the frame, matching frames by timestamp: the demuxer lands
+    // on that keyframe, and decoders with frame delay (dav1d) return frames late.
+    int64_t timestamp = startPts_ + static_cast<int64_t>(std::llround(index / frameRate_ / timeBase_));
     av_seek_frame(formatCtx_, colorStreamIndex_, timestamp, AVSEEK_FLAG_BACKWARD);
-    
-    // Flush decoder buffers after seek
     avcodec_flush_buffers(colorCodecCtx_);
     if (alphaCodecCtx_) {
         avcodec_flush_buffers(alphaCodecCtx_);
@@ -1138,46 +1135,57 @@ std::shared_ptr<YUVAFrame> WebMAlphaPlayer::decodeFrame(int index) {
     AVPacket* packet = av_packet_alloc();
     AVFrame* colorFrame = av_frame_alloc();
     AVFrame* alphaFrame = av_frame_alloc();
-    
+    AVFrame* alphaForIndex = nullptr;
     std::shared_ptr<YUVAFrame> result;
-    int currentDecodedFrame = -1;
     
-    while (av_read_frame(formatCtx_, packet) >= 0 && !shouldStop_) {
-        if (packet->stream_index == colorStreamIndex_) {
-            int ret = avcodec_send_packet(colorCodecCtx_, packet);
-            if (ret >= 0) {
-                ret = avcodec_receive_frame(colorCodecCtx_, colorFrame);
-                if (ret >= 0) {
-                    currentDecodedFrame++;
-                    
-                    if (currentDecodedFrame >= index) {
-                        // This is the frame we want - use actual decoded dimensions
-                        int frameW = colorFrame->width;
-                        int frameH = colorFrame->height;
-                        
-                        result = std::make_shared<YUVAFrame>();
-                        if (!result->allocate(frameW, frameH)) {
-                            LOGE("Failed to allocate frame buffer for %dx%d", frameW, frameH);
-                            result.reset();
-                            break;
-                        }
-                        result->frameIndex = index;
-                        result->pts = colorFrame->pts;
-                        result->timeBase = timeBase_;
-                        result->copyFromAVFrame(colorFrame, alphaFrame);
-                        
-                        break;
-                    }
-                }
+    const AVRational colourTimeBase = formatCtx_->streams[colorStreamIndex_]->time_base;
+    auto reachesIndex = [&](const AVFrame* f, int stream) {
+        int64_t pts = f->best_effort_timestamp != AV_NOPTS_VALUE ? f->best_effort_timestamp : f->pts;
+        if (pts == AV_NOPTS_VALUE) return true;
+        return frameIndexForPts(av_rescale_q(pts, formatCtx_->streams[stream]->time_base, colourTimeBase)) >= index;
+    };
+    auto takeColour = [&] {
+        while (!result && avcodec_receive_frame(colorCodecCtx_, colorFrame) >= 0) {
+            if (!reachesIndex(colorFrame, colorStreamIndex_)) continue;
+            result = std::make_shared<YUVAFrame>();
+            if (!result->allocate(colorFrame->width, colorFrame->height)) {
+                LOGE("Failed to allocate frame buffer for %dx%d", colorFrame->width, colorFrame->height);
+                result.reset();
+                return false;
             }
-        } else if (packet->stream_index == alphaStreamIndex_ && alphaCodecCtx_) {
-            avcodec_send_packet(alphaCodecCtx_, packet);
-            avcodec_receive_frame(alphaCodecCtx_, alphaFrame);
+            result->frameIndex = index;
+            result->pts = colorFrame->pts;
+            result->timeBase = timeBase_;
+            result->copyFromAVFrame(colorFrame, nullptr);
         }
-        
+        return true;
+    };
+    auto takeAlpha = [&] {
+        while (!alphaForIndex && avcodec_receive_frame(alphaCodecCtx_, alphaFrame) >= 0) {
+            if (reachesIndex(alphaFrame, alphaStreamIndex_)) alphaForIndex = av_frame_clone(alphaFrame);
+        }
+    };
+    auto done = [&] { return result && (!alphaCodecCtx_ || alphaForIndex); };
+    
+    bool failed = false;
+    while (!done() && !failed && !shouldStop_) {
+        if (av_read_frame(formatCtx_, packet) < 0) {
+            if (!result && avcodec_send_packet(colorCodecCtx_, nullptr) >= 0) failed = !takeColour();
+            if (alphaCodecCtx_ && !alphaForIndex && avcodec_send_packet(alphaCodecCtx_, nullptr) >= 0) takeAlpha();
+            break;
+        }
+        if (packet->stream_index == colorStreamIndex_ && !result) {
+            if (avcodec_send_packet(colorCodecCtx_, packet) >= 0) failed = !takeColour();
+        } else if (packet->stream_index == alphaStreamIndex_ && alphaCodecCtx_ && !alphaForIndex) {
+            if (avcodec_send_packet(alphaCodecCtx_, packet) >= 0) takeAlpha();
+        }
         av_packet_unref(packet);
     }
+    av_packet_unref(packet);
     
+    // A frame whose alpha stream ended early stays opaque, as copyFromAVFrame left it
+    if (result && alphaForIndex) result->copyAlphaFromAVFrame(alphaForIndex);
+    av_frame_free(&alphaForIndex);
     av_packet_free(&packet);
     av_frame_free(&colorFrame);
     av_frame_free(&alphaFrame);
@@ -1742,6 +1750,20 @@ void WebMAlphaPlayer::prefetchLoop() {
             alphaAhead.pop_front();
         }
     };
+    // Decoders with frame delay (dav1d's frame threads) hold the last frames until they're
+    // drained with an empty packet at the end of the file.
+    bool colourDrained = false;
+    bool alphaDrained = false;
+    auto rewind = [&](int64_t ts) {
+        av_seek_frame(formatCtx_, colorStreamIndex_, ts, AVSEEK_FLAG_BACKWARD);
+        avcodec_flush_buffers(colorCodecCtx_);
+        if (alphaCodecCtx_) {
+            avcodec_flush_buffers(alphaCodecCtx_);
+        }
+        dropHeld();
+        colourDrained = false;
+        alphaDrained = false;
+    };
     auto attachAlpha = [&](YUVAFrame& frame, int64_t colourPts) {
         AVPacket* p = av_packet_alloc();
         bool attached = false;
@@ -1759,7 +1781,12 @@ void WebMAlphaPlayer::prefetchLoop() {
                 if (attached) break;
             }
             if (attached || !alphaAhead.empty()) break;
-            if (av_read_frame(formatCtx_, p) < 0) break;
+            if (av_read_frame(formatCtx_, p) < 0) {
+                if (alphaDrained) break;
+                alphaDrained = true;
+                if (avcodec_send_packet(alphaCodecCtx_, nullptr) >= 0) keepAlphaFrames();
+                continue;
+            }
             if (p->stream_index == colorStreamIndex_) {
                 heldColourPackets.push_back(av_packet_clone(p));
             } else if (p->stream_index == alphaStreamIndex_ && avcodec_send_packet(alphaCodecCtx_, p) >= 0) {
@@ -1770,16 +1797,67 @@ void WebMAlphaPlayer::prefetchLoop() {
         av_packet_free(&p);
     };
     
+    // Turns every colour frame the decoder has ready into a cached frame
+    auto takeColourFrames = [&](int playbackPos) {
+        while (avcodec_receive_frame(colorCodecCtx_, colorFrame) >= 0 && !shouldStop_) {
+            if (resyncFromPts) {
+                resyncFromPts = false;
+                int64_t pts = colorFrame->best_effort_timestamp != AV_NOPTS_VALUE
+                    ? colorFrame->best_effort_timestamp : colorFrame->pts;
+                if (pts != AV_NOPTS_VALUE) frameIndex = frameIndexForPts(pts);
+            }
+            if (frameIndex < seekTarget) {
+                frameIndex++;
+                continue;
+            }
+            seekTarget = 0;
+            
+            // Check if we already have this frame cached
+            std::string key = makeFrameKey(frameIndex);
+            if (frameCache_ && !frameCache_->contains(key)) {
+                int frameW = colorFrame->width;
+                int frameH = colorFrame->height;
+                
+                auto yuvFrame = std::make_shared<YUVAFrame>();
+                if (yuvFrame->allocate(frameW, frameH)) {
+                    yuvFrame->frameIndex = frameIndex;
+                    yuvFrame->pts = colorFrame->pts;
+                    yuvFrame->timeBase = timeBase_;
+                    yuvFrame->copyFromAVFrame(colorFrame, nullptr);
+                    if (alphaCodecCtx_) {
+                        int64_t pts = colorFrame->best_effort_timestamp != AV_NOPTS_VALUE
+                            ? colorFrame->best_effort_timestamp : colorFrame->pts;
+                        attachAlpha(*yuvFrame, pts);
+                    }
+                    
+                    // Put frame in cache - eviction is handled by playback thread
+                    // via evictOldFrames() after consuming each frame
+                    frameCache_->put(key, yuvFrame);
+                    stats_.framesDecoded++;
+                    stats_.framesCached++;
+                }
+            }
+            
+            int sought = frameIndex;
+            if (!playing_ && pendingSeekFrame_.compare_exchange_strong(sought, -1)) {
+                emitFrame(getCachedFrame(frameIndex));
+            }
+            
+            frameIndex++;
+            streamDecodePos_ = frameIndex;
+            
+            // Log progress periodically
+            if (frameIndex % 30 == 0) {
+                VLOGI("📺 Decoded frame %d, playback at %d, cache size=%zu", 
+                     frameIndex, playbackPos, frameCache_ ? frameCache_->size() : 0);
+            }
+        }
+    };
+    
     while (!shouldStop_ && loaded_) {
         int requested = seekRequest_.exchange(-1);
         if (requested >= 0) {
-            int64_t ts = startPts_ + static_cast<int64_t>(std::llround(requested / frameRate_ / timeBase_));
-            av_seek_frame(formatCtx_, colorStreamIndex_, ts, AVSEEK_FLAG_BACKWARD);
-            avcodec_flush_buffers(colorCodecCtx_);
-            if (alphaCodecCtx_) {
-                avcodec_flush_buffers(alphaCodecCtx_);
-            }
-            dropHeld();
+            rewind(startPts_ + static_cast<int64_t>(std::llround(requested / frameRate_ / timeBase_)));
             frameIndex = requested;
             streamDecodePos_ = requested;
             seekTarget = requested;
@@ -1836,12 +1914,7 @@ void WebMAlphaPlayer::prefetchLoop() {
         if (frameIndex >= totalFrames_) {
             if (config_.loopPlayback) {
                 // Stream mode: Seek back to start for looping
-                av_seek_frame(formatCtx_, colorStreamIndex_, 0, AVSEEK_FLAG_BACKWARD);
-                avcodec_flush_buffers(colorCodecCtx_);
-                if (alphaCodecCtx_) {
-                    avcodec_flush_buffers(alphaCodecCtx_);
-                }
-                dropHeld();
+                rewind(0);
                 frameIndex = 0;
                 streamDecodePos_ = 0;
                 seekTarget = 0;
@@ -1873,14 +1946,15 @@ void WebMAlphaPlayer::prefetchLoop() {
                 LOGE("📺 Read failed at frame %d, stopping decode: %s", frameIndex, err);
                 break;
             }
-            // End of file - handle loop or stop
+            // End of file: take the frames the decoder still holds, then let the frame count
+            // checks above loop or finish. A file with fewer frames than estimated loops here.
+            if (!colourDrained) {
+                colourDrained = true;
+                if (avcodec_send_packet(colorCodecCtx_, nullptr) >= 0) takeColourFrames(playbackPos);
+                continue;
+            }
             if (config_.loopPlayback) {
-                av_seek_frame(formatCtx_, colorStreamIndex_, 0, AVSEEK_FLAG_BACKWARD);
-                avcodec_flush_buffers(colorCodecCtx_);
-                if (alphaCodecCtx_) {
-                    avcodec_flush_buffers(alphaCodecCtx_);
-                }
-                dropHeld();
+                rewind(0);
                 frameIndex = 0;
                 streamDecodePos_ = 0;
                 seekTarget = 0;
@@ -1890,62 +1964,7 @@ void WebMAlphaPlayer::prefetchLoop() {
         }
         
         if (packet->stream_index == colorStreamIndex_) {
-            ret = avcodec_send_packet(colorCodecCtx_, packet);
-            if (ret >= 0) {
-                while (avcodec_receive_frame(colorCodecCtx_, colorFrame) >= 0 && !shouldStop_) {
-                    if (resyncFromPts) {
-                        resyncFromPts = false;
-                        int64_t pts = colorFrame->best_effort_timestamp != AV_NOPTS_VALUE
-                            ? colorFrame->best_effort_timestamp : colorFrame->pts;
-                        if (pts != AV_NOPTS_VALUE) frameIndex = frameIndexForPts(pts);
-                    }
-                    if (frameIndex < seekTarget) {
-                        frameIndex++;
-                        continue;
-                    }
-                    seekTarget = 0;
-                    
-                    // Check if we already have this frame cached
-                    std::string key = makeFrameKey(frameIndex);
-                    if (frameCache_ && !frameCache_->contains(key)) {
-                        int frameW = colorFrame->width;
-                        int frameH = colorFrame->height;
-                        
-                        auto yuvFrame = std::make_shared<YUVAFrame>();
-                        if (yuvFrame->allocate(frameW, frameH)) {
-                            yuvFrame->frameIndex = frameIndex;
-                            yuvFrame->pts = colorFrame->pts;
-                            yuvFrame->timeBase = timeBase_;
-                            yuvFrame->copyFromAVFrame(colorFrame, nullptr);
-                            if (alphaCodecCtx_) {
-                                int64_t pts = colorFrame->best_effort_timestamp != AV_NOPTS_VALUE
-                                    ? colorFrame->best_effort_timestamp : colorFrame->pts;
-                                attachAlpha(*yuvFrame, pts);
-                            }
-                            
-                            // Put frame in cache - eviction is handled by playback thread
-                            // via evictOldFrames() after consuming each frame
-                            frameCache_->put(key, yuvFrame);
-                            stats_.framesDecoded++;
-                            stats_.framesCached++;
-                        }
-                    }
-                    
-                    int sought = frameIndex;
-                    if (!playing_ && pendingSeekFrame_.compare_exchange_strong(sought, -1)) {
-                        emitFrame(getCachedFrame(frameIndex));
-                    }
-                    
-                    frameIndex++;
-                    streamDecodePos_ = frameIndex;
-                    
-                    // Log progress periodically
-                    if (frameIndex % 30 == 0) {
-                        VLOGI("📺 Decoded frame %d, playback at %d, cache size=%zu", 
-                             frameIndex, playbackPos, frameCache_ ? frameCache_->size() : 0);
-                    }
-                }
-            }
+            if (avcodec_send_packet(colorCodecCtx_, packet) >= 0) takeColourFrames(playbackPos);
         } else if (packet->stream_index == alphaStreamIndex_ && alphaCodecCtx_) {
             if (avcodec_send_packet(alphaCodecCtx_, packet) >= 0) keepAlphaFrames();
         }

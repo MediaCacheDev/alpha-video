@@ -287,6 +287,9 @@ public:
     double getFrameRate() const;
     // The shader's YUV to RGB for the loaded clip (its range and matrix)
     YuvToRgb getYuvToRgb() const;
+    // FFmpeg's name for the loaded clip's decoder, e.g. "libvpx-vp9" or "libdav1d"; both,
+    // comma-separated, if the colour and alpha tracks differ
+    std::string getDecoderName() const;
     
     // Callbacks
     void setFrameCallback(FrameCallback callback);
@@ -325,6 +328,8 @@ private:
     int64_t startPts_ = 0;  // The color stream's first timestamp, in timeBase_ units
     mutable std::mutex yuvToRgbMutex_;  // Set on load, read from render threads
     YuvToRgb yuvToRgb_{};
+    mutable std::mutex decoderNameMutex_;  // Set on load, read from the platform layers
+    std::string decoderName_;
     
     // State
     std::atomic<bool> loaded_{false};
@@ -378,6 +383,7 @@ private:
     bool finishLoad();  // After avformat_open_input: streams, codecs, "loaded", playback mode
     bool openStreams();
     bool initCodecs();
+    AVCodecContext* openDecoder(int streamIndex, const char* track);  // nullptr after an error event
     void closeCodecs();
     
     std::shared_ptr<YUVAFrame> decodeFrame(int index);

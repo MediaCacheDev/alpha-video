@@ -37,6 +37,11 @@ afterEvaluate {
                             url = 'https://chromium.googlesource.com/webm/libvpx/+/refs/tags/v1.14.0/LICENSE'
                             distribution = 'repo'
                         }
+                        license {
+                            name = 'BSD-2-Clause (bundled dav1d)'
+                            url = 'https://code.videolan.org/videolan/dav1d/-/blob/1.5.1/COPYING'
+                            distribution = 'repo'
+                        }
                     }
                     developers {
                         developer {

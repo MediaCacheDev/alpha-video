@@ -14,7 +14,7 @@ One repository, three packages:
 
 - **VP9 Alpha Transparency** - Full support for WebM videos with embedded YUVA alpha channel
 - **Hardware Decode on Android** - Color and alpha decoded by two MediaCodec instances, from a standard alpha WebM (the alpha is a second VP9 stream in each block's BlockAdditional) or from separate VP9 or AV1 tracks
-- **AV1 Support** - Dual-stream AV1 on Android, decoded by MediaCodec (in hardware where the device has an AV1 decoder)
+- **AV1 Support** - Dual-stream AV1, 8- or 10-bit, on Android and iOS: MediaCodec on Android (in hardware where the device has an AV1 decoder), dav1d in the C++ core elsewhere
 - **High Performance** - Native C++ core (FFmpeg) with GPU-accelerated rendering
 - **iOS** - Metal-based rendering with YUVA-to-RGBA GPU shader
 - **Android** - TextureView with OpenGL ES 2.0, proper z-ordering and ScrollView support
@@ -23,19 +23,19 @@ One repository, three packages:
 
 ## Decision Matrix
 
-The player picks the decode path itself. On Android it uses MediaCodec when a hardware decoder lists the file's VP9 or AV1 profiles and has 2 instances free, and the C++ core otherwise (a Snapdragon 778G's VP9 decoder allows 3 instances, so one MediaCodec player at a time). AV1 has no decoder in the C++ core, so it falls back to MediaCodec's software decoder. The [`decoder` prop](#choosing-the-decoder-android) forces an engine. iOS always uses the C++ core.
+The player picks the decode path itself. On Android it uses MediaCodec when decoders that list the file's VP9 or AV1 profiles have 2 instances free, hardware first and then Google's software ones, and the C++ core otherwise (a Snapdragon 778G's VP9 decoder allows 3 instances, so one hardware player at a time). The [`decoder` prop](#choosing-the-decoder-android) forces an engine. iOS always uses the C++ core.
 
 | | Software path (C++ core) | Hardware path (MediaCodec, Android) |
 |---|---|---|
-| **Files** | Single-stream YUVA VP9; dual-stream VP9 | Single-stream YUVA VP9; dual-stream VP9 or AV1 |
-| **Decoding** | CPU (FFmpeg libvpx) | GPU (MediaCodec) |
+| **Files** | Single-stream YUVA VP9; dual-stream VP9 (8-bit) or AV1 (8- to 12-bit) | Single-stream YUVA VP9; dual-stream VP9 or AV1 |
+| **Decoding** | CPU (FFmpeg: libvpx for VP9, dav1d for AV1) | GPU (MediaCodec), or MediaCodec's software decoders |
 | **CPU usage during playback** | Depends on `mode`: none once `preload` has decoded every frame (upload and render only); continuous decoding in `stream`; first pass only in `streamAndPreload` | Near-zero (decode offloaded) |
 | **Looping** | Seamless | Tiny stall at loop boundary (MediaCodec flush) |
 | **Max resolution** | ~720p practical limit | 1080p+ (hardware limited) |
 | **Best for** | Short loops, small animations, many simultaneous players | Long-duration, high-res, single-instance playback |
 | **iOS support** | Yes (Metal) | No (Android only) |
-| **Codec** | VP9 only | VP9 or AV1 |
-| **Instances** | Unlimited (CPU bound) | 2 decoder instances each, of the decoder's limit (3 on a Snapdragon 778G, often more); further VP9 players use the software path |
+| **Codec** | VP9 or AV1 | VP9 or AV1 |
+| **Instances** | Unlimited (CPU bound) | 2 decoder instances each, of the decoder's limit (3 on a Snapdragon 778G, often more); further players use MediaCodec's software decoders, then the software path |
 
 **Rule of thumb**: Standard YUVA WebM plays everywhere, including in Chrome and Firefox, and gets the hardware path on Android when it's free. Use dual-stream for AV1, or to encode alpha at its own quality; browsers show only its colour track.
 
@@ -170,7 +170,7 @@ The player automatically detects whether a file contains a single YUVA stream or
 | `paused` | `boolean` | `false` | Pause video playback |
 | `playbackSpeed` | `number` | `1.0` | Playback speed multiplier. Changeable while playing, and does **not** move the playhead — see below |
 | `style` | `ViewStyle` | - | Container style. On Android `backgroundColor` is ignored (the view is a `TextureView`); put a background on a parent view |
-| `onLoad` | `function` | - | Callback when video loads (`{ totalFrames, width, height, decoder }`); `decoder` names the engine and decoders, e.g. `'mediacodec-hw (c2.qti.vp9.decoder)'`, `'ffmpeg (libvpx-vp9)'`, or `'browser'` on web |
+| `onLoad` | `function` | - | Callback when video loads (`{ totalFrames, width, height, decoder }`); `decoder` names the engine and decoders, e.g. `'mediacodec-hw (c2.qti.vp9.decoder)'`, `'ffmpeg (libvpx-vp9)'`, `'ffmpeg (libdav1d)'`, or `'browser'` on web |
 | `onError` | `function` | - | Callback when error occurs (`{ error }`) |
 | `onEnd` | `function` | - | Callback when playback reaches the end with `loop` off |
 | `mode` | `'preload' \| 'stream' \| 'streamAndPreload'` | `'preload'` | Playback mode (software path only, see below) |
@@ -228,13 +228,13 @@ MediaCodec takes files whose colour and alpha are separate VP9 or AV1 bitstreams
 
 | Value | Engine |
 |---|---|
-| `'auto'` (default) | MediaCodec hardware decoders that list every track's profile and have instances free; else FFmpeg (VP9 only); else MediaCodec's software decoders |
+| `'auto'` (default) | MediaCodec hardware decoders that list every track's profile and have instances free; else MediaCodec's software decoders; else FFmpeg |
 | `'mediacodec'` | MediaCodec, per track: a hardware decoder if one lists the profile and has an instance free, else a software one. With a 3-instance limit, a second player can get one of each |
 | `'mediacodec-hw'` | MediaCodec hardware decoders only, for both tracks |
 | `'mediacodec-sw'` | MediaCodec software decoders only (Google's `c2.android.*`), for both tracks |
-| `'ffmpeg'` | The C++ core (VP9 only) |
+| `'ffmpeg'` | The C++ core: libvpx for 8-bit VP9, dav1d for 8- to 12-bit AV1 (drawn at 8 bits) |
 
-Every value but `'auto'` reports `onError` rather than fall back when it can't play the file, so a forced engine can be trusted for testing and benchmarks. A file MediaCodec can't take (a single VP9 track without alpha, say) plays on FFmpeg under `'auto'`. `onLoad`'s `decoder` says what was used: `'mediacodec-hw (c2.qti.vp9.decoder)'`, `'mediacodec-sw (c2.android.vp9.decoder)'`, `'mediacodec (c2.qti.vp9.decoder, c2.android.vp9.decoder)'` for one of each, or `'ffmpeg (libvpx-vp9)'`.
+Every value but `'auto'` reports `onError` rather than fall back when it can't play the file, so a forced engine can be trusted for testing and benchmarks. A file MediaCodec can't take (a single VP9 track without alpha, say) plays on FFmpeg under `'auto'`. `onLoad`'s `decoder` says what was used: `'mediacodec-hw (c2.qti.vp9.decoder)'`, `'mediacodec-sw (c2.android.vp9.decoder)'`, `'mediacodec (c2.qti.vp9.decoder, c2.android.vp9.decoder)'` for one of each, `'ffmpeg (libvpx-vp9)'` or `'ffmpeg (libdav1d)'`.
 
 `mode` applies to FFmpeg only; MediaCodec always streams. On a GPU without `GL_EXT_YUV_target`, frames from MediaCodec's software decoders can show BT.601 colours for BT.709 video, because the driver ignores their colour tag.
 
@@ -470,7 +470,7 @@ ffprobe -v quiet -print_format json -show_streams output.webm
 
 ## FFmpeg Build
 
-The library ships with prebuilt FFmpeg 6.1 + libvpx 1.14.0 static libraries: only `libavformat`, `libavcodec`, `libavutil` and `libvpx`, configured for the WebM demuxer and the VP9 decoders. To rebuild:
+The library ships with prebuilt FFmpeg 6.1 + libvpx 1.14.0 + dav1d 1.5.1 static libraries: only `libavformat`, `libavcodec`, `libavutil`, `libvpx` and `libdav1d`, configured for the WebM demuxer, the VP9 decoders and dav1d's AV1 decoder (8- to 12-bit). To rebuild:
 
 ```bash
 npm run build:ffmpeg:ios          # iOS (device + simulator)
@@ -478,7 +478,7 @@ npm run build:ffmpeg:android      # Android (arm64-v8a, armeabi-v7a, x86_64)
 npm run build:ffmpeg:all          # All platforms
 ```
 
-The Android script uses the NDK in `ANDROID_NDK_HOME` (default `$ANDROID_HOME/ndk/27.1.12297006`) and needs `nasm` for x86_64.
+The scripts download the sources themselves. dav1d builds with `meson` and `ninja` (`brew install meson ninja`), and the x86_64 builds (Android and the simulator) need `nasm`. The Android script uses the NDK in `ANDROID_NDK_HOME` (default `$ANDROID_HOME/ndk/27.1.12297006`).
 
 | Platform | Output Directory | Architecture |
 |----------|-----------------|-------------|
@@ -519,11 +519,12 @@ A release carries the prebuilt archive, `FFmpegVPX.xcframework.zip`, the CocoaPo
 
 The code in this repository is MIT (see [LICENSE](LICENSE)).
 
-The prebuilt FFmpeg libraries are LGPL-2.1-or-later and libvpx is BSD-3-Clause. LGPL covers FFmpeg itself, not the code that uses it, but anything that distributes the binaries (this package, and apps built with it) must include their notices and make FFmpeg's source available. [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md) has the versions, configure options, source links and what LGPL asks of closed-source apps; the licence texts are in [`licenses/`](licenses).
+The prebuilt FFmpeg libraries are LGPL-2.1-or-later, libvpx is BSD-3-Clause and dav1d is BSD-2-Clause. LGPL covers FFmpeg itself, not the code that uses it, but anything that distributes the binaries (this package, and apps built with it) must include their notices and make FFmpeg's source available. [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md) has the versions, configure options, source links and what LGPL asks of closed-source apps; the licence texts are in [`licenses/`](licenses).
 
 ## Credits
 
 Built with:
 - [FFmpeg](https://ffmpeg.org/) - Video demuxing and software decoding
 - [libvpx](https://www.webmproject.org/code/) - VP9 codec
+- [dav1d](https://code.videolan.org/videolan/dav1d) - AV1 decoder
 - [React Native](https://reactnative.dev/) - Cross-platform framework

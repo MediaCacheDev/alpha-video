@@ -8,9 +8,9 @@ The player has two completely separate decode backends, selected automatically b
 
 | | Software Path | Hardware Path |
 |---|---|---|
-| **File format** | Single VP9 stream with YUVA420P alpha, or two VP9 streams | Two VP9 or AV1 streams (color + alpha), or a single VP9 stream with YUVA420P alpha |
+| **File format** | Single VP9 stream with YUVA420P alpha, or two VP9 (8-bit) or AV1 (8- to 12-bit) streams | Two VP9 or AV1 streams (color + alpha), or a single VP9 stream with YUVA420P alpha |
 | **Used for** | iOS always; Android when MediaCodec can't decode the file | Android when it can |
-| **Decoder** | FFmpeg (C++, libvpx) | Android MediaCodec (hardware or software codec) |
+| **Decoder** | FFmpeg (C++; libvpx for VP9, dav1d for AV1) | Android MediaCodec (hardware or software codec) |
 | **Rendering** | YUVA textures → fragment shader | OES textures → fragment shader |
 | **Platforms** | iOS + Android | Android only |
 | **Looping** | Seamless (frames stay in cache) | Tiny stall (MediaCodec flush + refill) |
@@ -18,7 +18,7 @@ The player has two completely separate decode backends, selected automatically b
 
 Detection happens in `AlphaVideoView.loadProbedSource()`: the JNI function `nativeColorAlphaTracks()` lists the colour and alpha bitstreams with their profiles. They come from 2 VP9/AV1 tracks, or from a standard alpha WebM: one VP9 track whose alpha is a second VP9 stream in each block's BlockAdditional. The demuxer then hands each block's main data to the colour decoder and its BlockAdditional to the alpha decoder, as if they were 2 tracks.
 
-The `decoder` prop then picks the engine. `MediaCodecDecoders.reserve()` takes a decoder for each track, of the kind asked for (hardware, software, or hardware where it can), that lists the track's profile and has an instance free under its `getMaxSupportedInstances()`; it counts the instances players hold per decoder name. Under `auto`, a file goes to MediaCodec if hardware decoders can be reserved for both tracks; otherwise a VP9 file goes to the C++ core, and an AV1 file (the C++ core has no AV1 decoder) to MediaCodec's software decoders. A VP9 profile MediaCodec doesn't list (usually profile 1, the 4:4:4 a `gbrp` alpha track encodes to) therefore goes to the C++ core, and so does a VP9 file once other players hold the hardware decoder's instances (2 each). A forced value reports an error rather than fall back. The player holds its decoders until `unload()`, and `onLoad` reports them.
+The `decoder` prop then picks the engine. `MediaCodecDecoders.reserve()` takes a decoder for each track, of the kind asked for (hardware, software, or hardware where it can), that lists the track's profile and has an instance free under its `getMaxSupportedInstances()`; it counts the instances players hold per decoder name. Under `auto`, a file goes to MediaCodec if hardware decoders can be reserved for both tracks, else software ones, and otherwise to the C++ core. A VP9 profile MediaCodec doesn't list (usually profile 1, the 4:4:4 a `gbrp` alpha track encodes to) therefore goes to the C++ core, and so does a file once other players hold the decoders' instances (2 each). A forced value reports an error rather than fall back. The player holds its decoders until `unload()`, and `onLoad` reports them.
 
 ## High-Level Flow
 
@@ -63,7 +63,8 @@ React (JS) AlphaVideoView props
 ### C++ Core (cross-platform, software path)
 
 - **`WebMAlphaPlayer`** — FFmpeg (avformat/avcodec/avutil) wrapper:
-  - `openStreams`, `initCodecs`, `loadFromFile/loadFromMemory/loadFromFileRange/loadFromDownload`
+  - `openStreams`, `initCodecs` (a decoder per track: libvpx-vp9 for VP9, libdav1d for AV1), `loadFromFile/loadFromMemory/loadFromFileRange/loadFromDownload`
+  - dav1d holds frames back with frame threading, so every decode loop drains the decoders (an empty packet) at the end of the file
   - `decodeAllFrames` (preload) and on-demand `decodeFrame`
   - YUVA frame extraction with alpha handling (embedded YUVA420P or separate alpha track)
   - `FrameCache` (LRU, mutex-protected) for decoded frames
