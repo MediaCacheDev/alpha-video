@@ -1030,23 +1030,25 @@ static bool openDownloadInput(const std::string& path, const std::atomic<bool>* 
     return openInput(formatCtx, io);
 }
 
-// Whether the opened input holds 2+ VP9/AV1 video streams. Closes the input.
-static bool hasDualVideoStreams(AVFormatContext* formatCtx, AVIOContext* io) {
-    bool dual = false;
+// For each VP9/AV1 video stream of the opened input, its codec (0 VP9, 1 AV1) and FFmpeg profile,
+// in pairs; null unless there are 2 or more. Closes the input.
+static jintArray dualStreamTracks(JNIEnv* env, AVFormatContext* formatCtx, AVIOContext* io) {
+    std::vector<jint> tracks;
     if (avformat_find_stream_info(formatCtx, nullptr) >= 0) {
-        int videoStreamCount = 0;
         for (unsigned i = 0; i < formatCtx->nb_streams; i++) {
-            AVStream* stream = formatCtx->streams[i];
-            if (stream->codecpar->codec_type == AVMEDIA_TYPE_VIDEO &&
-                isSupportedVideoCodec(stream->codecpar->codec_id)) {
-                videoStreamCount++;
+            AVCodecParameters* par = formatCtx->streams[i]->codecpar;
+            if (par->codec_type == AVMEDIA_TYPE_VIDEO && isSupportedVideoCodec(par->codec_id)) {
+                tracks.push_back(par->codec_id == AV_CODEC_ID_AV1 ? 1 : 0);
+                tracks.push_back(par->profile);
             }
         }
-        dual = videoStreamCount >= 2;
     }
     avformat_close_input(&formatCtx);
     webm::closeFileRangeIO(&io);
-    return dual;
+    if (tracks.size() < 4) return nullptr;
+    jintArray result = env->NewIntArray(static_cast<jsize>(tracks.size()));
+    if (result) env->SetIntArrayRegion(result, 0, static_cast<jsize>(tracks.size()), tracks.data());
+    return result;
 }
 
 // Shared so that destroying a demuxer while its demux thread waits on a download can't free it
@@ -1123,8 +1125,8 @@ jlong registerDemuxer(std::shared_ptr<DualStreamDemuxer> demuxer) {
 
 } // anonymous namespace
 
-JNIEXPORT jboolean JNICALL
-Java_dev_mediacache_alphavideo_BufferedDualStreamPlayer_nativeIsDualStream(
+JNIEXPORT jintArray JNICALL
+Java_dev_mediacache_alphavideo_BufferedDualStreamPlayer_nativeDualStreamTracks(
     JNIEnv* env,
     jclass clazz,
     jint fd,
@@ -1134,13 +1136,13 @@ Java_dev_mediacache_alphavideo_BufferedDualStreamPlayer_nativeIsDualStream(
     AVFormatContext* formatCtx = nullptr;
     AVIOContext* io = nullptr;
     if (!openRangeInput(fd, offset, length, &formatCtx, &io)) {
-        return JNI_FALSE;
+        return nullptr;
     }
-    return hasDualVideoStreams(formatCtx, io) ? JNI_TRUE : JNI_FALSE;
+    return dualStreamTracks(env, formatCtx, io);
 }
 
-JNIEXPORT jboolean JNICALL
-Java_dev_mediacache_alphavideo_BufferedDualStreamPlayer_nativeIsDualStreamDownload(
+JNIEXPORT jintArray JNICALL
+Java_dev_mediacache_alphavideo_BufferedDualStreamPlayer_nativeDualStreamTracksDownload(
     JNIEnv* env,
     jclass clazz,
     jstring path
@@ -1148,9 +1150,9 @@ Java_dev_mediacache_alphavideo_BufferedDualStreamPlayer_nativeIsDualStreamDownlo
     AVFormatContext* formatCtx = nullptr;
     AVIOContext* io = nullptr;
     if (!openDownloadInput(stringFromJava(env, path), nullptr, &formatCtx, &io)) {
-        return JNI_FALSE;
+        return nullptr;
     }
-    return hasDualVideoStreams(formatCtx, io) ? JNI_TRUE : JNI_FALSE;
+    return dualStreamTracks(env, formatCtx, io);
 }
 
 // ============================================================================

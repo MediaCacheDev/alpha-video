@@ -935,13 +935,28 @@ public class BufferedDualStreamPlayer implements SurfaceTextureVideoDecoder.Fram
     private static native void nativeSeekToStart(long ptr);
     private static native void nativeSeekToTime(long ptr, long timeUs);
     
+    public static final int TRACK_VP9 = 0;
+    public static final int TRACK_AV1 = 1;
+    
     /**
-     * Check if bytes [offset, offset + length) of fd hold dual video streams (VP9 or AV1, color + alpha).
+     * The VP9 and AV1 video tracks in bytes [offset, offset + length) of fd, as pairs of codec
+     * ({@link #TRACK_VP9} or {@link #TRACK_AV1}) and FFmpeg profile; null unless there are 2
+     * or more (colour + alpha).
      */
-    public static native boolean nativeIsDualStream(int fd, long offset, long length);
+    public static native int[] nativeDualStreamTracks(int fd, long offset, long length);
     
     /** The same for a {@link WebMDownloader} cache file; waits for its first bytes if still downloading. */
-    public static native boolean nativeIsDualStreamDownload(String path);
+    public static native int[] nativeDualStreamTracksDownload(String path);
+    
+    /** Whether MediaCodec lists the profile of every track from {@link #nativeDualStreamTracks}. */
+    public static boolean mediaCodecDecodes(int[] tracks) {
+        for (int i = 0; i + 1 < tracks.length; i += 2) {
+            String mime = tracks[i] == TRACK_AV1
+                ? SurfaceTextureVideoDecoder.MIME_AV1 : SurfaceTextureVideoDecoder.MIME_VP9;
+            if (!SurfaceTextureVideoDecoder.isProfileSupported(mime, tracks[i + 1])) return false;
+        }
+        return true;
+    }
     
     static {
         System.loadLibrary("alphavideo");

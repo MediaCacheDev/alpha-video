@@ -15,7 +15,7 @@ The player has two completely separate decode backends, selected automatically b
 | **Looping** | Seamless (frames stay in cache) | Tiny stall (MediaCodec flush + refill) |
 | **Key class** | `WebMAlphaPlayer` (C++) | `BufferedDualStreamPlayer` (Java) |
 
-Detection happens in `AlphaVideoView.loadFromFile()`: the JNI function `nativeIsDualStream()` counts video streams in the WebM container. If there are 2 video streams and a hardware decoder is available, the dual-stream path is used.
+Detection happens in `AlphaVideoView.loadProbedSource()`: the JNI function `nativeDualStreamTracks()` lists the VP9 and AV1 video streams in the WebM container with their profiles. If there are 2, MediaCodec lists both profiles, and a hardware decoder is available, the dual-stream path is used. A VP9 profile MediaCodec doesn't list (usually profile 1, the 4:4:4 a `gbrp` alpha track encodes to) goes to the C++ core instead.
 
 ## High-Level Flow
 
@@ -245,8 +245,8 @@ if remote → download thread(s)
    ↓ cache file
    ↓ UI thread: loadFromFile
    ↓
-Auto-detect: nativeIsDualStream?
-   ├─ YES + HW decoder available:
+Auto-detect: nativeDualStreamTracks?
+   ├─ YES + profiles MediaCodec lists + HW decoder available:
    │    BufferedDualStreamPlayer
    │    ├─ demux thread: FFmpeg → raw packets
    │    ├─ 2× MediaCodec → OES textures

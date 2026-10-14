@@ -454,39 +454,45 @@ public class AlphaVideoView extends TextureView implements
         }
         
         final WebMSource source;
-        final boolean isDualStream;
+        final int[] dualStreamTracks;
         try {
             source = WebMSource.parse(uri);
             try (AssetFileDescriptor afd = source.open(getContext())) {
                 // 2 VP9/AV1 video streams decode on MediaCodec; one with alpha on the software decoder
-                isDualStream = BufferedDualStreamPlayer.nativeIsDualStream(
+                dualStreamTracks = BufferedDualStreamPlayer.nativeDualStreamTracks(
                     afd.getParcelFileDescriptor().getFd(), afd.getStartOffset(), afd.getLength());
             }
         } catch (IllegalArgumentException | IOException e) {
             reportError(e.getMessage());
             return;
         }
-        loadProbedSource(source, isDualStream);
+        loadProbedSource(source, dualStreamTracks);
     }
     
     private void probeDownload(String path) {
         final int generation = sourceGeneration;
         probeExecutor.execute(() -> {
-            boolean isDualStream = BufferedDualStreamPlayer.nativeIsDualStreamDownload(path);
+            int[] dualStreamTracks = BufferedDualStreamPlayer.nativeDualStreamTracksDownload(path);
             post(() -> {
                 if (generation != sourceGeneration || !path.equals(localSource) || isReleased || !glReady) return;
-                loadProbedSource(WebMSource.download(path), isDualStream);
+                loadProbedSource(WebMSource.download(path), dualStreamTracks);
             });
         });
     }
     
-    private void loadProbedSource(WebMSource source, boolean isDualStream) {
+    /** @param dualStreamTracks from {@link BufferedDualStreamPlayer#nativeDualStreamTracks}; null for one stream */
+    private void loadProbedSource(WebMSource source, int[] dualStreamTracks) {
+        boolean isDualStream = dualStreamTracks != null;
         logV("Source " + source + " isDualStream=" + isDualStream);
         
         boolean hasHwDecoder = SurfaceTextureVideoDecoder.isVp9HardwareDecoderAvailable() ||
                                SurfaceTextureVideoDecoder.isAv1HardwareDecoderAvailable();
         
-        if (isDualStream && hasHwDecoder) {
+        // The C++ core plays dual-stream VP9 in a profile MediaCodec doesn't list (4:4:4 alpha).
+        if (isDualStream && !BufferedDualStreamPlayer.mediaCodecDecodes(dualStreamTracks)) {
+            logV("MediaCodec doesn't list a track's profile; decoding in software");
+            loadSingleStream(source);
+        } else if (isDualStream && hasHwDecoder) {
             loadDualStream(source);
         } else {
             loadSingleStream(source);

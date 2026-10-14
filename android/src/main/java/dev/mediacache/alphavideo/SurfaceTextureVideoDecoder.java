@@ -176,6 +176,30 @@ public class SurfaceTextureVideoDecoder implements SurfaceTexture.OnFrameAvailab
         return false;
     }
     
+    /**
+     * Whether a decoder for {@code mime} lists the stream's FFmpeg profile. Android VP9 decoders
+     * rarely list the 4:4:4 profiles 1 and 3, and MediaCodec has no AV1 profile beyond Main.
+     * An unknown (negative) profile counts as supported.
+     */
+    public static boolean isProfileSupported(String mime, int avProfile) {
+        if (avProfile < 0) return true;
+        if (MIME_AV1.equalsIgnoreCase(mime)) return avProfile == 0;
+        if (avProfile > 3) return false;
+        int profile = MediaCodecInfo.CodecProfileLevel.VP9Profile0 << avProfile;  // 1, 2, 4, 8
+        
+        MediaCodecList codecList = new MediaCodecList(MediaCodecList.REGULAR_CODECS);
+        for (MediaCodecInfo info : codecList.getCodecInfos()) {
+            if (info.isEncoder()) continue;
+            for (String type : info.getSupportedTypes()) {
+                if (!type.equalsIgnoreCase(mime)) continue;
+                for (MediaCodecInfo.CodecProfileLevel pl : info.getCapabilitiesForType(type).profileLevels) {
+                    if (pl.profile == profile) return true;
+                }
+            }
+        }
+        return false;
+    }
+    
     /** @deprecated Use isHardwareDecoderAvailable(MIME_VP9) */
     public static boolean isVp9HardwareDecoderAvailable() {
         return isHardwareDecoderAvailable(MIME_VP9);
