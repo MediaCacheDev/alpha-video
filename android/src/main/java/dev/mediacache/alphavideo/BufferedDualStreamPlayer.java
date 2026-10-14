@@ -1,5 +1,6 @@
 package dev.mediacache.alphavideo;
 
+import android.media.MediaFormat;
 import android.os.Handler;
 import android.os.HandlerThread;
 import android.util.Log;
@@ -43,6 +44,9 @@ public class BufferedDualStreamPlayer implements SurfaceTextureVideoDecoder.Fram
     private int height;
     private int totalFrames;
     private double frameRate;
+    // For a shader converting the decoders' raw YUV itself; set on load
+    private volatile float[] colorYuvToRgb;
+    private volatile float[] alphaRange;
 
     /**
      * Wall-clock rate multiplier. Volatile: written from the UI thread, read by the playback loop.
@@ -243,6 +247,9 @@ public class BufferedDualStreamPlayer implements SurfaceTextureVideoDecoder.Fram
             
             // [colour range, colour space, alpha range, alpha space]
             int[] colorInfo = nativeGetColorInfo(nativeDemuxerPtr);
+            colorYuvToRgb = WebMAlphaPlayerNative.nativeYuvToRgbFor(colorInfo[0], colorInfo[1], width, height);
+            alphaRange = MediaCodecColor.range(colorInfo[2]) == MediaFormat.COLOR_RANGE_FULL
+                    ? new float[] {1f, 0f} : new float[] {255f / 219f, 16f / 255f};
             if (!colorDecoder.configure(width, height, colorInfo[0], colorInfo[1])
                     || !alphaDecoder.configure(width, height, colorInfo[2], colorInfo[3])) {
                 Log.e(TAG, "Failed to configure decoders");
@@ -455,6 +462,16 @@ public class BufferedDualStreamPlayer implements SurfaceTextureVideoDecoder.Fram
      */
     public float[] getAlphaTransformMatrix() {
         return alphaTransformMatrix;
+    }
+
+    /** The colour stream's YUV to RGB from its tags, a column-major mat4; null before load. */
+    public float[] getColorYuvToRgb() {
+        return colorYuvToRgb;
+    }
+
+    /** {scale, offset} taking the alpha stream's luma to 0..1: scale * (y - offset); null before load. */
+    public float[] getAlphaRange() {
+        return alphaRange;
     }
     
     // -------------------------------------------------------------------------

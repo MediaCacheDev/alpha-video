@@ -7,6 +7,7 @@ import android.opengl.EGL14;
 import android.opengl.EGLConfig;
 import android.opengl.EGLContext;
 import android.opengl.EGLDisplay;
+import android.opengl.EGLExt;
 import android.opengl.EGLSurface;
 import android.opengl.GLES11Ext;
 import android.opengl.GLES20;
@@ -63,6 +64,10 @@ public class AlphaVideoView extends TextureView implements
     // OpenGL resources
     private int programId;  // YUVA shader (ByteBuffer mode)
     private int oesProgramId;  // OES shader (Surface mode - GPU accelerated)
+    // Surface mode converting raw YUV itself: the driver may convert software decoders' buffers as
+    // BT.601 whatever their dataspace (Adreno with c2.android.av1-dav1d). 0 without GL_EXT_YUV_target.
+    private int yuvOesProgramId;
+    private int glesVersion;
     private int yTextureId, uTextureId, vTextureId, aTextureId;
     private FloatBuffer vertexBuffer;
     private FloatBuffer oesVertexBuffer;  // Vertex buffer with transform matrix support
@@ -833,6 +838,30 @@ public class AlphaVideoView extends TextureView implements
     // EGL Setup (runs on render thread)
     //------------------------------------------------------------------------------
     
+    /** Picks an RGBA8 window config of the renderable type and creates a context of that version. */
+    private boolean createContext(int renderableType, int clientVersion) {
+        int[] configAttribs = {
+            EGL14.EGL_RED_SIZE, 8,
+            EGL14.EGL_GREEN_SIZE, 8,
+            EGL14.EGL_BLUE_SIZE, 8,
+            EGL14.EGL_ALPHA_SIZE, 8,
+            EGL14.EGL_RENDERABLE_TYPE, renderableType,
+            EGL14.EGL_SURFACE_TYPE, EGL14.EGL_WINDOW_BIT,
+            EGL14.EGL_NONE
+        };
+        EGLConfig[] configs = new EGLConfig[1];
+        int[] numConfigs = new int[1];
+        if (!EGL14.eglChooseConfig(eglDisplay, configAttribs, 0, configs, 0, 1, numConfigs, 0) || numConfigs[0] == 0) {
+            return false;
+        }
+        int[] contextAttribs = { EGL14.EGL_CONTEXT_CLIENT_VERSION, clientVersion, EGL14.EGL_NONE };
+        EGLContext context = EGL14.eglCreateContext(eglDisplay, configs[0], EGL14.EGL_NO_CONTEXT, contextAttribs, 0);
+        if (context == EGL14.EGL_NO_CONTEXT) return false;
+        eglConfig = configs[0];
+        eglContext = context;
+        return true;
+    }
+
     private void initEGL() {
         logV("Initializing EGL");
         
@@ -850,34 +879,14 @@ public class AlphaVideoView extends TextureView implements
             return;
         }
         
-        // Choose config with alpha support
-        int[] configAttribs = {
-            EGL14.EGL_RED_SIZE, 8,
-            EGL14.EGL_GREEN_SIZE, 8,
-            EGL14.EGL_BLUE_SIZE, 8,
-            EGL14.EGL_ALPHA_SIZE, 8,
-            EGL14.EGL_RENDERABLE_TYPE, EGL14.EGL_OPENGL_ES2_BIT,
-            EGL14.EGL_SURFACE_TYPE, EGL14.EGL_WINDOW_BIT,
-            EGL14.EGL_NONE
-        };
-        
-        EGLConfig[] configs = new EGLConfig[1];
-        int[] numConfigs = new int[1];
-        if (!EGL14.eglChooseConfig(eglDisplay, configAttribs, 0, configs, 0, 1, numConfigs, 0)) {
-            Log.e(TAG, "Unable to choose EGL config");
-            return;
-        }
-        eglConfig = configs[0];
-        
-        // Create context
-        int[] contextAttribs = {
-            EGL14.EGL_CONTEXT_CLIENT_VERSION, 2,
-            EGL14.EGL_NONE
-        };
-        eglContext = EGL14.eglCreateContext(eglDisplay, eglConfig, EGL14.EGL_NO_CONTEXT, contextAttribs, 0);
-        if (eglContext == EGL14.EGL_NO_CONTEXT) {
-            Log.e(TAG, "Unable to create EGL context");
-            return;
+        // ES 3 lets the dual-stream shader read raw YUV (GL_EXT_YUV_target); ES 2 otherwise
+        glesVersion = 3;
+        if (!createContext(EGLExt.EGL_OPENGL_ES3_BIT_KHR, 3)) {
+            glesVersion = 2;
+            if (!createContext(EGL14.EGL_OPENGL_ES2_BIT, 2)) {
+                Log.e(TAG, "Unable to create EGL context");
+                return;
+            }
         }
         
         // Create window surface from SurfaceTexture
@@ -917,6 +926,7 @@ public class AlphaVideoView extends TextureView implements
         
         // Reset GL state
         programId = 0;
+        yuvOesProgramId = 0;
         yTextureId = uTextureId = vTextureId = aTextureId = 0;
         currentWidth = currentHeight = 0;
     }
@@ -998,6 +1008,43 @@ public class AlphaVideoView extends TextureView implements
         } else {
             logV("OES shader created (GPU-accelerated compositing)");
         }
+
+        String extensions = GLES20.glGetString(GLES20.GL_EXTENSIONS);
+        if (glesVersion >= 3 && extensions != null && extensions.contains("GL_EXT_YUV_target")) {
+            String yuvOesVertexShader =
+                "#version 300 es\n" +
+                "in vec4 aPosition;\n" +
+                "in vec2 aTexCoord;\n" +
+                "uniform mat4 uColorSTMatrix;\n" +
+                "uniform mat4 uAlphaSTMatrix;\n" +
+                "out vec2 vColorTexCoord;\n" +
+                "out vec2 vAlphaTexCoord;\n" +
+                "void main() {\n" +
+                "    gl_Position = aPosition;\n" +
+                "    vColorTexCoord = (uColorSTMatrix * vec4(aTexCoord, 0.0, 1.0)).xy;\n" +
+                "    vAlphaTexCoord = (uAlphaSTMatrix * vec4(aTexCoord, 0.0, 1.0)).xy;\n" +
+                "}\n";
+            String yuvOesFragmentShader =
+                "#version 300 es\n" +
+                "#extension GL_EXT_YUV_target : require\n" +
+                "precision highp float;\n" +
+                "in vec2 vColorTexCoord;\n" +
+                "in vec2 vAlphaTexCoord;\n" +
+                "uniform __samplerExternal2DY2YEXT uColorTexture;\n" +
+                "uniform __samplerExternal2DY2YEXT uAlphaTexture;\n" +
+                "uniform mat4 uYuvToRgb;\n" +
+                "uniform vec2 uAlphaRange;\n" +
+                "out vec4 fragColor;\n" +
+                "void main() {\n" +
+                "    vec3 yuv = texture(uColorTexture, vColorTexCoord).xyz;\n" +
+                "    vec3 rgb = clamp((uYuvToRgb * vec4(yuv, 1.0)).rgb, 0.0, 1.0);\n" +
+                "    float y = texture(uAlphaTexture, vAlphaTexCoord).x;\n" +
+                "    float alpha = clamp(uAlphaRange.x * (y - uAlphaRange.y), 0.0, 1.0);\n" +
+                "    fragColor = vec4(rgb * alpha, alpha);\n" +
+                "}\n";
+            yuvOesProgramId = createLinkedProgram(yuvOesVertexShader, yuvOesFragmentShader);
+            logV("Raw YUV OES shader " + (yuvOesProgramId != 0 ? "created" : "failed; the driver converts"));
+        }
         
         // Create textures for YUVA mode
         int[] textures = new int[4];
@@ -1060,10 +1107,24 @@ public class AlphaVideoView extends TextureView implements
         return program;
     }
     
+    /** createProgram, but 0 (logged) when a shader doesn't compile or the program doesn't link. */
+    private int createLinkedProgram(String vertexSource, String fragmentSource) {
+        int program = createProgram(vertexSource, fragmentSource);
+        int[] status = new int[1];
+        GLES20.glGetProgramiv(program, GLES20.GL_LINK_STATUS, status, 0);
+        if (status[0] != 0) return program;
+        Log.w(TAG, "Shader program failed to link: " + GLES20.glGetProgramInfoLog(program));
+        GLES20.glDeleteProgram(program);
+        return 0;
+    }
+
     private int loadShader(int type, String source) {
         int shader = GLES20.glCreateShader(type);
         GLES20.glShaderSource(shader, source);
         GLES20.glCompileShader(shader);
+        int[] status = new int[1];
+        GLES20.glGetShaderiv(shader, GLES20.GL_COMPILE_STATUS, status, 0);
+        if (status[0] == 0) Log.w(TAG, "Shader failed to compile: " + GLES20.glGetShaderInfoLog(shader));
         return shader;
     }
     
@@ -1130,16 +1191,23 @@ public class AlphaVideoView extends TextureView implements
             return;
         }
         
-        // Use OES compositing program
-        GLES20.glUseProgram(oesProgramId);
+        float[] colorYuvToRgb = bufferedPlayer.getColorYuvToRgb();
+        float[] alphaRange = bufferedPlayer.getAlphaRange();
+        boolean rawYuv = yuvOesProgramId != 0 && colorYuvToRgb != null && alphaRange != null;
+        int program = rawYuv ? yuvOesProgramId : oesProgramId;
+        GLES20.glUseProgram(program);
         
         // Get attribute/uniform locations
-        int positionHandle = GLES20.glGetAttribLocation(oesProgramId, "aPosition");
-        int texCoordHandle = GLES20.glGetAttribLocation(oesProgramId, "aTexCoord");
-        int colorSTMatrixHandle = GLES20.glGetUniformLocation(oesProgramId, "uColorSTMatrix");
-        int alphaSTMatrixHandle = GLES20.glGetUniformLocation(oesProgramId, "uAlphaSTMatrix");
-        int colorTextureHandle = GLES20.glGetUniformLocation(oesProgramId, "uColorTexture");
-        int alphaTextureHandle = GLES20.glGetUniformLocation(oesProgramId, "uAlphaTexture");
+        int positionHandle = GLES20.glGetAttribLocation(program, "aPosition");
+        int texCoordHandle = GLES20.glGetAttribLocation(program, "aTexCoord");
+        int colorSTMatrixHandle = GLES20.glGetUniformLocation(program, "uColorSTMatrix");
+        int alphaSTMatrixHandle = GLES20.glGetUniformLocation(program, "uAlphaSTMatrix");
+        int colorTextureHandle = GLES20.glGetUniformLocation(program, "uColorTexture");
+        int alphaTextureHandle = GLES20.glGetUniformLocation(program, "uAlphaTexture");
+        if (rawYuv) {
+            GLES20.glUniformMatrix4fv(GLES20.glGetUniformLocation(program, "uYuvToRgb"), 1, false, colorYuvToRgb, 0);
+            GLES20.glUniform2fv(GLES20.glGetUniformLocation(program, "uAlphaRange"), 1, alphaRange, 0);
+        }
         
         // Set vertex attributes (un-flipped — SurfaceTexture transform handles orientation)
         oesVertexBuffer.position(0);

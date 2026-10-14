@@ -793,6 +793,15 @@ Java_dev_mediacache_alphavideo_WebMAlphaPlayerNative_nativeGetYuvToRgb(JNIEnv* e
     return out;
 }
 
+JNIEXPORT jfloatArray JNICALL
+Java_dev_mediacache_alphavideo_WebMAlphaPlayerNative_nativeYuvToRgbFor(
+    JNIEnv* env, jclass clazz, jint colorRange, jint colorSpace, jint width, jint height) {
+    webm::YuvToRgb m = webm::yuvToRgbFor(colorRange, colorSpace, width, height);
+    jfloatArray out = env->NewFloatArray(16);
+    if (out) env->SetFloatArrayRegion(out, 0, 16, m.m);
+    return out;
+}
+
 JNIEXPORT jdouble JNICALL
 Java_dev_mediacache_alphavideo_WebMAlphaPlayerNative_nativeGetDuration(JNIEnv* env, jclass clazz, jlong playerId) {
     std::lock_guard<std::mutex> lock(playersMutex);
