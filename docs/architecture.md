@@ -34,7 +34,8 @@ React (JS) AlphaVideoView props
    ├─ iOS: RNAlphaVideoViewManager → RNAlphaVideoView (an AlphaVideoView) → AlphaVideoMetalView
    │      └─ download/cache (AlphaVideoDownload, NSURLSession→Caches) → loadFromPath / loadFromDownloadPath → WebMAlphaPlayer (C++)
    │
-   └─ Web: HTML5 <video> element fallback
+   └─ Web: WebPlayer.web.tsx → alpha-video-web: <video> where the browser keeps the alpha,
+          otherwise the C++ demuxer in WASM → WebCodecs, or WASM decoders in Workers → WebGL2
 ```
 
 ## Components and Responsibilities

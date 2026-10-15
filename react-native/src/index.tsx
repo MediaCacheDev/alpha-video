@@ -130,5 +130,6 @@ export {
   type AlphaVideoSource,
   type PlaybackMode,
   type Decoder,
+  type WebDecoder,
   type AlphaVideoLoadEvent,
 } from './AlphaVideoView';

@@ -2,7 +2,9 @@
   "compilerOptions": {
     "rootDir": ".",
     "paths": {
-      "react-native-alpha-video": ["./react-native/src/index"]
+      "react-native-alpha-video": ["./react-native/src/index"],
+      "alpha-video-web": ["./web/dist/index.d.ts"],
+      "alpha-video-web/react": ["./web/dist/react.d.ts"]
     },
     "allowUnreachableCode": false,
     "allowUnusedLabels": false,

@@ -6,21 +6,24 @@
  * is inside a render, which makes it a trap rather than a design.
  */
 
-import React, { useRef, useEffect, useState, forwardRef, useImperativeHandle } from 'react';
+import React, { useRef, forwardRef, useImperativeHandle } from 'react';
 import {
   Platform,
-  View,
-  StyleSheet,
   ViewProps,
   StyleProp,
   ViewStyle,
 } from 'react-native';
 import NativeAlphaVideoView, { Commands, type Decoder } from './AlphaVideoViewNativeComponent';
+import { WebPlayer } from './WebPlayer';
 
 export type { Decoder };
 
-// Web video element type
-type VideoElement = HTMLVideoElement;
+/**
+ * The web engine (default `'auto'`): `'browser'` (`<video>`), `'webcodecs'`, `'webcodecs-hw'`,
+ * `'webcodecs-sw'` or `'software'` (WebAssembly). `'auto'` tries them in that order and uses the
+ * first that shows the alpha; a forced engine never falls back.
+ */
+export type WebDecoder = 'auto' | 'browser' | 'webcodecs' | 'webcodecs-hw' | 'webcodecs-sw' | 'software';
 
 /**
  * Source types for WebM video
@@ -49,7 +52,8 @@ export interface AlphaVideoLoadEvent {
   /**
    * The engine and decoders playing the file: `'software (libvpx-vp9)'`, `'software (libdav1d)'` (AV1),
    * `'mediacodec-hw (c2.qti.vp9.decoder)'`, `'mediacodec-sw (...)'`, `'mediacodec (hardware, software)'`
-   * for one of each, or `'browser'` on web.
+   * for one of each. On the web: `'browser'`, `'webcodecs (vp09.00.41.08)'` (with the alpha track's
+   * codec when it differs), `'software (vp9)'`, `'software (vp9, 4+2 threads)'` or `'software (libdav1d)'`.
    */
   decoder: string;
 }
@@ -86,9 +90,12 @@ export interface AlphaVideoViewProps extends ViewProps {
   /**
    * Android: the decoder for files with colour and alpha as separate VP9/AV1 bitstreams
    * (default `'auto'`; see {@link Decoder}). `onLoad` reports the one used. iOS always uses
-   * FFmpeg and web the browser.
+   * FFmpeg; the web has `webDecoder`.
    */
   decoder?: Decoder;
+
+  /** Web: the engine (default `'auto'`; see {@link WebDecoder}). `onLoad` reports the one used. */
+  webDecoder?: WebDecoder;
   
   /**
    * @deprecated Use `mode` instead.
@@ -132,8 +139,11 @@ export interface AlphaVideoViewProps extends ViewProps {
   style?: StyleProp<ViewStyle>;
   /** Callback when video loads */
   onLoad?: (event: AlphaVideoLoadEvent) => void;
-  /** Callback when error occurs */
-  onError?: (event: { error: string }) => void;
+  /**
+   * Callback when error occurs. On the web, `code` tells the errors apart: `'LOAD_FAILED'`,
+   * `'UNSUPPORTED_FILE'`, `'NO_ALPHA_PATH'`, `'DECODER_UNSUPPORTED'`, `'DECODE_FAILED'` or `'WEBGL_UNSUPPORTED'`.
+   */
+  onError?: (event: { error: string; code?: string }) => void;
   /** Callback when video ends */
   onEnd?: (event: {}) => void;
 }
@@ -161,121 +171,6 @@ function resolveMode(mode: PlaybackMode | undefined, stream: boolean | undefined
   if (stream == null) return undefined;
   return stream ? 'stream' : 'preload';
 }
-
-/** asset://path names the app's bundled media; on the web it is served from the site root. */
-function toWebUrl(uri: string | undefined): string | undefined {
-  return uri?.startsWith('asset://') ? '/' + uri.slice('asset://'.length).replace(/^\/+/, '') : uri;
-}
-
-/** The browser doesn't expose the frame rate. */
-const WEB_FPS = 30;
-
-/** Clamped to the clip; ignored until its duration is known. */
-function seekVideoToFrame(video: VideoElement | null, frame: number) {
-  if (!video || !(video.duration > 0)) return;
-  const lastFrame = Math.max(0, Math.floor(video.duration * WEB_FPS) - 1);
-  const target = Math.min(Math.max(0, Math.floor(frame) || 0), lastFrame);
-  // Chrome moves a second seek into the last frame to the very end, which wraps a looping clip to 0
-  if (Math.floor(video.currentTime * WEB_FPS + 1e-6) === target && !video.seeking) return;
-  // The middle of the frame, so rounding in the browser can't land on the one before
-  video.currentTime = (target + 0.5) / WEB_FPS;
-}
-
-const WebVideoPlayer = forwardRef<AlphaVideoViewRef, AlphaVideoViewProps>(
-  (props, ref) => {
-    const { source, autoPlay = true, loop = true, paused = false, playbackSpeed = 1.0, style, onLoad, onError, onEnd } = props;
-    const videoRef = useRef<VideoElement | null>(null);
-    const [isLoaded, setIsLoaded] = useState(false);
-
-    useImperativeHandle(ref, () => ({
-      play: () => {
-        videoRef.current?.play().catch(() => {});
-      },
-      pause: () => {
-        videoRef.current?.pause();
-      },
-      stop: () => {
-        if (videoRef.current) {
-          videoRef.current.pause();
-          videoRef.current.currentTime = 0;
-        }
-      },
-      seekToFrame: (frame: number) => seekVideoToFrame(videoRef.current, frame),
-      seekToTime: (seconds: number) =>
-        seekVideoToFrame(videoRef.current, Math.floor((seconds > 0 ? seconds : 0) * WEB_FPS + 1e-6)),
-    }));
-
-    useEffect(() => {
-      const video = videoRef.current;
-      if (!video) return;
-      video.playbackRate = playbackSpeed;
-    }, [playbackSpeed]);
-
-    useEffect(() => {
-      const video = videoRef.current;
-      if (!video || !isLoaded) return;
-
-      if (paused) {
-        video.pause();
-      } else if (autoPlay) {
-        video.play().catch(() => {});
-      }
-    }, [paused, autoPlay, isLoaded]);
-
-    const handleLoadedMetadata = () => {
-      const video = videoRef.current;
-      if (!video) return;
-
-      setIsLoaded(true);
-
-      // Loading a source resets playbackRate to 1, and the effect above won't re-fire for a
-      // source change, so a non-default rate has to be put back here.
-      video.playbackRate = playbackSpeed;
-
-      const totalFrames = Math.floor(video.duration * WEB_FPS);
-      
-      onLoad?.({
-        totalFrames,
-        width: video.videoWidth,
-        height: video.videoHeight,
-        decoder: 'browser',
-      });
-
-      if (autoPlay && !paused) {
-        video.play().catch(() => {});
-      }
-    };
-
-    const handleError = () => {
-      const video = videoRef.current;
-      const errorMessage = video?.error?.message || 'Unknown video error';
-      onError?.({ error: errorMessage });
-    };
-
-    return (
-      <View style={[styles.container, style]}>
-        <video
-          ref={videoRef as React.RefObject<HTMLVideoElement>}
-          src={toWebUrl(source?.uri)}
-          autoPlay={autoPlay && !paused}
-          loop={loop}
-          muted
-          playsInline
-          onLoadedMetadata={handleLoadedMetadata}
-          onError={handleError}
-          onEnded={() => onEnd?.({})}
-          style={{
-            width: '100%',
-            height: '100%',
-            objectFit: 'contain',
-          }}
-        />
-      </View>
-    );
-  }
-);
-
-WebVideoPlayer.displayName = 'WebVideoPlayer';
 
 /**
  * Native implementation for iOS and Android
@@ -348,8 +243,9 @@ NativePlayer.displayName = 'NativePlayer';
 /**
  * AlphaVideoView - Cross-platform WebM VP9/AV1 video player with alpha transparency support
  * 
- * Uses native C++ implementation with Metal (iOS) and OpenGL ES (Android) for optimal performance
- * Falls back to HTML5 video element on web platforms
+ * Uses native C++ implementation with Metal (iOS) and OpenGL ES (Android) for optimal performance.
+ * On the web, alpha-video-web: `<video>` where the browser keeps the alpha, otherwise WebCodecs or
+ * WebAssembly decoding drawn in WebGL2.
  * 
  * @example
  * ```tsx
@@ -364,7 +260,7 @@ NativePlayer.displayName = 'NativePlayer';
 export const AlphaVideoView = forwardRef<AlphaVideoViewRef, AlphaVideoViewProps>(
   (props, ref) => {
     if (Platform.OS === 'web') {
-      return <WebVideoPlayer ref={ref} {...props} />;
+      return <WebPlayer ref={ref} {...props} />;
     }
 
     return <NativePlayer ref={ref} {...props} />;
@@ -372,9 +268,3 @@ export const AlphaVideoView = forwardRef<AlphaVideoViewRef, AlphaVideoViewProps>
 );
 
 AlphaVideoView.displayName = 'AlphaVideoView';
-
-const styles = StyleSheet.create({
-  container: {
-    overflow: 'hidden',
-  },
-});

@@ -46,7 +46,7 @@ Both play transparent videos on Android, iOS and the web, and they suit differen
 - **High Performance** - Native C++ core (FFmpeg) with GPU-accelerated rendering
 - **iOS** - Metal-based rendering with YUVA-to-RGBA GPU shader
 - **Android** - TextureView with OpenGL ES 2.0, proper z-ordering and ScrollView support
-- **Web** - `alpha-video-web` shows the alpha in every modern browser: `<video>` where the browser keeps it, otherwise WebCodecs or WebAssembly decoding drawn in WebGL2 (see [Web](#web)). The React Native component's web side is still a plain `<video>`
+- **Web** - `alpha-video-web` shows the alpha in every modern browser: `<video>` where the browser keeps it, otherwise WebCodecs or WebAssembly decoding drawn in WebGL2 (see [Web](#web)). On react-native-web, `AlphaVideoView` uses it
 - **Zero-Copy Frame Pipeline** - Efficient memory usage with LRU frame caching (software path) and OES texture compositing (hardware path)
 
 ## Decision Matrix
@@ -273,11 +273,12 @@ iOS has no `decoder`: it always decodes in software. The cache, prefetch and que
 | `paused` | `boolean` | `false` | Hold playback. Unpausing plays on when `autoPlay` is on |
 | `playbackSpeed` | `number` | `1.0` | Playback speed multiplier. Changeable while playing, and does **not** move the playhead — see below |
 | `style` | `ViewStyle` | - | Container style. On Android `backgroundColor` is ignored (the view is a `TextureView`); put a background on a parent view |
-| `onLoad` | `function` | - | Callback when video loads (`{ totalFrames, width, height, decoder }`); `decoder` names the engine and decoders, e.g. `'mediacodec-hw (c2.qti.vp9.decoder)'`, `'software (libvpx-vp9)'`, `'software (libdav1d)'`, or `'browser'` on web |
-| `onError` | `function` | - | Callback when error occurs (`{ error }`) |
+| `onLoad` | `function` | - | Callback when video loads (`{ totalFrames, width, height, decoder }`); `decoder` names the engine and decoders, e.g. `'mediacodec-hw (c2.qti.vp9.decoder)'`, `'software (libvpx-vp9)'`, `'software (libdav1d)'`; on the web `'browser'`, `'webcodecs (vp09.00.41.08)'` or `'software (vp9)'` |
+| `onError` | `function` | - | Callback when error occurs (`{ error }`; on the web also `code`, such as `'NO_ALPHA_PATH'`) |
 | `onEnd` | `function` | - | Callback when playback reaches the end with `loop` off |
 | `mode` | `'preload' \| 'stream' \| 'streamAndPreload'` | `'stream'` | Playback mode (software path only, see below) |
-| `decoder` | `'auto' \| 'mediacodec' \| 'mediacodec-hw' \| 'mediacodec-sw' \| 'software'` | `'auto'` | Android: the decoding engine (see [Choosing the Decoder](#choosing-the-decoder-android)). iOS and web accept it and use the C++ core and the browser |
+| `decoder` | `'auto' \| 'mediacodec' \| 'mediacodec-hw' \| 'mediacodec-sw' \| 'software'` | `'auto'` | Android: the decoding engine (see [Choosing the Decoder](#choosing-the-decoder-android)). iOS accepts it and uses the C++ core; the web has `webDecoder` |
+| `webDecoder` | `'auto' \| 'browser' \| 'webcodecs' \| 'webcodecs-hw' \| 'webcodecs-sw' \| 'software'` | `'auto'` | Web: the engine (see [Web](#web)). `'browser'` is a plain `<video>`; a forced engine reports `onError` rather than fall back |
 | `streamCacheSize` | `number` | `30` | Decoded frames kept in `stream` mode (an LRU cache) |
 | `streamPrefetchAhead` | `number` | `15` | Frames decoded ahead of the playhead in `stream` and `streamAndPreload` mode |
 | `useDecodeQueue` | `boolean` | `true` | In `preload` and `streamAndPreload` mode, decode one clip at a time across all players, so many at once don't saturate the CPU (see [Global Decode Queue](#global-decode-queue)) |
@@ -411,12 +412,12 @@ In `stream` and `streamAndPreload` mode (and on the Android hardware path in tho
 
 Only a file that no engine can decode ends in an error (`NO_ALPHA_PATH`). Each WebAssembly module is loaded only when its engine runs, and nothing needs hosting: the modules and Workers are inside the package. Every test card passes through every engine that can decode it, in Playwright's Chromium, Firefox and WebKit; real Safari and phones are still to be tested. The API, the React component and speed figures are in [web/README.md](web/README.md).
 
-**The React Native component on the web doesn't use it yet.** It renders a muted HTML5 `<video>`, so the browser does the decoding and streaming. It honours `source`, `autoPlay`, `loop`, `paused`, `playbackSpeed`, `onLoad`, `onError`, `onEnd` and the ref methods; `mode`, `decoder`, `cacheKey` and the stream and queue props have no effect. `onLoad` reports `decoder: 'browser'`.
+**On react-native-web, `AlphaVideoView` plays through `alpha-video-web`**, which is installed with this package. iOS and Android bundles don't include it: the component imports it from a `.web.tsx` file. It honours `source`, `autoPlay`, `loop`, `paused`, `playbackSpeed`, `webDecoder`, `onLoad`, `onError`, `onEnd` and the ref methods. `mode`, `decoder`, `cacheKey` and the stream and queue props have no effect. `asset://path` is served from the site root.
 
-- **Chrome, Edge and Firefox** play single-stream YUVA VP9 WebM with its transparency.
-- **Safari** doesn't show WebM's alpha channel. Until the component uses `alpha-video-web`, serve Safari a separate HEVC-with-alpha file.
-- **Dual-stream files** show only the colour track in every browser: `<video>` plays one video track, so the alpha track is ignored.
-- Browsers don't report a frame rate, so `onLoad`'s `totalFrames` and `seekToFrame` assume 30 fps.
+- **Bundling:** the WebAssembly engines are separate chunks, loaded by `import()` only when a file needs them. With webpack, Vite or esbuild that needs nothing extra.
+- **Content-Security-Policy:** the software engine's Workers start from `blob:` URLs, so a page with a CSP must allow `worker-src blob:`.
+- **Threads:** a cross-origin isolated page (COOP and COEP headers) lets the software decoders run threads ([details](web/README.md#threads)).
+- **The old behaviour:** `webDecoder="browser"` gives a plain `<video>`. Safari then drops the alpha, and dual-stream files show only their colour track.
 
 ## Architecture Overview
 
@@ -478,7 +479,7 @@ Only a file that no engine can decode ends in an error (`NO_ALPHA_PATH`). Each W
 - `AlphaVideoMetalView`: MTKView with YUVA-to-RGBA compute shader
 - Triple buffering prevents tearing
 
-**Web** — HTML5 `<video>` fallback with automatic platform detection
+**Web** — `WebPlayer.web.tsx` renders `alpha-video-web`'s React component: `<video>`, WebCodecs or WebAssembly decoding (see [Web](#web))
 
 ## Playback Modes (Software Path)
 

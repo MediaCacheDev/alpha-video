@@ -1,6 +1,6 @@
 # Changelog
 
-The packages built from this repository share one version: `react-native-alpha-video` on npm, `dev.mediacache:alpha-video` on Maven Central, and the `AlphaVideo` Swift package and `alpha-video` pod.
+The packages built from this repository share one version: `react-native-alpha-video` and `alpha-video-web` on npm, `dev.mediacache:alpha-video` on Maven Central, and the `AlphaVideo` Swift package and `alpha-video` pod.
 
 ## 1.0.0 - Unreleased
 
@@ -14,7 +14,8 @@ First public release.
 - Sources: `https://`, `file://`, absolute paths, `asset://` (Android assets, the iOS bundle, the web root), `res/raw` names and `content://` on Android. http(s) files are cached under `cacheKey`, and the stream modes play them while they download.
 - Playback control: `play`, `pause`, `stop`, `seekToFrame` and `seekToTime`, plus `paused`, `autoPlay`, `loop` and `playbackSpeed`. With `autoPlay` off the first frame shows, in every mode. Events: `onLoad` (frames, size and decoder), `onError` and `onEnd`.
 - Android decoder status: `getDecoderStatus`, `getDecoderInfo`, `getMaxDecoderInstances` and `getActiveDecoderCount`.
-- React Native: `AlphaVideoView` on both the new architecture (a Fabric view, and a TurboModule for the decoder status) and the old one. On react-native-web it renders a `<video>`.
+- React Native: `AlphaVideoView` on both the new architecture (a Fabric view, and a TurboModule for the decoder status) and the old one. On react-native-web it plays through `alpha-video-web`, a dependency: `<video>` where the browser keeps the alpha, otherwise WebCodecs or WebAssembly decoding drawn in WebGL2, so the alpha shows in Safari and for dual-stream files too. The `webDecoder` prop forces an engine, and web errors carry a `code`.
+- `alpha-video-web` for plain JS/TS and React, from `web/`.
 - Standalone Android and iOS libraries.
 - MIT, with the bundled FFmpeg under LGPL-2.1-or-later, libvpx under BSD-3-Clause and dav1d under BSD-2-Clause. Their notices are in `THIRD_PARTY_NOTICES.md`, and their source is attached to the GitHub release.
 - Android libraries are linked for 16 KB pages.

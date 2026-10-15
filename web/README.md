@@ -2,7 +2,7 @@
 
 Plays transparent WebM video in every browser that can show it: VP9 or AV1, with alpha in each block's BlockAdditional (what FFmpeg and libvpx write for `yuva420p`) or in a second track. Plain JS/TS, with an optional React component.
 
-It's the web half of [react-native-alpha-video](https://github.com/MediaCacheDev/alpha-video), and it reuses that package's C++ core: the demuxer that splits a file into its colour and alpha bitstreams (`cpp/AlphaDemuxer`) and the YUV to RGB conversion of the iOS and Android players (`cpp/YuvToRgb`), compiled to WebAssembly.
+It's the web half of [react-native-alpha-video](https://github.com/MediaCacheDev/alpha-video), whose `AlphaVideoView` plays through it on react-native-web, and it reuses that package's C++ core: the demuxer that splits a file into its colour and alpha bitstreams (`cpp/AlphaDemuxer`) and the YUV to RGB conversion of the iOS and Android players (`cpp/YuvToRgb`), compiled to WebAssembly.
 
 ```bash
 npm install alpha-video-web
