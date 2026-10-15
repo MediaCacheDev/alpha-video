@@ -6,6 +6,8 @@
 // in the colour planes and again in the alpha plane, so a test can tell which frame it got.
 
 #include "WebMAlphaPlayer.h"
+#include "AlphaDemuxer.h"
+#include "FileRangeIO.h"
 #include "GrowingFile.h"
 
 extern "C" {
@@ -237,6 +239,56 @@ static void registerTests() {
             CHECK(std::abs(p->getDuration() - fx.card.frames / fx.card.fps) < 0.05, p->getDuration());
             std::string decoder = fx.name.find("av1") != std::string::npos ? "libdav1d" : "libvpx-vp9";
             CHECK(p->getDecoderName() == decoder, p->getDecoderName());
+        });
+
+        add("demuxer: layout and packets", [](const Fixture& fx) {
+            int fd = ::open(fx.path.c_str(), O_RDONLY);
+            CHECK(fd >= 0, fx.path);
+            AVIOContext* probeIO = openFileRangeIO(fd, 0, -1);
+            std::vector<int> tracks = AlphaDemuxer::colorAlphaTracks(probeIO);
+            closeFileRangeIO(&probeIO);
+            const bool av1 = fx.name.find("av1") != std::string::npos;
+            const bool blockAdditional = fx.name.find("yuva.webm") != std::string::npos;
+            CHECK(tracks.size() == 4, tracks.size());
+            CHECK(tracks[0] == (av1 ? 1 : 0) && tracks[2] == tracks[0], tracks[0] << " " << tracks[2]);
+
+            AVIOContext* io = openFileRangeIO(fd, 0, -1);
+            ::close(fd);
+            {
+                std::unique_ptr<AlphaDemuxer> demuxer = AlphaDemuxer::open(io);
+                CHECK(demuxer != nullptr, "open");
+                const AlphaDemuxer::Info& info = demuxer->info();
+                CHECK(info.width == fx.card.width && info.height == fx.card.height, info.width << "x" << info.height);
+                CHECK(info.totalFrames == fx.card.frames, info.totalFrames);
+                CHECK(info.hasAlpha && info.alphaInBlockAdditional == blockAdditional, info.alphaInBlockAdditional);
+                CHECK(info.color.codec == (av1 ? AlphaDemuxer::AV1 : AlphaDemuxer::VP9), info.color.codec);
+                CHECK(info.color.bitDepth == (fx.name.find("10bit") != std::string::npos ? 10 : 8), info.color.bitDepth);
+                CHECK(info.alpha.bitDepth == info.color.bitDepth, info.alpha.bitDepth);
+                if (blockAdditional) CHECK(info.alpha.colorRange == AVCOL_RANGE_JPEG, info.alpha.colorRange);
+                if (av1) CHECK(!info.color.codecPrivate.empty(), "AV1 has no av1C");
+
+                auto readAll = [&](std::vector<int64_t>& colourKeys, std::vector<int64_t>& alphaKeys) {
+                    int counts[2] = {0, 0};
+                    AlphaDemuxer::Packet p;
+                    while (demuxer->readPacket(&p)) {
+                        CHECK(p.size > 0, "empty packet, stream " << p.stream << " frame " << p.frameIndex);
+                        CHECK(p.frameIndex == counts[p.stream], p.frameIndex);
+                        if (counts[0] + counts[1] == 0) CHECK(p.stream == 0 && p.key, "the first packet is a colour keyframe");
+                        if (p.key) (p.stream == 0 ? colourKeys : alphaKeys).push_back(p.ptsUs);
+                        counts[p.stream]++;
+                    }
+                    CHECK(counts[0] == fx.card.frames && counts[1] == fx.card.frames, counts[0] << " colour, " << counts[1] << " alpha");
+                };
+                std::vector<int64_t> colourKeys, alphaKeys;
+                readAll(colourKeys, alphaKeys);
+                CHECK(!colourKeys.empty() && colourKeys == alphaKeys, colourKeys.size() << " colour keys, " << alphaKeys.size() << " alpha");
+
+                demuxer->seekToStart();
+                std::vector<int64_t> colourKeys2, alphaKeys2;
+                readAll(colourKeys2, alphaKeys2);
+                CHECK(colourKeys2 == colourKeys, "keyframes after seekToStart");
+            }
+            closeFileRangeIO(&io);
         });
 
         add("every frame in order", [](const Fixture& fx) {

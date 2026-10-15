@@ -9,8 +9,10 @@
 #include <android/native_window_jni.h>
 
 #include "WebMAlphaPlayer.h"
+#include "AlphaDemuxer.h"
 #include "FileRangeIO.h"
 #include "GrowingFile.h"
+#include <atomic>
 #include <memory>
 #include <unordered_map>
 #include <unordered_set>
@@ -953,155 +955,39 @@ Java_dev_mediacache_alphavideo_WebMAlphaPlayerNative_nativeGetFFmpegVersion(JNIE
 // Extracts raw VP9/AV1 packets from dual-stream WebM files
 //==============================================================================
 
-// Include FFmpeg headers for demuxer
 extern "C" {
-#include <libavformat/avformat.h>
-#include <libavcodec/avcodec.h>
-#include <libavutil/intreadwrite.h>
+#include <libavcodec/codec_id.h>
 }
 
 namespace {
 
-// Check if a codec is supported for dual-stream hardware decode
-static bool isSupportedVideoCodec(AVCodecID id) {
-    return id == AV_CODEC_ID_VP9 || id == AV_CODEC_ID_AV1;
-}
-
-/**
- * Demuxer context for dual-stream WebM files.
- * Extracts VP9/AV1 packets without decoding - MediaCodec will decode them.
- */
+// A demuxer and the I/O it reads. Members are freed in reverse order: the demuxer, then its I/O,
+// then the abort flag the download I/O polls.
 struct DualStreamDemuxer {
-    AVFormatContext* formatCtx = nullptr;
-    int colorStreamIndex = -1;
-    int alphaStreamIndex = -1;
-    int width = 0;
-    int height = 0;
-    int totalFrames = 0;
-    double frameRate = 30.0;
-    double timeBase = 0.0;
-    AVCodecID codecId = AV_CODEC_ID_NONE;
-    // AVColorRange and AVColorSpace of each stream, for MediaCodec's colour keys
-    int colorRange = AVCOL_RANGE_UNSPECIFIED, colorSpace = AVCOL_SPC_UNSPECIFIED;
-    int alphaRange = AVCOL_RANGE_UNSPECIFIED, alphaSpace = AVCOL_SPC_UNSPECIFIED;
-    
-    // Track frame indices for each stream
-    int colorFrameIndex = 0;
-    int alphaFrameIndex = 0;
-    
-    // A single VP9 track whose alpha is a second VP9 stream in each block's BlockAdditional. Each
-    // read of a colour packet leaves its alpha payload here for the next read.
-    bool alphaInBlockAdditional = false;
-    bool hasPendingAlpha = false;
-    std::vector<uint8_t> pendingAlpha;
-    long pendingAlphaPtsUs = 0;
-    
-    AVIOContext* io = nullptr;  // Owned; must outlive formatCtx
     // Set on destroy so a read waiting on a download returns
     std::atomic<bool> aborted{false};
-    
+    AVIOContext* io = nullptr;
+    std::unique_ptr<webm::AlphaDemuxer> demuxer;
+
     ~DualStreamDemuxer() {
-        if (formatCtx) {
-            avformat_close_input(&formatCtx);
-        }
+        demuxer.reset();
         webm::closeFileRangeIO(&io);
     }
 };
 
-// Opens *io (already created) as a demuxer input. On failure *io is closed and nothing is left to free.
-static bool openInput(AVFormatContext** formatCtx, AVIOContext** io) {
-    *formatCtx = avformat_alloc_context();
-    if (!*formatCtx) {
-        webm::closeFileRangeIO(io);
-        return false;
-    }
-    (*formatCtx)->pb = *io;
-    (*formatCtx)->flags |= AVFMT_FLAG_CUSTOM_IO;
-    
-    int ret = avformat_open_input(formatCtx, nullptr, nullptr, nullptr);
-    if (ret < 0) {
-        char err[AV_ERROR_MAX_STRING_SIZE];
-        av_strerror(ret, err, sizeof(err));
-        LOGE("Failed to open video: %s", err);
-        webm::closeFileRangeIO(io);
-        return false;
-    }
-    return true;
+jintArray intArray(JNIEnv* env, const std::vector<jint>& values) {
+    jintArray result = env->NewIntArray(static_cast<jsize>(values.size()));
+    if (result) env->SetIntArrayRegion(result, 0, static_cast<jsize>(values.size()), values.data());
+    return result;
 }
 
-// Opens bytes [offset, offset + length) of fd as a demuxer input. On failure nothing is left to free.
-static bool openRangeInput(int fd, jlong offset, jlong length, AVFormatContext** formatCtx, AVIOContext** io) {
-    *io = webm::openFileRangeIO(fd, offset, length);
-    if (!*io) {
-        LOGE("Failed to open fd %d range (offset %lld, length %lld)", fd, (long long)offset, (long long)length);
-        return false;
-    }
-    return openInput(formatCtx, io);
-}
-
-// Opens a cache file that may still be downloading. On failure nothing is left to free.
-static bool openDownloadInput(const std::string& path, const std::atomic<bool>* abort,
-                              AVFormatContext** formatCtx, AVIOContext** io) {
-    *io = webm::openDownloadIO(path, abort);
-    if (!*io) {
-        LOGE("Failed to open %s", path.c_str());
-        return false;
-    }
-    return openInput(formatCtx, io);
-}
-
-// The alpha payload of a packet's BlockAdditional (ID 1, after FFmpeg's 8-byte BlockAddID), or null.
-static const uint8_t* blockAdditionalAlpha(const AVPacket* packet, size_t* size) {
-    size_t sideSize = 0;
-    const uint8_t* side = av_packet_get_side_data(packet, AV_PKT_DATA_MATROSKA_BLOCKADDITIONAL, &sideSize);
-    if (!side || sideSize <= 8 || AV_RB64(side) != 1) return nullptr;
-    *size = sideSize - 8;
-    return side + 8;
-}
-// Whether the first packet of a VP9 stream carries alpha in its BlockAdditional. Leaves the read
-// position past that packet.
-static bool hasBlockAdditionalAlpha(AVFormatContext* formatCtx, int streamIndex) {
-    if (formatCtx->streams[streamIndex]->codecpar->codec_id != AV_CODEC_ID_VP9) return false;
-    AVPacket* packet = av_packet_alloc();
-    bool found = false;
-    while (packet && av_read_frame(formatCtx, packet) >= 0) {
-        bool ours = packet->stream_index == streamIndex;
-        size_t size = 0;
-        found = ours && blockAdditionalAlpha(packet, &size) != nullptr;
-        av_packet_unref(packet);
-        if (ours) break;
-    }
-    av_packet_free(&packet);
-    return found;
-}
-
-// The colour and alpha bitstreams of the opened input, for MediaCodec: each one's codec (0 VP9,
-// 1 AV1) and FFmpeg profile, in pairs. They come from 2+ VP9/AV1 tracks, or from one VP9 track
-// with alpha in BlockAdditional (the alpha stream takes the track's profile). Null otherwise.
-// Closes the input.
-static jintArray colorAlphaTracks(JNIEnv* env, AVFormatContext* formatCtx, AVIOContext* io) {
-    std::vector<jint> tracks;
-    int firstTrack = -1;
-    if (avformat_find_stream_info(formatCtx, nullptr) >= 0) {
-        for (unsigned i = 0; i < formatCtx->nb_streams; i++) {
-            AVCodecParameters* par = formatCtx->streams[i]->codecpar;
-            if (par->codec_type == AVMEDIA_TYPE_VIDEO && isSupportedVideoCodec(par->codec_id)) {
-                if (firstTrack < 0) firstTrack = static_cast<int>(i);
-                tracks.push_back(par->codec_id == AV_CODEC_ID_AV1 ? 1 : 0);
-                tracks.push_back(par->profile);
-            }
-        }
-        if (tracks.size() == 2 && hasBlockAdditionalAlpha(formatCtx, firstTrack)) {
-            tracks.push_back(tracks[0]);
-            tracks.push_back(tracks[1]);
-        }
-    }
-    avformat_close_input(&formatCtx);
+// The colour and alpha bitstreams of io, for MediaCodec: each one's codec (0 VP9, 1 AV1) and
+// FFmpeg profile, in pairs (AlphaDemuxer::colorAlphaTracks). Null unless there are two. Frees io.
+jintArray colorAlphaTracks(JNIEnv* env, AVIOContext* io) {
+    std::vector<int> tracks = webm::AlphaDemuxer::colorAlphaTracks(io);
     webm::closeFileRangeIO(&io);
     if (tracks.size() < 4) return nullptr;
-    jintArray result = env->NewIntArray(static_cast<jsize>(tracks.size()));
-    if (result) env->SetIntArrayRegion(result, 0, static_cast<jsize>(tracks.size()), tracks.data());
-    return result;
+    return intArray(env, std::vector<jint>(tracks.begin(), tracks.end()));
 }
 
 // Shared so that destroying a demuxer while its demux thread waits on a download can't free it
@@ -1116,71 +1002,21 @@ std::shared_ptr<DualStreamDemuxer> findDemuxer(jlong demuxerId) {
     return it == demuxers.end() ? nullptr : it->second;
 }
 
-// Reads the stream layout of an opened demuxer and registers it. Returns its id, or 0.
+// Opens the demuxer over its io and registers it. Returns its id, or 0.
 jlong registerDemuxer(std::shared_ptr<DualStreamDemuxer> demuxer) {
-    int ret = avformat_find_stream_info(demuxer->formatCtx, nullptr);
-    if (ret < 0) {
-        LOGE("[Buffered] Failed to find stream info");
+    if (!demuxer->io) return 0;
+    demuxer->demuxer = webm::AlphaDemuxer::open(demuxer->io);
+    if (!demuxer->demuxer) {
+        LOGE("[Buffered] No VP9/AV1 video stream found, or the file can't be opened");
         return 0;
     }
-    
-    for (unsigned i = 0; i < demuxer->formatCtx->nb_streams; i++) {
-        AVStream* stream = demuxer->formatCtx->streams[i];
-        if (stream->codecpar->codec_type == AVMEDIA_TYPE_VIDEO &&
-            isSupportedVideoCodec(stream->codecpar->codec_id)) {
-            if (demuxer->colorStreamIndex < 0) {
-                demuxer->colorStreamIndex = i;
-                demuxer->width = stream->codecpar->width;
-                demuxer->height = stream->codecpar->height;
-                demuxer->codecId = stream->codecpar->codec_id;
-                demuxer->colorRange = stream->codecpar->color_range;
-                demuxer->colorSpace = stream->codecpar->color_space;
-                
-                if (stream->avg_frame_rate.den > 0) {
-                    demuxer->frameRate = av_q2d(stream->avg_frame_rate);
-                } else if (stream->r_frame_rate.den > 0) {
-                    demuxer->frameRate = av_q2d(stream->r_frame_rate);
-                }
-                
-                demuxer->timeBase = av_q2d(stream->time_base);
-                
-                if (demuxer->formatCtx->duration > 0) {
-                    double duration = static_cast<double>(demuxer->formatCtx->duration) / AV_TIME_BASE;
-                    demuxer->totalFrames = static_cast<int>(duration * demuxer->frameRate);
-                } else if (stream->nb_frames > 0) {
-                    demuxer->totalFrames = stream->nb_frames;
-                } else {
-                    demuxer->totalFrames = 100;
-                }
-            } else if (demuxer->alphaStreamIndex < 0) {
-                demuxer->alphaStreamIndex = i;
-                demuxer->alphaRange = stream->codecpar->color_range;
-                demuxer->alphaSpace = stream->codecpar->color_space;
-            }
-        }
-    }
-    
-    if (demuxer->colorStreamIndex < 0) {
-        LOGE("[Buffered] No VP9/AV1 video stream found");
-        return 0;
-    }
-    
-    if (demuxer->alphaStreamIndex < 0 && hasBlockAdditionalAlpha(demuxer->formatCtx, demuxer->colorStreamIndex)) {
-        demuxer->alphaInBlockAdditional = true;
-        // libvpx's alpha stream says limited range but holds alpha as-is, 0-255
-        demuxer->alphaRange = AVCOL_RANGE_JPEG;
-        demuxer->alphaSpace = demuxer->colorSpace;
-        av_seek_frame(demuxer->formatCtx, demuxer->colorStreamIndex, 0, AVSEEK_FLAG_BACKWARD);
-    }
-    
-    int streamCount = (demuxer->alphaStreamIndex >= 0 || demuxer->alphaInBlockAdditional) ? 2 : 1;
+    const webm::AlphaDemuxer::Info& info = demuxer->demuxer->info();
     LOGI("[Buffered] Demuxer created: %dx%d, %d frames, %.2f fps, %d streams, codec=%d",
-         demuxer->width, demuxer->height, demuxer->totalFrames, demuxer->frameRate, streamCount, (int)demuxer->codecId);
-    
+         info.width, info.height, info.totalFrames, info.frameRate, info.hasAlpha ? 2 : 1, (int)info.color.codec);
+
     std::lock_guard<std::mutex> lock(demuxersMutex);
     jlong id = nextDemuxerId++;
     demuxers[id] = std::move(demuxer);
-    
     return id;
 }
 
@@ -1194,12 +1030,12 @@ Java_dev_mediacache_alphavideo_BufferedDualStreamPlayer_nativeColorAlphaTracks(
     jlong offset,
     jlong length
 ) {
-    AVFormatContext* formatCtx = nullptr;
-    AVIOContext* io = nullptr;
-    if (!openRangeInput(fd, offset, length, &formatCtx, &io)) {
+    AVIOContext* io = webm::openFileRangeIO(fd, offset, length);
+    if (!io) {
+        LOGE("Failed to open fd %d range (offset %lld, length %lld)", fd, (long long)offset, (long long)length);
         return nullptr;
     }
-    return colorAlphaTracks(env, formatCtx, io);
+    return colorAlphaTracks(env, io);
 }
 
 JNIEXPORT jintArray JNICALL
@@ -1208,17 +1044,16 @@ Java_dev_mediacache_alphavideo_BufferedDualStreamPlayer_nativeColorAlphaTracksDo
     jclass clazz,
     jstring path
 ) {
-    AVFormatContext* formatCtx = nullptr;
-    AVIOContext* io = nullptr;
-    if (!openDownloadInput(stringFromJava(env, path), nullptr, &formatCtx, &io)) {
+    AVIOContext* io = webm::openDownloadIO(stringFromJava(env, path), nullptr);
+    if (!io) {
+        LOGE("Failed to open the download");
         return nullptr;
     }
-    return colorAlphaTracks(env, formatCtx, io);
+    return colorAlphaTracks(env, io);
 }
 
 // ============================================================================
 // BufferedDualStreamPlayer JNI bindings (FBO ring buffer player)
-// These reuse the same demuxer infrastructure
 // ============================================================================
 
 JNIEXPORT jlong JNICALL
@@ -1230,9 +1065,7 @@ Java_dev_mediacache_alphavideo_BufferedDualStreamPlayer_nativeCreateDemuxer(
     jlong length
 ) {
     auto demuxer = std::make_shared<DualStreamDemuxer>();
-    if (!openRangeInput(fd, offset, length, &demuxer->formatCtx, &demuxer->io)) {
-        return 0;
-    }
+    demuxer->io = webm::openFileRangeIO(fd, offset, length);
     return registerDemuxer(std::move(demuxer));
 }
 
@@ -1243,9 +1076,7 @@ Java_dev_mediacache_alphavideo_BufferedDualStreamPlayer_nativeCreateDemuxerFromD
     jstring path
 ) {
     auto demuxer = std::make_shared<DualStreamDemuxer>();
-    if (!openDownloadInput(stringFromJava(env, path), &demuxer->aborted, &demuxer->formatCtx, &demuxer->io)) {
-        return 0;
-    }
+    demuxer->io = webm::openDownloadIO(stringFromJava(env, path), &demuxer->aborted);
     return registerDemuxer(std::move(demuxer));
 }
 
@@ -1273,26 +1104,18 @@ Java_dev_mediacache_alphavideo_BufferedDualStreamPlayer_nativeGetVideoInfo(
     jclass clazz,
     jlong demuxerId
 ) {
-    std::lock_guard<std::mutex> lock(demuxersMutex);
-    auto it = demuxers.find(demuxerId);
-    if (it == demuxers.end()) return nullptr;
-    
-    auto& demuxer = it->second;
-    int streamCount = (demuxer->alphaStreamIndex >= 0 || demuxer->alphaInBlockAdditional) ? 2 : 1;
-    
-    // Return: [width, height, totalFrames, frameRate*1000, streamCount, codecId]
-    jintArray result = env->NewIntArray(6);
-    jint values[] = {
-        demuxer->width,
-        demuxer->height,
-        demuxer->totalFrames,
-        static_cast<int>(demuxer->frameRate * 1000),
-        streamCount,
-        static_cast<int>(demuxer->codecId)
-    };
-    env->SetIntArrayRegion(result, 0, 6, values);
-    
-    return result;
+    std::shared_ptr<DualStreamDemuxer> demuxer = findDemuxer(demuxerId);
+    if (!demuxer) return nullptr;
+    const webm::AlphaDemuxer::Info& info = demuxer->demuxer->info();
+    // [width, height, totalFrames, frameRate*1000, streamCount, codecId (AVCodecID)]
+    return intArray(env, {
+        info.width,
+        info.height,
+        info.totalFrames,
+        static_cast<jint>(info.frameRate * 1000),
+        info.hasAlpha ? 2 : 1,
+        static_cast<jint>(info.color.codec == webm::AlphaDemuxer::AV1 ? AV_CODEC_ID_AV1 : AV_CODEC_ID_VP9),
+    });
 }
 
 // [colour range, colour space, alpha range, alpha space] as FFmpeg's AVColorRange and AVColorSpace
@@ -1304,10 +1127,8 @@ Java_dev_mediacache_alphavideo_BufferedDualStreamPlayer_nativeGetColorInfo(
 ) {
     std::shared_ptr<DualStreamDemuxer> demuxer = findDemuxer(demuxerId);
     if (!demuxer) return nullptr;
-    jint values[] = {demuxer->colorRange, demuxer->colorSpace, demuxer->alphaRange, demuxer->alphaSpace};
-    jintArray result = env->NewIntArray(4);
-    env->SetIntArrayRegion(result, 0, 4, values);
-    return result;
+    const webm::AlphaDemuxer::Info& info = demuxer->demuxer->info();
+    return intArray(env, {info.color.colorRange, info.color.colorSpace, info.alpha.colorRange, info.alpha.colorSpace});
 }
 
 // [Integer streamIndex, ByteBuffer data (a copy), Integer size, Long pts, Integer frameIndex]
@@ -1356,61 +1177,9 @@ Java_dev_mediacache_alphavideo_BufferedDualStreamPlayer_nativeReadPacket(
     // Returns Object[] with: [Integer streamIndex, ByteBuffer data, Integer size, Long pts, Integer frameIndex]
     std::shared_ptr<DualStreamDemuxer> demuxer = findDemuxer(demuxerId);
     if (!demuxer) return nullptr;
-    
-    // A colour packet read last time left its BlockAdditional alpha. Empty when it had none.
-    if (demuxer->hasPendingAlpha) {
-        demuxer->hasPendingAlpha = false;
-        return packetArray(env, 1, demuxer->pendingAlpha.data(), static_cast<int>(demuxer->pendingAlpha.size()),
-                           demuxer->pendingAlphaPtsUs, demuxer->alphaFrameIndex++);
-    }
-    
-    AVPacket* packet = av_packet_alloc();
-    if (!packet) return nullptr;
-    
-    int ret;
-    while ((ret = av_read_frame(demuxer->formatCtx, packet)) >= 0) {
-        int streamIndex = packet->stream_index;
-        
-        if (streamIndex == demuxer->colorStreamIndex || 
-            streamIndex == demuxer->alphaStreamIndex) {
-            
-            int mappedStreamIndex = (streamIndex == demuxer->colorStreamIndex) ? 0 : 1;
-            
-            int frameIndex;
-            if (mappedStreamIndex == 0) {
-                frameIndex = demuxer->colorFrameIndex++;
-            } else {
-                frameIndex = demuxer->alphaFrameIndex++;
-            }
-            
-            long presentationTimeUs = 0;
-            if (packet->pts != AV_NOPTS_VALUE) {
-                AVStream* stream = demuxer->formatCtx->streams[streamIndex];
-                presentationTimeUs = av_rescale_q(packet->pts, stream->time_base, 
-                                                  AVRational{1, 1000000});
-            }
-            
-            if (demuxer->alphaInBlockAdditional) {
-                size_t alphaSize = 0;
-                const uint8_t* alpha = blockAdditionalAlpha(packet, &alphaSize);
-                demuxer->pendingAlpha.assign(alpha, alpha + (alpha ? alphaSize : 0));
-                demuxer->pendingAlphaPtsUs = presentationTimeUs;
-                demuxer->hasPendingAlpha = true;
-            }
-            
-            jobjectArray result = packetArray(env, mappedStreamIndex, packet->data, packet->size,
-                                              presentationTimeUs, frameIndex);
-            av_packet_unref(packet);
-            av_packet_free(&packet);
-            
-            return result;
-        }
-        
-        av_packet_unref(packet);
-    }
-    
-    av_packet_free(&packet);
-    return nullptr;
+    webm::AlphaDemuxer::Packet packet;
+    if (!demuxer->demuxer->readPacket(&packet)) return nullptr;
+    return packetArray(env, packet.stream, packet.data, packet.size, static_cast<long>(packet.ptsUs), packet.frameIndex);
 }
 
 JNIEXPORT void JNICALL
@@ -1422,12 +1191,7 @@ Java_dev_mediacache_alphavideo_BufferedDualStreamPlayer_nativeSeekToStart(
     // Not under demuxersMutex: on a download the seek reads the Cues, which may still be arriving
     std::shared_ptr<DualStreamDemuxer> demuxer = findDemuxer(demuxerId);
     if (!demuxer) return;
-    
-    av_seek_frame(demuxer->formatCtx, demuxer->colorStreamIndex, 0, AVSEEK_FLAG_BACKWARD);
-    demuxer->colorFrameIndex = 0;
-    demuxer->alphaFrameIndex = 0;
-    demuxer->hasPendingAlpha = false;
-    
+    demuxer->demuxer->seekToStart();
     LOGI("[Buffered] Demuxer %lld seeked to start", demuxerId);
 }
 
@@ -1442,11 +1206,7 @@ Java_dev_mediacache_alphavideo_BufferedDualStreamPlayer_nativeSeekToTime(
     // Not under demuxersMutex, for the same reason as nativeSeekToStart.
     std::shared_ptr<DualStreamDemuxer> demuxer = findDemuxer(demuxerId);
     if (!demuxer) return;
-    
-    AVStream* stream = demuxer->formatCtx->streams[demuxer->colorStreamIndex];
-    int64_t ts = av_rescale_q(timeUs, AVRational{1, 1000000}, stream->time_base);
-    av_seek_frame(demuxer->formatCtx, demuxer->colorStreamIndex, ts, AVSEEK_FLAG_BACKWARD);
-    demuxer->hasPendingAlpha = false;
+    demuxer->demuxer->seekToTimeUs(timeUs);
 }
 
 } // extern "C"

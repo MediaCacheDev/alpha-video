@@ -9,10 +9,12 @@ get_filename_component(MODULE_ROOT "${CMAKE_SOURCE_DIR}/../../../.." ABSOLUTE)
 
 # Source files
 set(NATIVE_SOURCES
+    ${MODULE_ROOT}/cpp/AlphaDemuxer.cpp
     ${MODULE_ROOT}/cpp/FileRangeIO.cpp
     ${MODULE_ROOT}/cpp/GrowingFile.cpp
     ${MODULE_ROOT}/cpp/WebMAlphaPlayer.cpp
     ${MODULE_ROOT}/cpp/WebMAlphaPlayer_jni.cpp
+    ${MODULE_ROOT}/cpp/YuvToRgb.cpp
 )
 
 # FFmpeg paths - use absolute path from module root

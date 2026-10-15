@@ -17,6 +17,8 @@ set(CORE ${CMAKE_CURRENT_SOURCE_DIR}/../../cpp)
 add_executable(core_tests
   core_tests.cpp
   ${CORE}/WebMAlphaPlayer.cpp
+  ${CORE}/AlphaDemuxer.cpp
+  ${CORE}/YuvToRgb.cpp
   ${CORE}/FileRangeIO.cpp
   ${CORE}/GrowingFile.cpp
 )
