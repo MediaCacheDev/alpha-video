@@ -1,14 +1,21 @@
 # alpha-video
 
-Transparent video for iOS, Android, React Native and the web. Plays **VP9 WebM with alpha** (standard YUVA WebM) everywhere, and **dual-stream VP9/AV1** (color and alpha in separate video tracks). On Android, two MediaCodec decoders decode colour and alpha in hardware where they can; otherwise, and on iOS, an FFmpeg-based C++ core decodes in software.
+Transparent video that plays everywhere: Android, iOS, React Native and every modern browser, including browsers that can't show transparent video themselves. Safari drops WebM's alpha channel, and no browser shows the alpha track of a dual-stream file. If you want transparent video and need to be confident it plays on every platform, this is the package to use.
 
-One repository, three packages:
+It plays **VP9 WebM with alpha** (standard YUVA WebM, what FFmpeg and libvpx write) and **dual-stream VP9/AV1** (colour and alpha in separate video tracks). Each platform tries the fastest way first and falls back until one works:
+
+- **Android:** two MediaCodec decoders, one for colour and one for alpha, in hardware where the device has them. Then MediaCodec's software decoders, then the C++ core.
+- **iOS:** the C++ core, which demuxes with FFmpeg, decodes with libvpx (VP9) and dav1d (AV1), and draws with Metal.
+- **Web:** the browser's own `<video>` where it keeps the alpha, then WebCodecs, then the same decoders compiled to WebAssembly ([how it works](#web)).
+
+One repository, four packages:
 
 | Package | For | Install |
 |---|---|---|
 | `react-native-alpha-video` (npm) | React Native, and react-native-web | [React Native](#react-native) |
 | `dev.mediacache:alpha-video` (Maven Central) | Android | [Android](#android) |
 | `AlphaVideo` (Swift Package Manager), `alpha-video` (CocoaPods) | iOS | [iOS](#ios) |
+| `alpha-video-web` (npm) | Browsers: plain JS/TS, or React | [Web](#web), [web/README.md](web/README.md) |
 
 See it next to the other formats in the [demo app](#demo-and-related-packages).
 
@@ -26,7 +33,7 @@ Both play transparent videos on Android, iOS and the web, and they suit differen
 | **Many players at once** | Limited by the CPU, or by the hardware decoder's instances | Dozens: each one is just a texture |
 | **File size** | Smallest | Several times larger |
 | **Seeking** | Decodes from the previous keyframe | Any frame directly |
-| **Web** | `<video>` in Chrome and Firefox | WebGL where the browser has ASTC |
+| **Web** | Every modern browser, Safari included: `<video>`, WebCodecs or WebAssembly decoding (`alpha-video-web`) | WebGL where the browser has ASTC |
 | **Best for** | Long or large clips, downloads where size matters, files from standard video tools | UI effects, stickers and glows, many simultaneous loops, short to medium videos |
 
 [alpha-video-ffmpegkit](https://github.com/MediaCacheDev/alpha-video-ffmpegkit) was the first attempt at transparent WebM, built on FFmpegKit. It still works and stays as a reference implementation, but alpha-video does everything it does, and more.
@@ -39,7 +46,7 @@ Both play transparent videos on Android, iOS and the web, and they suit differen
 - **High Performance** - Native C++ core (FFmpeg) with GPU-accelerated rendering
 - **iOS** - Metal-based rendering with YUVA-to-RGBA GPU shader
 - **Android** - TextureView with OpenGL ES 2.0, proper z-ordering and ScrollView support
-- **Web** - HTML5 video fallback for react-native-web compatibility (Chrome and Firefox; see [Web](#web))
+- **Web** - `alpha-video-web` shows the alpha in every modern browser: `<video>` where the browser keeps it, otherwise WebCodecs or WebAssembly decoding drawn in WebGL2 (see [Web](#web)). The React Native component's web side is still a plain `<video>`
 - **Zero-Copy Frame Pipeline** - Efficient memory usage with LRU frame caching (software path) and OES texture compositing (hardware path)
 
 ## Decision Matrix
@@ -396,10 +403,18 @@ In `stream` and `streamAndPreload` mode (and on the Android hardware path in tho
 
 ### Web
 
-On the web the component renders a muted HTML5 `<video>`, so the browser does the decoding and streaming. It honours `source`, `autoPlay`, `loop`, `paused`, `playbackSpeed`, `onLoad`, `onError`, `onEnd` and the ref methods; `mode`, `decoder`, `cacheKey` and the stream and queue props have no effect. `onLoad` reports `decoder: 'browser'`.
+`alpha-video-web` (in [`web/`](web)) plays transparent WebM in every modern browser, whether or not the browser can show transparent video itself. It makes every effort to decode the video: it starts with the fastest way and moves to the next only when one can't show the alpha.
+
+1. **The browser's own `<video>`.** The fastest: no JavaScript runs per frame, and the browser streams and caches. `canPlayType` can't tell whether a browser keeps WebM's alpha; Safari answers `"probably"` and drops it. So the first time a page plays a file, a 599-byte clip is drawn into a canvas and two of its pixels are read. `<video>` is used when that probe shows alpha and the file is a single VP9 track with alpha (Chrome, Edge and Firefox). The first 64 KB of the file tell which kind it is.
+2. **WebCodecs.** The C++ core's demuxer, compiled to WebAssembly, splits the file into its colour and alpha bitstreams. It feeds them to two `VideoDecoder`s, one per stream, which can use the device's hardware decoders. WebGL2 draws the pair with the same colour maths as the Android and iOS players. This is what plays dual-stream files in every browser, and every alpha WebM in Safari.
+3. **Software decoding in WebAssembly.** The same demuxer feeds FFmpeg's VP9 decoder and dav1d (AV1), each stream in its own Web Worker. On cross-origin isolated pages each decoder also runs threads of its own. This covers what WebCodecs can't decode, such as VP9 profile 1 (RGB-coded) alpha in Safari and Firefox.
+
+Only a file that no engine can decode ends in an error (`NO_ALPHA_PATH`). Each WebAssembly module is loaded only when its engine runs, and nothing needs hosting: the modules and Workers are inside the package. Every test card passes through every engine that can decode it, in Playwright's Chromium, Firefox and WebKit; real Safari and phones are still to be tested. The API, the React component and speed figures are in [web/README.md](web/README.md).
+
+**The React Native component on the web doesn't use it yet.** It renders a muted HTML5 `<video>`, so the browser does the decoding and streaming. It honours `source`, `autoPlay`, `loop`, `paused`, `playbackSpeed`, `onLoad`, `onError`, `onEnd` and the ref methods; `mode`, `decoder`, `cacheKey` and the stream and queue props have no effect. `onLoad` reports `decoder: 'browser'`.
 
 - **Chrome, Edge and Firefox** play single-stream YUVA VP9 WebM with its transparency.
-- **Safari** doesn't show WebM's alpha channel. For Safari, serve a separate HEVC-with-alpha file.
+- **Safari** doesn't show WebM's alpha channel. Until the component uses `alpha-video-web`, serve Safari a separate HEVC-with-alpha file.
 - **Dual-stream files** show only the colour track in every browser: `<video>` plays one video track, so the alpha track is ignored.
 - Browsers don't report a frame rate, so `onLoad`'s `totalFrames` and `seekToFrame` assume 30 fps.
 
@@ -632,6 +647,7 @@ A release carries the prebuilt archive, `FFmpegVPX.xcframework.zip`, the CocoaPo
 | `android/` | The Android library: `AlphaVideoView`, the MediaCodec dual-stream path and the JNI build |
 | `ios/Sources/AlphaVideo/` | The iOS library: `AlphaVideoView` and the Metal renderer |
 | `react-native/` | The React Native component (`src/`) and its thin native view managers |
+| `web/` | `alpha-video-web`: the browser player, with the C++ demuxer and the decoders in WebAssembly |
 | `Package.swift`, `react-native-alpha-video.podspec`, `package.json` | The SwiftPM, CocoaPods and npm packages |
 
 ## Demo and related packages
@@ -648,7 +664,7 @@ A release carries the prebuilt archive, `FFmpegVPX.xcframework.zip`, the CocoaPo
 
 Ideas, not plans:
 
-- **Drop FFmpeg.** Demux with [libwebm](https://chromium.googlesource.com/webm/libwebm) and call libvpx and dav1d directly. Every dependency would then be BSD, which removes the LGPL obligations, and the binaries would get smaller.
+- **Drop FFmpeg.** Demux with [libwebm](https://chromium.googlesource.com/webm/libwebm) and call libvpx and dav1d directly. Every dependency would then be BSD, which removes the LGPL obligations, and the binaries would get smaller. A prototype showed that libwebm's `webm_parser` demuxes every test file exactly as FFmpeg does, BlockAdditional alpha included. Natively, libvpx called directly decodes as fast as through FFmpeg. In WebAssembly it's slower than FFmpeg's own VP9 decoder, so the web may keep that one.
 - **Hardware decoding of dual-stream files on iOS.** Two VideoToolbox sessions, one per track, composited in the Metal shader, as Android does with MediaCodec, with FFmpeg as the fallback. AV1 decodes in hardware on recent Apple chips (A17 Pro, M3 and later). VP9 likely can't, since VideoToolbox's VP9 decoder isn't available to iOS apps.
 - **Audio.** Decode a WebM's Opus or Vorbis track, keep video in sync with it, and drop frames when decoding falls behind.
 - **More codecs.** VP8 (libvpx already has it; alpha VP8 WebM is common from older encoders) and AV2 once it's final, in software and through platform decoders where they exist.
