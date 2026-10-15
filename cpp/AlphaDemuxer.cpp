@@ -162,13 +162,16 @@ bool AlphaDemuxer::readLayout() {
     }
     if (colorStreamIndex_ < 0) return false;
 
-    if (alphaStreamIndex_ < 0 && hasBlockAdditionalAlpha(formatCtx_, colorStreamIndex_)) {
-        info_.alphaInBlockAdditional = true;
+    if (alphaStreamIndex_ < 0) {
+        info_.alphaInBlockAdditional = hasBlockAdditionalAlpha(formatCtx_, colorStreamIndex_);
+        // The probe read packets, whether or not it found alpha
+        av_seek_frame(formatCtx_, colorStreamIndex_, 0, AVSEEK_FLAG_BACKWARD);
+    }
+    if (info_.alphaInBlockAdditional) {
         info_.alpha = info_.color;
         info_.alpha.codecPrivate.clear();
         // libvpx's alpha stream says limited range but holds alpha as-is, 0-255
         info_.alpha.colorRange = AVCOL_RANGE_JPEG;
-        av_seek_frame(formatCtx_, colorStreamIndex_, 0, AVSEEK_FLAG_BACKWARD);
     }
     info_.hasAlpha = alphaStreamIndex_ >= 0 || info_.alphaInBlockAdditional;
     return true;

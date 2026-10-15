@@ -564,6 +564,25 @@ static void registerTests() {
         CHECK(std::memcmp(&untaggedSd, &limited601, sizeof(YuvToRgb)) == 0, "untagged SD is limited BT.601");
     }});
 
+    tests().push_back({"demuxer: a file without alpha starts at its first keyframe", [] {
+        int fd = ::open((std::string(FIXTURES_DIR) + "/vp9_10bit.webm").c_str(), O_RDONLY);
+        CHECK(fd >= 0, "vp9_10bit.webm");
+        AVIOContext* io = openFileRangeIO(fd, 0, -1);
+        ::close(fd);
+        {
+            std::unique_ptr<AlphaDemuxer> demuxer = AlphaDemuxer::open(io);
+            CHECK(demuxer != nullptr, "open");
+            CHECK(!demuxer->info().hasAlpha, "hasAlpha");
+            AlphaDemuxer::Packet p;
+            CHECK(demuxer->readPacket(&p), "no packets");
+            CHECK(p.stream == 0 && p.key && p.ptsUs == 0, "first packet: stream " << p.stream << ", key " << p.key << ", ptsUs " << p.ptsUs);
+            int count = 1;
+            while (demuxer->readPacket(&p)) count++;
+            CHECK(count == 3, count << " packets");
+        }
+        closeFileRangeIO(&io);
+    }});
+
     tests().push_back({"10-bit VP9 is refused with an error event", [] {
         WebMAlphaPlayer p;
         std::string error;
