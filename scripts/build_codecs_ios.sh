@@ -1,7 +1,7 @@
 #!/bin/bash
 #
-# build_ffmpeg_ios.sh
-# Convenience script to build FFmpeg for both iOS Device and Simulator
+# build_codecs_ios.sh
+# Convenience script to build libvpx and dav1d for both iOS Device and Simulator
 #
 
 set -e
@@ -9,18 +9,18 @@ set -e
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_DIR="$(dirname "$SCRIPT_DIR")"
 
-echo "🚀 Building FFmpeg for iOS (Device + Simulator)"
+echo "🚀 Building libvpx + dav1d for iOS (Device + Simulator)"
 echo ""
 
 # Build for device first
-"$SCRIPT_DIR/build_ffmpeg_ios_device.sh"
+"$SCRIPT_DIR/build_codecs_ios_device.sh"
 
 echo ""
 echo "================================================"
 echo ""
 
 # Build for simulator
-"$SCRIPT_DIR/build_ffmpeg_ios_simulator.sh"
+"$SCRIPT_DIR/build_codecs_ios_simulator.sh"
 
 echo ""
 echo "================================================"

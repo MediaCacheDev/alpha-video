@@ -10,7 +10,7 @@
 
 #include "WebMAlphaPlayer.h"
 #include "AlphaDemuxer.h"
-#include "FileRangeIO.h"
+#include "ByteSource.h"
 #include "GrowingFile.h"
 #include <atomic>
 #include <memory>
@@ -941,13 +941,13 @@ Java_dev_mediacache_alphavideo_WebMAlphaPlayerNative_nativeResetStats(JNIEnv* en
 }
 
 //==============================================================================
-// FFmpeg Info
+// Decoder library versions
 //==============================================================================
 
 JNIEXPORT jstring JNICALL
-Java_dev_mediacache_alphavideo_WebMAlphaPlayerNative_nativeGetFFmpegVersion(JNIEnv* env, jclass clazz) {
-    std::string version = webm::WebMAlphaPlayer::getFFmpegVersion();
-    return env->NewStringUTF(version.c_str());
+Java_dev_mediacache_alphavideo_WebMAlphaPlayerNative_nativeGetLibraryVersions(JNIEnv* env, jclass clazz) {
+    std::string versions = webm::WebMAlphaPlayer::getLibraryVersions();
+    return env->NewStringUTF(versions.c_str());
 }
 
 //==============================================================================
@@ -955,24 +955,14 @@ Java_dev_mediacache_alphavideo_WebMAlphaPlayerNative_nativeGetFFmpegVersion(JNIE
 // Extracts raw VP9/AV1 packets from dual-stream WebM files
 //==============================================================================
 
-extern "C" {
-#include <libavcodec/codec_id.h>
-}
-
 namespace {
 
-// A demuxer and the I/O it reads. Members are freed in reverse order: the demuxer, then its I/O,
-// then the abort flag the download I/O polls.
+// A demuxer, which owns the source it reads. The demuxer is freed before the abort flag its
+// download source polls.
 struct DualStreamDemuxer {
     // Set on destroy so a read waiting on a download returns
     std::atomic<bool> aborted{false};
-    AVIOContext* io = nullptr;
     std::unique_ptr<webm::AlphaDemuxer> demuxer;
-
-    ~DualStreamDemuxer() {
-        demuxer.reset();
-        webm::closeFileRangeIO(&io);
-    }
 };
 
 jintArray intArray(JNIEnv* env, const std::vector<jint>& values) {
@@ -981,11 +971,10 @@ jintArray intArray(JNIEnv* env, const std::vector<jint>& values) {
     return result;
 }
 
-// The colour and alpha bitstreams of io, for MediaCodec: each one's codec (0 VP9, 1 AV1) and
-// FFmpeg profile, in pairs (AlphaDemuxer::colorAlphaTracks). Null unless there are two. Frees io.
-jintArray colorAlphaTracks(JNIEnv* env, AVIOContext* io) {
-    std::vector<int> tracks = webm::AlphaDemuxer::colorAlphaTracks(io);
-    webm::closeFileRangeIO(&io);
+// The colour and alpha bitstreams of source, for MediaCodec: each one's codec (0 VP9, 1 AV1) and
+// profile, in pairs (AlphaDemuxer::colorAlphaTracks). Null unless there are two.
+jintArray colorAlphaTracks(JNIEnv* env, std::unique_ptr<webm::ByteSource> source) {
+    std::vector<int> tracks = webm::AlphaDemuxer::colorAlphaTracks(std::move(source));
     if (tracks.size() < 4) return nullptr;
     return intArray(env, std::vector<jint>(tracks.begin(), tracks.end()));
 }
@@ -1002,10 +991,10 @@ std::shared_ptr<DualStreamDemuxer> findDemuxer(jlong demuxerId) {
     return it == demuxers.end() ? nullptr : it->second;
 }
 
-// Opens the demuxer over its io and registers it. Returns its id, or 0.
-jlong registerDemuxer(std::shared_ptr<DualStreamDemuxer> demuxer) {
-    if (!demuxer->io) return 0;
-    demuxer->demuxer = webm::AlphaDemuxer::open(demuxer->io);
+// Opens the demuxer over source and registers it. Returns its id, or 0.
+jlong registerDemuxer(std::shared_ptr<DualStreamDemuxer> demuxer, std::unique_ptr<webm::ByteSource> source) {
+    if (!source) return 0;
+    demuxer->demuxer = webm::AlphaDemuxer::open(std::move(source));
     if (!demuxer->demuxer) {
         LOGE("[Buffered] No VP9/AV1 video stream found, or the file can't be opened");
         return 0;
@@ -1030,12 +1019,12 @@ Java_dev_mediacache_alphavideo_BufferedDualStreamPlayer_nativeColorAlphaTracks(
     jlong offset,
     jlong length
 ) {
-    AVIOContext* io = webm::openFileRangeIO(fd, offset, length);
-    if (!io) {
+    std::unique_ptr<webm::ByteSource> source = webm::openFileRange(fd, offset, length);
+    if (!source) {
         LOGE("Failed to open fd %d range (offset %lld, length %lld)", fd, (long long)offset, (long long)length);
         return nullptr;
     }
-    return colorAlphaTracks(env, io);
+    return colorAlphaTracks(env, std::move(source));
 }
 
 JNIEXPORT jintArray JNICALL
@@ -1044,12 +1033,12 @@ Java_dev_mediacache_alphavideo_BufferedDualStreamPlayer_nativeColorAlphaTracksDo
     jclass clazz,
     jstring path
 ) {
-    AVIOContext* io = webm::openDownloadIO(stringFromJava(env, path), nullptr);
-    if (!io) {
+    std::unique_ptr<webm::ByteSource> source = webm::openDownload(stringFromJava(env, path), nullptr);
+    if (!source) {
         LOGE("Failed to open the download");
         return nullptr;
     }
-    return colorAlphaTracks(env, io);
+    return colorAlphaTracks(env, std::move(source));
 }
 
 // ============================================================================
@@ -1065,8 +1054,8 @@ Java_dev_mediacache_alphavideo_BufferedDualStreamPlayer_nativeCreateDemuxer(
     jlong length
 ) {
     auto demuxer = std::make_shared<DualStreamDemuxer>();
-    demuxer->io = webm::openFileRangeIO(fd, offset, length);
-    return registerDemuxer(std::move(demuxer));
+    std::unique_ptr<webm::ByteSource> source = webm::openFileRange(fd, offset, length);
+    return registerDemuxer(std::move(demuxer), std::move(source));
 }
 
 JNIEXPORT jlong JNICALL
@@ -1076,8 +1065,8 @@ Java_dev_mediacache_alphavideo_BufferedDualStreamPlayer_nativeCreateDemuxerFromD
     jstring path
 ) {
     auto demuxer = std::make_shared<DualStreamDemuxer>();
-    demuxer->io = webm::openDownloadIO(stringFromJava(env, path), &demuxer->aborted);
-    return registerDemuxer(std::move(demuxer));
+    std::unique_ptr<webm::ByteSource> source = webm::openDownload(stringFromJava(env, path), &demuxer->aborted);
+    return registerDemuxer(std::move(demuxer), std::move(source));
 }
 
 JNIEXPORT void JNICALL
@@ -1107,18 +1096,18 @@ Java_dev_mediacache_alphavideo_BufferedDualStreamPlayer_nativeGetVideoInfo(
     std::shared_ptr<DualStreamDemuxer> demuxer = findDemuxer(demuxerId);
     if (!demuxer) return nullptr;
     const webm::AlphaDemuxer::Info& info = demuxer->demuxer->info();
-    // [width, height, totalFrames, frameRate*1000, streamCount, codecId (AVCodecID)]
+    // [width, height, totalFrames, frameRate*1000, streamCount, codec (0 VP9, 1 AV1)]
     return intArray(env, {
         info.width,
         info.height,
         info.totalFrames,
         static_cast<jint>(info.frameRate * 1000),
         info.hasAlpha ? 2 : 1,
-        static_cast<jint>(info.color.codec == webm::AlphaDemuxer::AV1 ? AV_CODEC_ID_AV1 : AV_CODEC_ID_VP9),
+        static_cast<jint>(info.color.codec),
     });
 }
 
-// [colour range, colour space, alpha range, alpha space] as FFmpeg's AVColorRange and AVColorSpace
+// [colour range, colour space, alpha range, alpha space] as H.273 numbers (YuvToRgb.h)
 JNIEXPORT jintArray JNICALL
 Java_dev_mediacache_alphavideo_BufferedDualStreamPlayer_nativeGetColorInfo(
     JNIEnv* env,

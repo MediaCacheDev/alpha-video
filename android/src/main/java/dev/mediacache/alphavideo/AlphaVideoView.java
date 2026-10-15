@@ -180,7 +180,7 @@ public class AlphaVideoView extends TextureView implements
     /** Called on the main thread. */
     public interface PlayerCallback {
         /**
-         * @param decoder the engine and decoders playing the file, e.g. "software (libvpx-vp9)" or
+         * @param decoder the engine and decoders playing the file, e.g. "software (libvpx)" or
          *     "mediacodec-hw (c2.qti.vp9.decoder)"
          */
         void onLoad(int totalFrames, int width, int height, String decoder);
@@ -241,7 +241,7 @@ public class AlphaVideoView extends TextureView implements
         isReleased = false;
         
         logV("Created TextureView player: " + playerId + 
-              ", FFmpeg: " + WebMAlphaPlayerNative.nativeGetFFmpegVersion());
+              ", " + WebMAlphaPlayerNative.nativeGetLibraryVersions());
     }
     
     private ExecutorService createRenderThread() {
@@ -330,13 +330,13 @@ public class AlphaVideoView extends TextureView implements
     /**
      * Sets the decoder for the next load:
      * - "auto" (default): MediaCodec hardware decoders that list every track's profile, else
-     *   MediaCodec's software decoders, else the C++ core (libvpx-vp9, dav1d for AV1)
+     *   MediaCodec's software decoders, else the C++ core (libvpx, dav1d for AV1)
      * - "mediacodec": per track, a hardware decoder if one lists the profile and has an instance
      *   free, else a software one
      * - "mediacodec-hw" / "mediacodec-sw": hardware / software decoders only, for both tracks
      * - "software": the C++ core
      * A forced engine never falls back: a file it can't play reports onError. MediaCodec plays
-     * only files with colour and alpha as separate VP9/AV1 bitstreams; FFmpeg plays 8-bit VP9 and
+     * only files with colour and alpha as separate VP9/AV1 bitstreams; the core plays 8-bit VP9 and
      * 8- to 12-bit AV1.
      */
     public void setDecoder(String decoder) {
@@ -560,7 +560,7 @@ public class AlphaVideoView extends TextureView implements
                     names = MediaCodecDecoders.reserve(colorAlphaTracks, MediaCodecDecoders.Kind.SOFTWARE);
                 }
                 if (names == null) {
-                    logV("No MediaCodec decoders free that list the profiles; decoding on FFmpeg");
+                    logV("No MediaCodec decoders free that list the profiles; decoding in software");
                     loadSingleStream(source);
                     return;
                 }

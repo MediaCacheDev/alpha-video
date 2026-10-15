@@ -3,9 +3,10 @@
 # build_wasm.sh
 # The WebAssembly modules of alpha-video-web (web/), each with its .wasm inlined so the npm
 # package has no files to host:
-#   web/src/wasm/demuxer.mjs      FFmpeg's Matroska demuxer with the shared C++ demuxer
-#                                 (cpp/AlphaDemuxer) and colour conversion (cpp/YuvToRgb), for
-#                                 the WebCodecs and software engines
+#   web/src/wasm/demuxer.mjs      FFmpeg's Matroska demuxer with the web's C++ demuxer over it
+#                                 (web/wasm/AlphaDemuxer, the FFmpeg version of the native one)
+#                                 and the shared colour conversion (cpp/YuvToRgb), for the
+#                                 WebCodecs and software engines
 #   web/src/wasm/software.mjs     FFmpeg's VP9 decoder and dav1d for AV1, single-threaded, run in
 #                                 a Web Worker per stream by the software engine
 #   web/src/wasm/software-mt.mjs  the same with threads (FFmpeg's frame threads, dav1d's own),
@@ -190,8 +191,8 @@ EM_PKG_CONFIG_PATH="$BUILD_DIR/stage-dav1d-mt/lib/pkgconfig" \
 
 DEMUXER="$BUILD_DIR/stage-demuxer"
 link_module demuxer.mjs \
-    -I"$PROJECT_DIR/cpp" -I"$DEMUXER/include" \
-    "$PROJECT_DIR/web/wasm/demuxer_bindings.cpp" "$PROJECT_DIR/cpp/AlphaDemuxer.cpp" "$PROJECT_DIR/cpp/YuvToRgb.cpp" \
+    -I"$PROJECT_DIR/web/wasm" -I"$PROJECT_DIR/cpp" -I"$DEMUXER/include" \
+    "$PROJECT_DIR/web/wasm/demuxer_bindings.cpp" "$PROJECT_DIR/web/wasm/AlphaDemuxer.cpp" "$PROJECT_DIR/cpp/YuvToRgb.cpp" \
     "$DEMUXER/lib/libavformat.a" "$DEMUXER/lib/libavcodec.a" "$DEMUXER/lib/libavutil.a" \
     -sMALLOC=emmalloc -sINITIAL_MEMORY=16777216
 

@@ -7,18 +7,15 @@
 
 #include "WebMAlphaPlayer.h"
 #include "AlphaDemuxer.h"
-#include "FileRangeIO.h"
+#include "ByteSource.h"
 #include "GrowingFile.h"
-
-extern "C" {
-#include <libavutil/pixfmt.h>
-}
 
 #include <algorithm>
 #include <chrono>
 #include <cmath>
 #include <condition_variable>
 #include <cstdio>
+#include <cstdlib>
 #include <cstring>
 #include <fcntl.h>
 #include <fstream>
@@ -179,6 +176,12 @@ static void checkFrame(const std::shared_ptr<YUVAFrame>& f, const Card& card, in
     CHECK(codes.alpha == expected, "alpha code " << codes.alpha << ", expected frame " << expected);
 }
 
+// Android has no /tmp; run it there with TMPDIR set to a writable directory
+static std::string tempPath(const std::string& name) {
+    const char* dir = getenv("TMPDIR");
+    return std::string(dir && *dir ? dir : "/tmp") + "/core_tests_" + name + "_" + std::to_string(getpid());
+}
+
 static PlayerConfig onDemandConfig() {
     PlayerConfig config;
     config.mode = PlaybackMode::Preload;
@@ -237,25 +240,23 @@ static void registerTests() {
             CHECK(p->getTotalFrames() == fx.card.frames, p->getTotalFrames());
             CHECK(std::abs(p->getFrameRate() - fx.card.fps) < 0.01, p->getFrameRate());
             CHECK(std::abs(p->getDuration() - fx.card.frames / fx.card.fps) < 0.05, p->getDuration());
-            std::string decoder = fx.name.find("av1") != std::string::npos ? "libdav1d" : "libvpx-vp9";
+            std::string decoder = fx.name.find("av1") != std::string::npos ? "dav1d" : "libvpx";
             CHECK(p->getDecoderName() == decoder, p->getDecoderName());
         });
 
         add("demuxer: layout and packets", [](const Fixture& fx) {
             int fd = ::open(fx.path.c_str(), O_RDONLY);
             CHECK(fd >= 0, fx.path);
-            AVIOContext* probeIO = openFileRangeIO(fd, 0, -1);
-            std::vector<int> tracks = AlphaDemuxer::colorAlphaTracks(probeIO);
-            closeFileRangeIO(&probeIO);
+            std::vector<int> tracks = AlphaDemuxer::colorAlphaTracks(openFileRange(fd, 0, -1));
             const bool av1 = fx.name.find("av1") != std::string::npos;
             const bool blockAdditional = fx.name.find("yuva.webm") != std::string::npos;
             CHECK(tracks.size() == 4, tracks.size());
             CHECK(tracks[0] == (av1 ? 1 : 0) && tracks[2] == tracks[0], tracks[0] << " " << tracks[2]);
 
-            AVIOContext* io = openFileRangeIO(fd, 0, -1);
+            std::unique_ptr<ByteSource> source = openFileRange(fd, 0, -1);
             ::close(fd);
             {
-                std::unique_ptr<AlphaDemuxer> demuxer = AlphaDemuxer::open(io);
+                std::unique_ptr<AlphaDemuxer> demuxer = AlphaDemuxer::open(std::move(source));
                 CHECK(demuxer != nullptr, "open");
                 const AlphaDemuxer::Info& info = demuxer->info();
                 CHECK(info.width == fx.card.width && info.height == fx.card.height, info.width << "x" << info.height);
@@ -264,7 +265,7 @@ static void registerTests() {
                 CHECK(info.color.codec == (av1 ? AlphaDemuxer::AV1 : AlphaDemuxer::VP9), info.color.codec);
                 CHECK(info.color.bitDepth == (fx.name.find("10bit") != std::string::npos ? 10 : 8), info.color.bitDepth);
                 CHECK(info.alpha.bitDepth == info.color.bitDepth, info.alpha.bitDepth);
-                if (blockAdditional) CHECK(info.alpha.colorRange == AVCOL_RANGE_JPEG, info.alpha.colorRange);
+                if (blockAdditional) CHECK(info.alpha.colorRange == kRangeFull, info.alpha.colorRange);
                 if (av1) CHECK(!info.color.codecPrivate.empty(), "AV1 has no av1C");
 
                 auto readAll = [&](std::vector<int64_t>& colourKeys, std::vector<int64_t>& alphaKeys) {
@@ -288,7 +289,6 @@ static void registerTests() {
                 readAll(colourKeys2, alphaKeys2);
                 CHECK(colourKeys2 == colourKeys, "keyframes after seekToStart");
             }
-            closeFileRangeIO(&io);
         });
 
         add("every frame in order", [](const Fixture& fx) {
@@ -464,7 +464,7 @@ static void registerTests() {
         add("file range inside a larger file", [](const Fixture& fx) {
             std::ifstream in(fx.path, std::ios::binary);
             std::vector<char> clip((std::istreambuf_iterator<char>(in)), {});
-            std::string path = "/tmp/core_tests_range_" + std::to_string(getpid()) + ".bin";
+            std::string path = tempPath("range") + ".bin";
             {
                 std::ofstream out(path, std::ios::binary);
                 std::string before(1000, 'x'), after(500, 'y');
@@ -486,7 +486,7 @@ static void registerTests() {
         add("plays while the file is still downloading", [](const Fixture& fx) {
             std::ifstream in(fx.path, std::ios::binary);
             std::vector<char> clip((std::istreambuf_iterator<char>(in)), {});
-            std::string base = "/tmp/core_tests_download_" + std::to_string(getpid());
+            std::string base = tempPath("download");
             std::string path = base + ".webm", part = base + ".part";
             unlink(path.c_str());
             FILE* out = fopen(part.c_str(), "wb");
@@ -541,8 +541,8 @@ static void registerTests() {
             return sum * 255;
         };
         auto near = [](double a, double b) { return std::abs(a - b) < 0.05; };
-        const int tv = AVCOL_RANGE_MPEG, pc = AVCOL_RANGE_JPEG, unspecified = AVCOL_SPC_UNSPECIFIED;
-        const int bt709 = AVCOL_SPC_BT709, bt601 = AVCOL_SPC_SMPTE170M;
+        const int tv = kRangeLimited, pc = kRangeFull, unspecified = kMatrixUnspecified;
+        const int bt709 = kMatrixBt709, bt601 = kMatrixSmpte170m;
         YuvToRgb limited601 = yuvToRgbFor(tv, bt601, 383, 217);
         YuvToRgb full601 = yuvToRgbFor(pc, bt601, 383, 217);
         for (int c = 0; c < 3; c++) {
@@ -558,8 +558,8 @@ static void registerTests() {
         CHECK(std::abs(apply(limited709, 63, 102, 240, 0) - 255) < 1.5, apply(limited709, 63, 102, 240, 0));
         CHECK(std::abs(apply(limited709, 63, 102, 240, 2)) < 1.5, apply(limited709, 63, 102, 240, 2));
         // Untagged: BT.601 up to 720x576, BT.709 above
-        YuvToRgb untaggedHd = yuvToRgbFor(AVCOL_RANGE_UNSPECIFIED, unspecified, 1920, 1080);
-        YuvToRgb untaggedSd = yuvToRgbFor(AVCOL_RANGE_UNSPECIFIED, unspecified, 640, 480);
+        YuvToRgb untaggedHd = yuvToRgbFor(kRangeUnspecified, unspecified, 1920, 1080);
+        YuvToRgb untaggedSd = yuvToRgbFor(kRangeUnspecified, unspecified, 640, 480);
         CHECK(std::memcmp(&untaggedHd, &limited709, sizeof(YuvToRgb)) == 0, "untagged HD is limited BT.709");
         CHECK(std::memcmp(&untaggedSd, &limited601, sizeof(YuvToRgb)) == 0, "untagged SD is limited BT.601");
     }});
@@ -567,20 +567,23 @@ static void registerTests() {
     tests().push_back({"demuxer: a file without alpha starts at its first keyframe", [] {
         int fd = ::open((std::string(FIXTURES_DIR) + "/vp9_10bit.webm").c_str(), O_RDONLY);
         CHECK(fd >= 0, "vp9_10bit.webm");
-        AVIOContext* io = openFileRangeIO(fd, 0, -1);
+        std::unique_ptr<ByteSource> source = openFileRange(fd, 0, -1);
         ::close(fd);
-        {
-            std::unique_ptr<AlphaDemuxer> demuxer = AlphaDemuxer::open(io);
-            CHECK(demuxer != nullptr, "open");
-            CHECK(!demuxer->info().hasAlpha, "hasAlpha");
-            AlphaDemuxer::Packet p;
-            CHECK(demuxer->readPacket(&p), "no packets");
-            CHECK(p.stream == 0 && p.key && p.ptsUs == 0, "first packet: stream " << p.stream << ", key " << p.key << ", ptsUs " << p.ptsUs);
-            int count = 1;
-            while (demuxer->readPacket(&p)) count++;
-            CHECK(count == 3, count << " packets");
-        }
-        closeFileRangeIO(&io);
+        std::unique_ptr<AlphaDemuxer> demuxer = AlphaDemuxer::open(std::move(source));
+        CHECK(demuxer != nullptr, "open");
+        CHECK(!demuxer->info().hasAlpha, "hasAlpha");
+        AlphaDemuxer::Packet p;
+        CHECK(demuxer->readPacket(&p), "no packets");
+        CHECK(p.stream == 0 && p.key && p.ptsUs == 0, "first packet: stream " << p.stream << ", key " << p.key << ", ptsUs " << p.ptsUs);
+        int count = 1;
+        while (demuxer->readPacket(&p)) count++;
+        CHECK(count == 3, count << " packets");
+        CHECK(!demuxer->failed(), "the end of the file reads as a failure");
+    }});
+
+    tests().push_back({"the library versions name libvpx and dav1d", [] {
+        const std::string versions = WebMAlphaPlayer::getLibraryVersions();
+        CHECK(versions.find("libvpx v") == 0 && versions.find(", dav1d ") != std::string::npos, versions);
     }});
 
     tests().push_back({"10-bit VP9 is refused with an error event", [] {

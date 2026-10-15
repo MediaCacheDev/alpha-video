@@ -3,8 +3,8 @@
 # publish-android.sh [local|central]
 #
 # Builds the standalone Android library in android/ and publishes it as
-# dev.mediacache:alpha-video:<version>, the version in android/build.gradle. Needs the FFmpeg
-# libraries in prebuilt/android (build_ffmpeg_android.sh).
+# dev.mediacache:alpha-video:<version>, the version in android/build.gradle. Needs libvpx and
+# dav1d in prebuilt/android (build_codecs_android.sh, or fetch-prebuilt.sh).
 #
 #   local    publishToMavenLocal (~/.m2), unsigned unless a key is set. The default.
 #   central  signs, bundles and uploads to the Maven Central Portal. Needs:
@@ -13,8 +13,7 @@
 #              ORG_GRADLE_PROJECT_signingInMemoryKeyPassword
 #              ORG_GRADLE_PROJECT_signingInMemoryKeyId               optional
 #            The deployment waits in the portal for you to press Publish, unless
-#            PUBLISHING_TYPE=AUTOMATIC. Publish only once the GitHub Release with the
-#            FFmpeg and libvpx sources is public: the binaries point at it.
+#            PUBLISHING_TYPE=AUTOMATIC.
 #
 
 set -euo pipefail
@@ -30,7 +29,7 @@ if [ -z "$VERSION" ]; then
     exit 1
 fi
 if [ ! -d "$ROOT_DIR/prebuilt/android" ]; then
-    echo "❌ prebuilt/android is missing: run scripts/build_ffmpeg_android.sh"
+    echo "❌ prebuilt/android is missing: run scripts/build_codecs_android.sh"
     exit 1
 fi
 

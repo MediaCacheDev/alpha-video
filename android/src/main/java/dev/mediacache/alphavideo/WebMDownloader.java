@@ -19,8 +19,8 @@ import java.util.Map;
 import java.util.concurrent.Executor;
 
 /**
- * Downloads remote videos into the app's cache directory. FFmpeg here is built without network
- * protocols, so http(s) sources are always played from a cached file.
+ * Downloads remote videos into the app's cache directory. The native code has no networking, so
+ * http(s) sources are always played from a cached file.
  *
  * A download can be read while it runs: native code registers it (GrowingFile) under the cache
  * file's path, and the {@code ...Download} native loaders wait for bytes that haven't arrived yet.

@@ -263,7 +263,7 @@ public class SurfaceTextureVideoDecoder implements SurfaceTexture.OnFrameAvailab
     // Instance methods
     // -------------------------------------------------------------------------
     
-    /** @param avColorRange the stream's FFmpeg AVColorRange; with avColorSpace, sets MediaCodec's colour keys */
+    /** @param avColorRange the stream's colour range (numbered as FFmpeg's AVColorRange); with avColorSpace, sets MediaCodec's colour keys */
     public boolean configure(int width, int height, int avColorRange, int avColorSpace) {
         if (isConfigured.get()) {
             Log.w(TAG, "[" + label + "] Already configured");

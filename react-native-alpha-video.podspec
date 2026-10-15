@@ -19,14 +19,15 @@ Pod::Spec.new do |s|
   s.source_files = [
     'ios/Sources/AlphaVideo/**/*.{h,mm}',
     'react-native/ios/**/*.{h,mm}',
-    'cpp/**/*.{h,cpp}'
+    'cpp/**/*.{h,cpp}',
+    'third_party/libwebm/webm_parser/**/*.{h,cc}'
   ]
   s.exclude_files = [
     'cpp/*_jni.cpp'
   ]
   s.public_header_files = 'ios/Sources/AlphaVideo/include/AlphaVideo.h'
   
-  # Prebuilt FFmpeg libraries, linked by the app (see user_target_xcconfig)
+  # Prebuilt libvpx and dav1d, linked by the app (see user_target_xcconfig)
   s.preserve_paths = [
     'prebuilt/ios/**/*',
     'prebuilt/ios-simulator/**/*',
@@ -36,28 +37,26 @@ Pod::Spec.new do |s|
   s.pod_target_xcconfig = {
     'CLANG_CXX_LANGUAGE_STANDARD' => 'c++17',
     'CLANG_CXX_LIBRARY' => 'libc++',
-    'GCC_PREPROCESSOR_DEFINITIONS' => '$(inherited) __STDC_CONSTANT_MACROS',
-    'HEADER_SEARCH_PATHS' => '"$(PODS_TARGET_SRCROOT)/prebuilt/include" "$(PODS_TARGET_SRCROOT)/ios/Sources/AlphaVideo/include" "$(PODS_TARGET_SRCROOT)/cpp"',
+    'HEADER_SEARCH_PATHS' => '"$(PODS_TARGET_SRCROOT)/prebuilt/include" "$(PODS_TARGET_SRCROOT)/ios/Sources/AlphaVideo/include" "$(PODS_TARGET_SRCROOT)/cpp" "$(PODS_TARGET_SRCROOT)/third_party/libwebm/webm_parser" "$(PODS_TARGET_SRCROOT)/third_party/libwebm/webm_parser/include"',
     'LIBRARY_SEARCH_PATHS[sdk=iphoneos*]' => '"$(PODS_TARGET_SRCROOT)/prebuilt/ios/lib"',
     'LIBRARY_SEARCH_PATHS[sdk=iphonesimulator*]' => '"$(PODS_TARGET_SRCROOT)/prebuilt/ios-simulator/lib"'
   }
   
   # Propagate linker flags to the user target (app). The prebuilt libs differ per SDK, so they
   # can't be vendored; the app links them by path, relative to the Podfile's directory.
-  # FFmpeg and dav1d are force-loaded: an app that also links another FFmpeg (ffmpeg-kit's
-  # frameworks) or dav1d (libavif's pod) would otherwise bind the core's calls to whichever
-  # comes first on the link line, without dav1d or 10-bit AV1.
+  # dav1d is force-loaded: an app that also links another dav1d (libavif's pod) would otherwise
+  # bind the core's calls to whichever comes first on the link line, maybe one without 10-bit AV1.
   user_target_xcconfig = {}
   { 'iphoneos' => 'ios', 'iphonesimulator' => 'ios-simulator' }.each do |sdk, dir|
     lib_dir = "$(PODS_ROOT)/../#{pod_dir}/prebuilt/#{dir}/lib"
-    force_load = %w[avformat avcodec avutil dav1d].map { |lib| "-force_load \"#{lib_dir}/lib#{lib}.a\"" }.join(' ')
+    force_load = "-force_load \"#{lib_dir}/libdav1d.a\""
     user_target_xcconfig["LIBRARY_SEARCH_PATHS[sdk=#{sdk}*]"] = "$(inherited) \"#{lib_dir}\""
     user_target_xcconfig["OTHER_LDFLAGS[sdk=#{sdk}*]"] = "$(inherited) #{force_load} -lvpx"
   end
   s.user_target_xcconfig = user_target_xcconfig
   
   s.frameworks = ['Metal', 'MetalKit']
-  s.libraries = ['z', 'c++']
+  s.libraries = ['c++']
   
   # React Native's helper: the Fabric and codegen dependencies, and RCT_NEW_ARCH_ENABLED on the
   # new architecture. It reads pod_target_xcconfig, so it comes after it.

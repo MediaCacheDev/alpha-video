@@ -16,7 +16,7 @@ import java.util.concurrent.atomic.AtomicInteger;
  * BlockAdditional (a standard alpha WebM); the native demuxer hands both out as stream 0 and 1.
  * 
  * Architecture (per instructions3.json):
- * - FFmpeg demux → MediaCodec (Surface) → SurfaceTexture → OES texture
+ * - Native WebM demux → MediaCodec (Surface) → SurfaceTexture → OES texture
  * - Single GL draw call composites both OES textures in fragment shader
  * - NO intermediate FBO ring buffer — SurfaceTexture IS the buffer
  * 
@@ -205,7 +205,7 @@ public class BufferedDualStreamPlayer implements SurfaceTextureVideoDecoder.Fram
                 return false;
             }
             
-            // Get video info: [width, height, totalFrames, frameRate*1000, streamCount, codecId]
+            // Get video info: [width, height, totalFrames, frameRate*1000, streamCount, codec]
             int[] videoInfo = nativeGetVideoInfo(nativeDemuxerPtr);
             if (videoInfo == null || videoInfo.length < 6) {
                 Log.e(TAG, "Failed to get video info");
@@ -219,12 +219,10 @@ public class BufferedDualStreamPlayer implements SurfaceTextureVideoDecoder.Fram
             totalFrames = videoInfo[2];
             int fpsMul1000 = videoInfo[3];
             int numStreams = videoInfo[4];
-            int codecId = videoInfo[5];
+            int codec = videoInfo[5];
             
-            // Map FFmpeg codec_id to Android MIME type
-            // AV_CODEC_ID_VP9 = 167, AV_CODEC_ID_AV1 = 226
             String mimeType;
-            if (codecId == 226) {
+            if (codec == TRACK_AV1) {
                 mimeType = SurfaceTextureVideoDecoder.MIME_AV1;
             } else {
                 mimeType = SurfaceTextureVideoDecoder.MIME_VP9;
@@ -955,7 +953,7 @@ public class BufferedDualStreamPlayer implements SurfaceTextureVideoDecoder.Fram
     
     /**
      * The colour and alpha bitstreams in bytes [offset, offset + length) of fd, as pairs of codec
-     * ({@link #TRACK_VP9} or {@link #TRACK_AV1}) and FFmpeg profile. They come from 2 or more
+     * ({@link #TRACK_VP9} or {@link #TRACK_AV1}) and profile. They come from 2 or more
      * VP9/AV1 tracks, or from one VP9 track with its alpha in BlockAdditional (a standard alpha
      * WebM). Null for any other file.
      */

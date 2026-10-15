@@ -4,12 +4,10 @@
 #
 # Collects the GitHub Release assets for v<version> (package.json) in dist/release-v<version>/:
 #
-#   prebuilt-ffmpeg<F>-libvpx<V>.tar.gz   prebuilt/ for Android and iOS, what fetch-prebuilt.sh unpacks
-#   FFmpegVPX.xcframework.zip             the Package.swift binary target, as built by build_xcframework.sh
-#   alpha-video-<version>-ios.zip         the CocoaPods source (alpha-video.podspec): the iOS sources
-#                                         and FFmpegVPX.xcframework
-#   ffmpeg-<F>.tar.xz, libvpx-<V>.tar.gz  the corresponding source (LGPL), checked against
-#                                         THIRD_PARTY_NOTICES.md
+#   prebuilt-libvpx<V>-dav1d<D>.tar.gz    prebuilt/ for Android and iOS, what fetch-prebuilt.sh unpacks
+#   AlphaVideoCodecs.xcframework.zip      the Package.swift binary target, as built by build_xcframework.sh
+#   alpha-video-<version>-ios.zip         the CocoaPods source (alpha-video.podspec): the iOS sources,
+#                                         libwebm's parser and AlphaVideoCodecs.xcframework
 #   SHA256SUMS
 #
 # Uploads nothing. Afterwards, fetch-prebuilt.sh's SHA256 must be the prebuilt archive's,
@@ -20,54 +18,37 @@
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-FFMPEG_VERSION="6.1"
 LIBVPX_VERSION="1.14.0"
-FFMPEG_SHA256="488c76e57dd9b3bee901f71d5c95eaf1db4a5a31fe46a28654e837144207c270"
-LIBVPX_SHA256="5f21d2db27071c8a46f1725928a10227ae45c5cd1cad3727e4aafbe476e321fa"
+DAV1D_VERSION="1.5.1"
 
 VERSION="$(node -p "require('$ROOT/package.json').version")"
 OUT="$ROOT/dist/release-v$VERSION"
-CACHE="$ROOT/dist/sources"
-PREBUILT_ARCHIVE="prebuilt-ffmpeg$FFMPEG_VERSION-libvpx$LIBVPX_VERSION.tar.gz"
+PREBUILT_ARCHIVE="prebuilt-libvpx$LIBVPX_VERSION-dav1d$DAV1D_VERSION.tar.gz"
 
 sha256() {
     shasum -a 256 "$1" | cut -d' ' -f1
 }
 
-fetch_source() {
-    local name="$1" url="$2" expected="$3"
-    if [ ! -f "$CACHE/$name" ]; then
-        mkdir -p "$CACHE"
-        curl -fL --retry 3 -o "$CACHE/$name.part" "$url"
-        mv "$CACHE/$name.part" "$CACHE/$name"
-    fi
-    if [ "$(sha256 "$CACHE/$name")" != "$expected" ]; then
-        echo "❌ $name does not match THIRD_PARTY_NOTICES.md ($CACHE/$name)" >&2
-        exit 1
-    fi
-    cp "$CACHE/$name" "$OUT/$name"
-}
-
 for dir in android ios/lib ios-simulator/lib include; do
     if [ ! -d "$ROOT/prebuilt/$dir" ]; then
-        echo "❌ prebuilt/$dir is missing: run the build_ffmpeg_*.sh scripts" >&2
+        echo "❌ prebuilt/$dir is missing: run the build_codecs_*.sh scripts" >&2
         exit 1
     fi
 done
-ZIP="$ROOT/prebuilt/FFmpegVPX.xcframework.zip"
+ZIP="$ROOT/prebuilt/AlphaVideoCodecs.xcframework.zip"
 if [ ! -f "$ZIP" ]; then
     echo "❌ $ZIP is missing: run scripts/build_xcframework.sh" >&2
     exit 1
 fi
 if ! grep -q "checksum: \"$(sha256 "$ZIP")\"" "$ROOT/Package.swift"; then
-    echo "❌ Package.swift's checksum is not FFmpegVPX.xcframework.zip's ($(sha256 "$ZIP"))" >&2
+    echo "❌ Package.swift's checksum is not AlphaVideoCodecs.xcframework.zip's ($(sha256 "$ZIP"))" >&2
     exit 1
 fi
 
 rm -rf "$OUT"
 mkdir -p "$OUT"
 
-# The archive carries the notices, since it is a copy of LGPL binaries on its own.
+# The archive carries the notices, since it is a copy of the libraries on its own.
 STAGE="$(mktemp -d)"
 trap 'rm -rf "$STAGE"' EXIT
 mkdir -p "$STAGE/prebuilt/ios" "$STAGE/prebuilt/ios-simulator"
@@ -85,14 +66,15 @@ find "$STAGE/prebuilt" -exec touch -h -t 202601010000 {} +
         --uid 0 --gid 0 --uname "" --gname "" -f - \
     | gzip -n -9 > "$OUT/$PREBUILT_ARCHIVE"
 
-# The CocoaPods source: prebuilt/ isn't in git, so the pod downloads the sources and FFmpeg
+# The CocoaPods source: prebuilt/ isn't in git, so the pod downloads the sources and the codecs
 # together. Reproducible in the same way, for alpha-video.podspec's sha256.
 POD="$STAGE/pod"
-mkdir -p "$POD/cpp" "$POD/ios/Sources"
+mkdir -p "$POD/cpp" "$POD/ios/Sources" "$POD/third_party"
 cp "$ROOT"/cpp/*.h "$ROOT"/cpp/*.cpp "$POD/cpp/"
 rm "$POD/cpp/WebMAlphaPlayer_jni.cpp"
 cp -R "$ROOT/ios/Sources/AlphaVideo" "$POD/ios/Sources/"
-cp -R "$ROOT/prebuilt/FFmpegVPX.xcframework" "$POD/"
+cp -R "$ROOT/third_party/libwebm" "$POD/third_party/"
+cp -R "$ROOT/prebuilt/AlphaVideoCodecs.xcframework" "$POD/"
 cp -R "$ROOT/LICENSE" "$ROOT/THIRD_PARTY_NOTICES.md" "$ROOT/licenses" "$POD/"
 find "$POD" -name .DS_Store -delete
 find "$POD" -exec touch -h -t 202601010000 {} +
@@ -100,10 +82,6 @@ POD_ZIP="alpha-video-$VERSION-ios.zip"
 (cd "$POD" && find . -mindepth 1 | sed 's#^\./##' | LC_ALL=C sort | zip -q -X -D -9 "$OUT/$POD_ZIP" -@)
 
 cp "$ZIP" "$OUT/"
-fetch_source "ffmpeg-$FFMPEG_VERSION.tar.xz" \
-    "https://ffmpeg.org/releases/ffmpeg-$FFMPEG_VERSION.tar.xz" "$FFMPEG_SHA256"
-fetch_source "libvpx-$LIBVPX_VERSION.tar.gz" \
-    "https://github.com/webmproject/libvpx/archive/refs/tags/v$LIBVPX_VERSION.tar.gz" "$LIBVPX_SHA256"
 
 (cd "$OUT" && shasum -a 256 -- * > SHA256SUMS)
 echo "📦 $OUT"

@@ -10,7 +10,7 @@ The player has two completely separate decode backends, selected automatically b
 |---|---|---|
 | **File format** | Single VP9 stream with YUVA420P alpha, or two VP9 (8-bit) or AV1 (8- to 12-bit) streams | Two VP9 or AV1 streams (color + alpha), or a single VP9 stream with YUVA420P alpha |
 | **Used for** | iOS always; Android when MediaCodec can't decode the file | Android when it can |
-| **Decoder** | FFmpeg (C++; libvpx for VP9, dav1d for AV1) | Android MediaCodec (hardware or software codec) |
+| **Decoder** | C++ core (libvpx for VP9, dav1d for AV1) | Android MediaCodec (hardware or software codec) |
 | **Rendering** | YUVA textures → fragment shader | OES textures → fragment shader |
 | **Platforms** | iOS + Android | Android only |
 | **Looping** | Seamless (frames stay in cache) | Seamless |
@@ -29,7 +29,7 @@ React (JS) AlphaVideoView props
    ├─ Android: AlphaVideoViewManager → AlphaVideoView (TextureView)
    │      ├─ download/cache (WebMDownloader, cacheKey-aware) → load, or loadFromDownload while it runs
    │      ├─ if colour + alpha VP9/AV1 streams + MediaCodecDecoders reserves 2 decoders → BufferedDualStreamPlayer (MediaCodec)
-   │      └─ otherwise (decoder auto or ffmpeg)                                      → WebMAlphaPlayer (C++/FFmpeg)
+   │      └─ otherwise (decoder auto or software)                                    → WebMAlphaPlayer (C++)
    │
    ├─ iOS: RNAlphaVideoViewManager → RNAlphaVideoView (an AlphaVideoView) → AlphaVideoMetalView
    │      └─ download/cache (AlphaVideoDownload, NSURLSession→Caches) → loadFromPath / loadFromDownloadPath → WebMAlphaPlayer (C++)
@@ -63,15 +63,18 @@ React (JS) AlphaVideoView props
 
 ### C++ Core (cross-platform, software path)
 
-- **`WebMAlphaPlayer`** — FFmpeg (avformat/avcodec/avutil) wrapper:
-  - `openStreams`, `initCodecs` (a decoder per track: libvpx-vp9 for VP9, libdav1d for AV1), `loadFromFile/loadFromMemory/loadFromFileRange/loadFromDownload`
+- **`AlphaDemuxer`** — Reads the colour and alpha bitstreams as packets with libwebm's `webm_parser` (`third_party/libwebm`): the first two VP9/AV1 tracks, or one VP9 track and its BlockAdditional alpha. Takes profile, bit depth and colour from the bitstream headers, and seeks by the Cues (loaded when a seek needs them) or by scanning. Shared with the MediaCodec path through JNI. The web's demuxer (`web/wasm/AlphaDemuxer`) is an FFmpeg version with the same info, packets and seeks; `tests/core/demuxer_compare` checks the two against each other.
+- **`VideoDecoder`** — libvpx (VP9, with row multithreading) and dav1d (AV1) behind one interface: send a packet, receive pictures, drain at the end, flush on a seek.
+- **`ByteSource`** — Where the demuxer reads: a file, a range of a file descriptor (an APK asset or `content://` URI), a download in progress, or memory.
+- **`WebMAlphaPlayer`** — The player on top of them:
+  - `openStreams`, `initCodecs` (a decoder per track: libvpx for VP9, dav1d for AV1), `loadFromFile/loadFromMemory/loadFromFileRange/loadFromDownload`
   - dav1d holds frames back with frame threading, so every decode loop drains the decoders (an empty packet) at the end of the file
   - `decodeAllFrames` (preload) and on-demand `decodeFrame`
   - YUVA frame extraction with alpha handling (embedded YUVA420P or separate alpha track)
   - `FrameCache` (LRU, mutex-protected) for decoded frames
   - Playback loop clocking frames at target FPS
   - `PlayerConfig`: cache size, `preloadAllFrames`, playback speed
-- **`GrowingFile`** — A download in progress, registered under its cache path. The platform downloader reports each chunk it writes to a part file; `openDownloadIO` (in `FileRangeIO`) gives FFmpeg an AVIO context that waits for bytes not yet written, instead of hitting EOF.
+- **`GrowingFile`** — A download in progress, registered under its cache path. The platform downloader reports each chunk it writes to a part file; `openDownload` (in `ByteSource`) gives the demuxer a source that waits for bytes not yet written, instead of hitting EOF.
 
 ## Threading Model
 
@@ -90,7 +93,7 @@ Android — Hardware (Dual-Stream) Path
   ├─ UI thread: View creation, prop updates, attach/detach
   ├─ Download executor (4 threads): HTTP fetch → cache file
   ├─ GL render thread: EGL context, OES texture creation, compositing shader, present
-  ├─ Demux thread: FFmpeg reads packets, feeds to MediaCodec input buffers
+  ├─ Demux thread: AlphaDemuxer reads packets, feeds to MediaCodec input buffers
   ├─ Codec callback threads (2): MediaCodec async output callbacks (one per decoder)
   └─ Playback thread: PTS-gated frame release, timing control, render signaling
 
@@ -113,9 +116,9 @@ loadDualStreamFile(path)
        1. Create BufferedDualStreamPlayer
        2. Set loop, verbose, GL executor, callbacks
        3. bufferedPlayer.loadFromFile(path):
-            a. nativeCreateDemuxer (JNI) → FFmpeg opens WebM, finds 2 video streams
-            b. nativeGetVideoInfo → [width, height, frames, fps*1000, streamCount, codecId]
-            c. Map codecId to MIME type (VP9=167 → "video/x-vnd.on2.vp9", AV1=226 → "video/av01")
+            a. nativeCreateDemuxer (JNI) → AlphaDemuxer opens WebM, finds the colour and alpha streams
+            b. nativeGetVideoInfo → [width, height, frames, fps*1000, streamCount, codec]
+            c. Map codec to MIME type (VP9=0 → "video/x-vnd.on2.vp9", AV1=1 → "video/av01")
             d. Create 2 SurfaceTextureVideoDecoder instances (color + alpha)
                  - Each creates: OES texture → SurfaceTexture → Surface → MediaCodec
                  - MediaCodec configured with Surface output (GPU-accelerated)
@@ -161,7 +164,7 @@ Demux thread detects EOF
        1. Pause demux + playback
        2. colorDecoder.flush() → MediaCodec reset, buffers cleared
        3. alphaDecoder.flush() → MediaCodec reset, buffers cleared
-       4. nativeSeekToStart(demuxer) → FFmpeg av_seek_frame to 0
+       4. nativeSeekToStart(demuxer) → AlphaDemuxer back to the first packet
        5. Resume demux + playback from frame 0
 ```
 
@@ -174,14 +177,14 @@ Thread Lifecycle:
 
 JS/Main thread                 Playback thread                Decode (inline)              Resources
 --------------                 ----------------               ---------------              ---------
-loadFromFile(path)         →   (not started yet)              FFmpeg open, init codecs     FrameCache created
+loadFromFile(path)         →   (not started yet)              demuxer open, init codecs    FrameCache created
   if preload:                                                 decodeAllFrames (inline)
 play()                     →   spawn playbackThread           
                                   playing=true
                                   per frame slot:
                                     getFrame(idx)
                                       cache hit → emit        
-                                      cache miss → decode     av_seek + avcodec decode
+                                      cache miss → decode     seek + libvpx/dav1d decode
                                     advance idx               copy YUVA → FrameCache
 
 pause()                    →   playing=false (thread idles)
@@ -219,7 +222,7 @@ React Native may detach and re-attach the view during z-index changes:
    - Local: `file://` or bundle asset resolved directly.
 2. **Decode**
    - Software: C++ opens file, finds color + alpha streams, initializes codecs. Frames decoded to YUVA.
-   - Hardware: FFmpeg demuxes raw packets, MediaCodec decodes to SurfaceTexture.
+   - Hardware: AlphaDemuxer hands out raw packets, MediaCodec decodes to SurfaceTexture.
 3. **Cache**
    - Software: `FrameCache` stores decoded frames keyed by frame index; LRU eviction.
    - Hardware: No frame cache; decoded frames go directly to OES textures.
@@ -254,13 +257,13 @@ if remote → download thread(s)
 Auto-detect: nativeColorAlphaTracks?
    ├─ YES + profiles MediaCodec lists + HW decoder available (VP9: with 2 instances free):
    │    BufferedDualStreamPlayer
-   │    ├─ demux thread: FFmpeg → raw packets
+   │    ├─ demux thread: AlphaDemuxer → raw packets
    │    ├─ 2× MediaCodec → OES textures
    │    └─ GL thread: composite + present
    │
    └─ otherwise:
         WebMAlphaPlayer (C++)
-        ├─ decode thread: FFmpeg → YUVA frames → FrameCache
+        ├─ decode thread: libvpx/dav1d → YUVA frames → FrameCache
         └─ playback loop → texture upload → GPU shader → present
    ↓
 Events: onLoad / onError / onEnd → JS

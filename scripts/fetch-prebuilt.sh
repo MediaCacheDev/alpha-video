@@ -2,9 +2,9 @@
 #
 # fetch-prebuilt.sh [--force]
 #
-# Downloads the prebuilt FFmpeg + libvpx static libraries into prebuilt/ from this repo's GitHub
+# Downloads the prebuilt libvpx + dav1d static libraries into prebuilt/ from this repo's GitHub
 # Release. A git clone needs them to build; the npm package already contains them. To build them
-# from source instead, run build_ffmpeg_android.sh and build_ffmpeg_ios.sh.
+# from source instead, run build_codecs_android.sh and build_codecs_ios.sh.
 #
 # Leaves an existing prebuilt/ alone unless --force is given.
 #
@@ -12,8 +12,8 @@
 set -euo pipefail
 
 RELEASE="v1.0.0"
-ARCHIVE="prebuilt-ffmpeg6.1-libvpx1.14.0.tar.gz"
-SHA256="4d9fb7452ba0ee60712fea5179b9275e76dabca0c34ad78e482add7eb9badd10"
+ARCHIVE="prebuilt-libvpx1.14.0-dav1d1.5.1.tar.gz"
+SHA256="5a109170b5a9162d8d4cb14044eea4dd723a248970ba334ca20b861a19d767cb"
 URL="https://github.com/MediaCacheDev/alpha-video/releases/download/$RELEASE/$ARCHIVE"
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -45,4 +45,4 @@ fi
 
 rm -rf "$PREBUILT/android" "$PREBUILT/ios" "$PREBUILT/ios-simulator" "$PREBUILT/include"
 tar -xzf "$TMP/$ARCHIVE" -C "$ROOT"
-echo "✅ prebuilt/ (FFmpeg 6.1, libvpx 1.14.0)"
+echo "✅ prebuilt/ (libvpx 1.14.0, dav1d 1.5.1)"

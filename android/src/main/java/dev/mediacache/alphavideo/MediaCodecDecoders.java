@@ -32,7 +32,7 @@ final class MediaCodecDecoders {
      * Reserves a decoder of {@code kind} for the colour and the alpha track, each one listing the
      * track's profile and having an instance free.
      *
-     * @param tracks pairs of codec and FFmpeg profile, colour first, from
+     * @param tracks pairs of codec and profile, colour first, from
      *     {@link BufferedDualStreamPlayer#nativeColorAlphaTracks}
      * @return the decoder names, colour first; null if a track got none, and then none is reserved.
      *     Give them back with {@link #release}.

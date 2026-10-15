@@ -15,7 +15,7 @@ namespace webm {
  * The downloader writes into a temporary file and reports each chunk here; readers wait for bytes
  * that haven't arrived yet instead of hitting end of file, so playback can start while the rest
  * downloads. Downloads are registered under the path the finished file will have, which is the
- * path readers ask for (see openDownloadIO).
+ * path readers ask for (see openDownload in ByteSource.h).
  *
  * The downloader calls begin(), setWritten() after each write, and finally finish() (after
  * renaming the temporary file into place) or fail().

@@ -369,12 +369,8 @@
 - (NSString *)decoderName { return [NSString stringWithUTF8String:_player->getDecoderName().c_str()]; }
 - (webm::YuvToRgb)yuvToRgb { return _player->getYuvToRgb(); }
 
-+ (NSString *)ffmpegVersion {
-    return [NSString stringWithUTF8String:webm::WebMAlphaPlayer::getFFmpegVersion().c_str()];
-}
-
-+ (BOOL)isFFmpegInitialized {
-    return webm::WebMAlphaPlayer::isFFmpegInitialized();
++ (NSString *)libraryVersions {
+    return [NSString stringWithUTF8String:webm::WebMAlphaPlayer::getLibraryVersions().c_str()];
 }
 
 @end

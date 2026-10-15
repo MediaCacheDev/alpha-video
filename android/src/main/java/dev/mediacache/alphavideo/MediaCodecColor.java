@@ -3,12 +3,12 @@ package dev.mediacache.alphavideo;
 import android.media.MediaFormat;
 
 /**
- * MediaCodec's colour keys from a stream's FFmpeg tags. The decoder's output buffers carry them,
+ * MediaCodec's colour keys from a stream's colour tags. The decoder's output buffers carry them,
  * and the external-texture sampler converts YUV to RGB with them; without them a driver may use
  * BT.601 for everything.
  */
 final class MediaCodecColor {
-    // FFmpeg's AVColorRange and AVColorSpace values
+    // The core's ColorRange and ColorMatrix values (YuvToRgb.h), numbered as FFmpeg's
     private static final int AVCOL_RANGE_JPEG = 2;
     private static final int AVCOL_SPC_BT709 = 1;
     private static final int AVCOL_SPC_UNSPECIFIED = 2;

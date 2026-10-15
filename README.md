@@ -5,7 +5,7 @@ Transparent video that plays everywhere: Android, iOS, React Native and every mo
 It plays **VP9 WebM with alpha** (standard YUVA WebM, what FFmpeg and libvpx write) and **dual-stream VP9/AV1** (colour and alpha in separate video tracks). Each platform tries the fastest way first and falls back until one works:
 
 - **Android:** two MediaCodec decoders, one for colour and one for alpha, in hardware where the device has them. Then MediaCodec's software decoders, then the C++ core.
-- **iOS:** the C++ core, which demuxes with FFmpeg, decodes with libvpx (VP9) and dav1d (AV1), and draws with Metal.
+- **iOS:** the C++ core, which demuxes with libwebm, decodes with libvpx (VP9) and dav1d (AV1), and draws with Metal.
 - **Web:** the browser's own `<video>` where it keeps the alpha, then WebCodecs, then the same decoders compiled to WebAssembly ([how it works](#web)).
 
 One repository, four packages:
@@ -43,7 +43,7 @@ Both play transparent videos on Android, iOS and the web, and they suit differen
 - **VP9 Alpha Transparency** - Full support for WebM videos with embedded YUVA alpha channel
 - **Hardware Decode on Android** - Color and alpha decoded by two MediaCodec instances, from a standard alpha WebM (the alpha is a second VP9 stream in each block's BlockAdditional) or from separate VP9 or AV1 tracks
 - **AV1 Support** - Dual-stream AV1, 8- or 10-bit, on Android and iOS: MediaCodec on Android (in hardware where the device has an AV1 decoder), dav1d in the C++ core elsewhere
-- **High Performance** - Native C++ core (FFmpeg) with GPU-accelerated rendering
+- **High Performance** - Native C++ core (libvpx, dav1d) with GPU-accelerated rendering
 - **iOS** - Metal-based rendering with YUVA-to-RGBA GPU shader
 - **Android** - TextureView with OpenGL ES 2.0, proper z-ordering and ScrollView support
 - **Web** - `alpha-video-web` shows the alpha in every modern browser: `<video>` where the browser keeps it, otherwise WebCodecs or WebAssembly decoding drawn in WebGL2 (see [Web](#web)). On react-native-web, `AlphaVideoView` uses it
@@ -56,7 +56,7 @@ The player picks the decode path itself. On Android it uses MediaCodec when deco
 | | Software path (C++ core) | Hardware path (MediaCodec, Android) |
 |---|---|---|
 | **Files** | Single-stream YUVA VP9; dual-stream VP9 (8-bit) or AV1 (8- to 12-bit) | Single-stream YUVA VP9; dual-stream VP9 or AV1 |
-| **Decoding** | CPU (FFmpeg: libvpx for VP9, dav1d for AV1) | GPU (MediaCodec), or MediaCodec's software decoders |
+| **Decoding** | CPU (libvpx for VP9, dav1d for AV1) | GPU (MediaCodec), or MediaCodec's software decoders |
 | **CPU usage during playback** | Depends on `mode`: none once `preload` has decoded every frame (upload and render only); continuous decoding in `stream`; first pass only in `streamAndPreload` | Near-zero (decode offloaded) |
 | **Looping** | Seamless | Seamless |
 | **Max resolution** | ~720p practical limit | 1080p+ (hardware limited) |
@@ -122,12 +122,12 @@ import { AlphaVideoView } from 'react-native-alpha-video';
 
 The example sets every option; [Options](#options) says when each one takes effect.
 
-The npm package carries the prebuilt FFmpeg libraries, so nothing else is downloaded.
+The npm package carries the prebuilt libvpx and dav1d libraries, so nothing else is downloaded.
 
 The package works on both React Native architectures: the new one (a Fabric view, and a TurboModule for the [decoder status API](#decoder-status-api-android); the default since 0.76) and the old one (`newArchEnabled=false`, up to 0.81). It is tested on 0.83, and on 0.81 with the new architecture turned off.
 
 **Expo:**
-- Expo Go: not supported, as the package has native code and FFmpeg binaries.
+- Expo Go: not supported, as the package has native code.
 - A development build or EAS Build: supported. Run `npx expo prebuild` (EAS Build does it for you), so the pods and Gradle dependencies are compiled in.
 
 ### Android
@@ -140,7 +140,7 @@ dependencies {
 }
 ```
 
-The AAR includes FFmpeg, built for `arm64-v8a`, `armeabi-v7a` and `x86_64`. Android 7.0 (API 24) or later.
+The AAR includes libvpx and dav1d, built for `arm64-v8a`, `armeabi-v7a` and `x86_64`. Android 7.0 (API 24) or later.
 
 `dev.mediacache.alphavideo.AlphaVideoView` is a `TextureView`. It takes the same sources and options as the React Native component, through setters:
 
@@ -188,7 +188,7 @@ pod 'alpha-video', '1.0.0'
 .product(name: "AlphaVideo", package: "alpha-video")
 ```
 
-The module is `AlphaVideo` either way. FFmpeg comes with it, prebuilt. `AlphaVideoView` is a `UIView`:
+The module is `AlphaVideo` either way. libvpx and dav1d come with it, prebuilt. `AlphaVideoView` is a `UIView`:
 
 ```swift
 import AlphaVideo
@@ -273,7 +273,7 @@ iOS has no `decoder`: it always decodes in software. The cache, prefetch and que
 | `paused` | `boolean` | `false` | Hold playback. Unpausing plays on when `autoPlay` is on |
 | `playbackSpeed` | `number` | `1.0` | Playback speed multiplier. Changeable while playing, and does **not** move the playhead — see below |
 | `style` | `ViewStyle` | - | Container style. On Android `backgroundColor` is ignored (the view is a `TextureView`); put a background on a parent view |
-| `onLoad` | `function` | - | Callback when video loads (`{ totalFrames, width, height, decoder }`); `decoder` names the engine and decoders, e.g. `'mediacodec-hw (c2.qti.vp9.decoder)'`, `'software (libvpx-vp9)'`, `'software (libdav1d)'`; on the web `'browser'`, `'webcodecs (vp09.00.41.08)'` or `'software (vp9)'` |
+| `onLoad` | `function` | - | Callback when video loads (`{ totalFrames, width, height, decoder }`); `decoder` names the engine and decoders, e.g. `'mediacodec-hw (c2.qti.vp9.decoder)'`, `'software (libvpx)'`, `'software (dav1d)'`; on the web `'browser'`, `'webcodecs (vp09.00.41.08)'` or `'software (vp9)'` |
 | `onError` | `function` | - | Callback when error occurs (`{ error }`; on the web also `code`, such as `'NO_ALPHA_PATH'`) |
 | `onEnd` | `function` | - | Callback when playback reaches the end with `loop` off |
 | `mode` | `'preload' \| 'stream' \| 'streamAndPreload'` | `'stream'` | Playback mode (software path only, see below) |
@@ -361,7 +361,7 @@ A player gives its decoders back when it unloads, or when its view loads a new s
 | Third | `mediacodec-sw` | `mediacodec-sw` |
 | Once MediaCodec's software instances run out | `software` | `onError` |
 
-`onLoad`'s `decoder` says what was used: `'mediacodec-hw (c2.qti.vp9.decoder)'`, `'mediacodec-sw (c2.android.vp9.decoder)'`, `'mediacodec (c2.qti.vp9.decoder, c2.android.vp9.decoder)'` for one of each, `'software (libvpx-vp9)'` or `'software (libdav1d)'`. 10-bit VP9 plays only on MediaCodec, since the C++ core decodes 8-bit VP9.
+`onLoad`'s `decoder` says what was used: `'mediacodec-hw (c2.qti.vp9.decoder)'`, `'mediacodec-sw (c2.android.vp9.decoder)'`, `'mediacodec (c2.qti.vp9.decoder, c2.android.vp9.decoder)'` for one of each, `'software (libvpx)'` or `'software (dav1d)'`. 10-bit VP9 plays only on MediaCodec, since the C++ core decodes 8-bit VP9.
 
 `mode` applies to the C++ core only; MediaCodec always streams. On a GPU without `GL_EXT_YUV_target`, frames from MediaCodec's software decoders can show BT.601 colours for BT.709 video, because the driver ignores their colour tag.
 
@@ -427,7 +427,7 @@ Only a file that no engine can decode ends in an error (`NO_ALPHA_PATH`). Each W
 │  TypeScript  │◄──►│ iOS / Android │◄──►│                                   │
 │  Component   │    │ ViewManager   │    │  ┌─────────────┐ ┌─────────────┐ │
 └──────────────┘    └───────────────┘    │  │  Software    │ │  Hardware   │ │
-                                         │  │  (C++/FFmpeg)│ │  (MediaCodec│ │
+                                         │  │  (C++ core)  │ │  (MediaCodec│ │
                                          │  │  YUVA decode │ │  OES texture│ │
                                          │  │  + GPU upload│ │  compositing│ │
                                          │  └─────────────┘ └─────────────┘ │
@@ -436,14 +436,14 @@ Only a file that no engine can decode ends in an error (`NO_ALPHA_PATH`). Each W
 
 ### Decode Paths
 
-**Software (C++ core)** — works on all platforms:
-1. FFmpeg demuxes WebM, libvpx decodes VP9 with embedded alpha, or the colour and alpha tracks of a dual-stream VP9 file
+**Software (C++ core)** — Android and iOS:
+1. libwebm demuxes WebM, libvpx decodes VP9 with embedded alpha, or the colour and alpha tracks of a dual-stream VP9 file
 2. YUVA420P frames cached in LRU `FrameCache`
 3. Uploaded to GPU as 4 textures (Y, U, V, A) per frame
 4. Fragment shader converts YUVA to RGBA on Metal (iOS) / OpenGL ES (Android)
 
 **Hardware (MediaCodec)** — Android only:
-1. FFmpeg demuxes WebM into color packets (stream 0) and alpha packets (stream 1): the two tracks of a dual-stream file, or each block's main data and its BlockAdditional in a standard alpha WebM
+1. libwebm demuxes WebM into color packets (stream 0) and alpha packets (stream 1): the two tracks of a dual-stream file, or each block's main data and its BlockAdditional in a standard alpha WebM
 2. Two `MediaCodec` instances decode in parallel, outputting to `SurfaceTexture` (OES textures)
 3. One-frame-per-cycle release gate ensures color and alpha stay in sync
 4. Fragment shader samples both OES textures: `gl_FragColor = vec4(color.rgb, alpha.r)`
@@ -452,7 +452,7 @@ Only a file that no engine can decode ends in an error (`NO_ALPHA_PATH`). Each W
 ### Core Components
 
 **C++ Core (`WebMAlphaPlayer`)** — software decode path
-- FFmpeg 6.1 with libvpx 1.14.0 for VP9 YUVA decoding
+- libwebm's parser for demuxing, libvpx 1.14.0 for VP9 and dav1d 1.5.1 for AV1
 - Multithreaded: decode thread, playback thread, render thread
 - LRU `FrameCache` prevents re-decoding during loops
 - Zero-copy pipeline from decoder to GPU
@@ -603,14 +603,14 @@ ffprobe -v quiet -print_format json -show_streams output.webm
 # Dual-stream: look for 2 video streams (both vp9 or both av1)
 ```
 
-## FFmpeg Build
+## Codec Build
 
-The library ships with prebuilt FFmpeg 6.1 + libvpx 1.14.0 + dav1d 1.5.1 static libraries: only `libavformat`, `libavcodec`, `libavutil`, `libvpx` and `libdav1d`, configured for the WebM demuxer, the VP9 decoders and dav1d's AV1 decoder (8- to 12-bit). To rebuild:
+The library ships with prebuilt libvpx 1.14.0 (the VP9 decoder) and dav1d 1.5.1 (the AV1 decoder, 8- to 12-bit) static libraries. libwebm's WebM parser is in `third_party/libwebm` and compiles with the C++ core. To rebuild the libraries:
 
 ```bash
-npm run build:ffmpeg:ios          # iOS (device + simulator)
-npm run build:ffmpeg:android      # Android (arm64-v8a, armeabi-v7a, x86_64)
-npm run build:ffmpeg:all          # All platforms
+npm run build:codecs:ios          # iOS (device + simulator)
+npm run build:codecs:android      # Android (arm64-v8a, armeabi-v7a, x86_64)
+npm run build:codecs:all          # All platforms
 ```
 
 The scripts download the sources themselves. dav1d builds with `meson` and `ninja` (`brew install meson ninja`), and the x86_64 builds (Android and the simulator) need `nasm`. The Android script uses the NDK in `ANDROID_NDK_HOME` (default `$ANDROID_HOME/ndk/27.1.12297006`).
@@ -630,21 +630,21 @@ scripts/fetch-prebuilt.sh             # prebuilt/ from the GitHub Release, check
 ### Native packages and releases
 
 ```bash
-scripts/build_xcframework.sh          # prebuilt/FFmpegVPX.xcframework(.zip) for Package.swift
+scripts/build_xcframework.sh          # prebuilt/AlphaVideoCodecs.xcframework(.zip) for Package.swift
 scripts/publish-android.sh local      # dev.mediacache:alpha-video into ~/.m2
 scripts/publish-android.sh central    # signed, to the Maven Central Portal
 scripts/package_release.sh            # the GitHub Release assets, in dist/release-v<version>/
 ```
 
-`Package.swift` uses `prebuilt/FFmpegVPX.xcframework` when it exists, and the release zip otherwise. Its checksum must match the zip attached to the GitHub Release, so rebuilding the xcframework means updating the checksum. The same goes for the prebuilt archive and `fetch-prebuilt.sh`, although packaging the same libraries again gives the same archive. `package_release.sh` stops or warns when either checksum is out of date. `publish-android.sh` lists the environment variables it needs for Central.
+`Package.swift` uses `prebuilt/AlphaVideoCodecs.xcframework` when it exists, and the release zip otherwise. Its checksum must match the zip attached to the GitHub Release, so rebuilding the xcframework means updating the checksum. The same goes for the prebuilt archive and `fetch-prebuilt.sh`, although packaging the same libraries again gives the same archive. `package_release.sh` stops or warns when either checksum is out of date. `publish-android.sh` lists the environment variables it needs for Central.
 
-A release carries the prebuilt archive, `FFmpegVPX.xcframework.zip`, the CocoaPods zip (`alpha-video-<version>-ios.zip`, the source of `alpha-video.podspec`, whose `:sha256` must match it), and the FFmpeg and libvpx source tarballs that [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md) points to. `pod trunk push alpha-video.podspec --allow-warnings` once the release is public; the warnings are FFmpeg's header comments.
+A release carries the prebuilt archive, `AlphaVideoCodecs.xcframework.zip` and the CocoaPods zip (`alpha-video-<version>-ios.zip`, the source of `alpha-video.podspec`, whose `:sha256` must match it). `pod trunk push alpha-video.podspec` once the release is public.
 
 ### Repository layout
 
 | Path | Contents |
 |---|---|
-| `cpp/` | The C++ core (FFmpeg demux and libvpx decode), shared by every platform |
+| `cpp/` | The C++ core (libwebm demux, libvpx and dav1d decode), shared by Android and iOS; the web has its own demuxer in `web/wasm` |
 | `android/` | The Android library: `AlphaVideoView`, the MediaCodec dual-stream path and the JNI build |
 | `ios/Sources/AlphaVideo/` | The iOS library: `AlphaVideoView` and the Metal renderer |
 | `react-native/` | The React Native component (`src/`) and its thin native view managers |
@@ -665,8 +665,8 @@ A release carries the prebuilt archive, `FFmpegVPX.xcframework.zip`, the CocoaPo
 
 Ideas, not plans:
 
-- **Drop FFmpeg.** Demux with [libwebm](https://chromium.googlesource.com/webm/libwebm) and call libvpx and dav1d directly. Every dependency would then be BSD, which removes the LGPL obligations, and the binaries would get smaller. A prototype showed that libwebm's `webm_parser` demuxes every test file exactly as FFmpeg does, BlockAdditional alpha included. Natively, libvpx called directly decodes as fast as through FFmpeg. In WebAssembly it's slower than FFmpeg's own VP9 decoder, so the web may keep that one.
-- **Hardware decoding of dual-stream files on iOS.** Two VideoToolbox sessions, one per track, composited in the Metal shader, as Android does with MediaCodec, with FFmpeg as the fallback. AV1 decodes in hardware on recent Apple chips (A17 Pro, M3 and later). VP9 likely can't, since VideoToolbox's VP9 decoder isn't available to iOS apps.
+- **Drop FFmpeg on the web too.** Android and iOS use libwebm, libvpx and dav1d directly. In WebAssembly libvpx is 1.2-1.9x slower than FFmpeg's own VP9 decoder, even with row multithreading, so the web keeps FFmpeg for now.
+- **Hardware decoding of dual-stream files on iOS.** Two VideoToolbox sessions, one per track, composited in the Metal shader, as Android does with MediaCodec, with the C++ core as the fallback. AV1 decodes in hardware on recent Apple chips (A17 Pro, M3 and later). VP9 likely can't, since VideoToolbox's VP9 decoder isn't available to iOS apps.
 - **Audio.** Decode a WebM's Opus or Vorbis track, keep video in sync with it, and drop frames when decoding falls behind.
 - **More codecs.** VP8 (libvpx already has it; alpha VP8 WebM is common from older encoders) and AV2 once it's final, in software and through platform decoders where they exist.
 - **DRM.** Unlikely: Widevine and FairPlay decode into protected surfaces, which the alpha shader can't read.
@@ -675,12 +675,13 @@ Ideas, not plans:
 
 The code in this repository is MIT (see [LICENSE](LICENSE)).
 
-The prebuilt FFmpeg libraries are LGPL-2.1-or-later, libvpx is BSD-3-Clause and dav1d is BSD-2-Clause. LGPL covers FFmpeg itself, not the code that uses it, but anything that distributes the binaries (this package, and apps built with it) must include their notices and make FFmpeg's source available. [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md) has the versions, configure options, source links and what LGPL asks of closed-source apps; the licence texts are in [`licenses/`](licenses).
+On Android and iOS the player also contains libwebm's parser and libvpx (BSD-3-Clause, with the WebM patent grant) and dav1d (BSD-2-Clause). Apps built with it must include their notices. The web player, `alpha-video-web`, is built with FFmpeg, which is LGPL-2.1-or-later; its notices are in [web/THIRD_PARTY_NOTICES.md](web/THIRD_PARTY_NOTICES.md). [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md) has the versions, build options and source links; the licence texts are in [`licenses/`](licenses).
 
 ## Credits
 
 Built with:
-- [FFmpeg](https://ffmpeg.org/) - Video demuxing and software decoding
+- [libwebm](https://chromium.googlesource.com/webm/libwebm) - WebM demuxing on Android and iOS
 - [libvpx](https://www.webmproject.org/code/) - VP9 codec
+- [FFmpeg](https://ffmpeg.org/) - WebM demuxing and VP9 decoding on the web
 - [dav1d](https://code.videolan.org/videolan/dav1d) - AV1 decoder
 - [React Native](https://reactnative.dev/) - Cross-platform framework

@@ -1,6 +1,6 @@
 /**
  * AlphaVideo.h
- * Transparent video for iOS: VP9 WebM with alpha, decoded by the C++ core (FFmpeg + libvpx)
+ * Transparent video for iOS: VP9 WebM with alpha, decoded by the C++ core (libvpx, dav1d for AV1)
  * and drawn with Metal. AlphaVideoView is the view to use; the rest is the lower-level API.
  */
 
@@ -111,7 +111,7 @@ NS_ASSUME_NONNULL_BEGIN
 @property (nonatomic, readonly) int width;
 @property (nonatomic, readonly) int height;
 @property (nonatomic, readonly) double frameRate;
-// FFmpeg's decoder for the loaded clip, e.g. "libvpx-vp9" or "libdav1d" (AV1)
+// The decoder for the loaded clip: "libvpx", or "dav1d" (AV1)
 @property (nonatomic, readonly) NSString *decoderName;
 
 // Initialization
@@ -156,9 +156,8 @@ NS_ASSUME_NONNULL_BEGIN
 - (AlphaVideoStats *)getStats;
 - (void)resetStats;
 
-// FFmpeg info
-+ (NSString *)ffmpegVersion;
-+ (BOOL)isFFmpegInitialized;
+// The decoder libraries, e.g. "libvpx v1.14.0, dav1d 1.5.1"
++ (NSString *)libraryVersions;
 
 @end
 
@@ -246,7 +245,7 @@ NS_ASSUME_NONNULL_BEGIN
 @property (nonatomic) BOOL verbose;
 
 @property (nonatomic, strong, readonly) AlphaVideoMetalView *metalView;
-// The engine and decoder playing the loaded clip, as Android's onLoad names it: "software (libdav1d)"
+// The engine and decoder playing the loaded clip, as Android's onLoad names it: "software (dav1d)"
 @property (nonatomic, readonly) NSString *loadedDecoder;
 
 - (void)play;

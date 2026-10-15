@@ -27,10 +27,10 @@ export type PlaybackMode = 'preload' | 'stream' | 'streamAndPreload';
 
 /**
  * Decoder for files with colour and alpha as separate VP9/AV1 bitstreams (two tracks, or a
- * standard alpha WebM's BlockAdditional). Android only; iOS always uses FFmpeg and web the browser.
+ * standard alpha WebM's BlockAdditional). Android only; iOS always uses the C++ core and web the browser.
  *
  * - `'auto'` (default): MediaCodec hardware decoders that list every track's profile, else
- *   MediaCodec's software decoders, else FFmpeg.
+ *   MediaCodec's software decoders, else the C++ core.
  * - `'mediacodec'`: per track, a hardware decoder if one lists the profile and has an instance
  *   free, else a software one.
  * - `'mediacodec-hw'` / `'mediacodec-sw'`: hardware / software decoders only, for both tracks.

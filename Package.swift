@@ -2,21 +2,22 @@
 import Foundation
 import PackageDescription
 
-// FFmpeg + libvpx as one static library per platform (scripts/build_xcframework.sh). A local
+// libvpx + dav1d as one static library per platform (scripts/build_xcframework.sh). A local
 // build in prebuilt/ wins, so the package can be developed without a release.
-let localFFmpegVPX = "prebuilt/FFmpegVPX.xcframework"
+let localCodecs = "prebuilt/AlphaVideoCodecs.xcframework"
 let packageDir = URL(fileURLWithPath: #filePath).deletingLastPathComponent()
-let ffmpegVPX: Target = FileManager.default.fileExists(atPath: packageDir.appendingPathComponent(localFFmpegVPX).path)
-    ? .binaryTarget(name: "FFmpegVPX", path: localFFmpegVPX)
+let codecs: Target = FileManager.default.fileExists(atPath: packageDir.appendingPathComponent(localCodecs).path)
+    ? .binaryTarget(name: "AlphaVideoCodecs", path: localCodecs)
     : .binaryTarget(
-        name: "FFmpegVPX",
-        url: "https://github.com/MediaCacheDev/alpha-video/releases/download/v1.0.0/FFmpegVPX.xcframework.zip",
-        checksum: "7860611adec6ac8b92c1cf8bc161912d89ca70cb8c55e36e3f63115b7dd35fb4"
+        name: "AlphaVideoCodecs",
+        url: "https://github.com/MediaCacheDev/alpha-video/releases/download/v1.0.0/AlphaVideoCodecs.xcframework.zip",
+        checksum: "8ea2461df7991d70ea62728b8141dfb6c89daff6f27b8007f51b1ed854effc11"
     )
 
 // The target lives at the repo root, and SwiftPM takes resource-like files anywhere under a
-// target as its resources (the FFmpeg sources in scripts/build, node_modules), so everything
-// except cpp and ios/Sources is excluded. Listed from disk: excluding a missing path warns.
+// target as its resources (the codec sources in scripts/build, node_modules), so everything
+// except cpp, ios/Sources and libwebm's parser is excluded. Listed from disk: excluding a missing
+// path warns.
 func entries(_ dir: String, except kept: Set<String>) -> [String] {
     let url = dir.isEmpty ? packageDir : packageDir.appendingPathComponent(dir)
     let names = (try? FileManager.default.contentsOfDirectory(atPath: url.path)) ?? []
@@ -24,8 +25,11 @@ func entries(_ dir: String, except kept: Set<String>) -> [String] {
         .filter { !$0.hasPrefix(".") && !kept.contains($0) }
         .map { dir.isEmpty ? $0 : "\(dir)/\($0)" }
 }
-let excluded = entries("", except: ["cpp", "ios", "Package.swift"])
+let webmParser = "third_party/libwebm/webm_parser"
+let excluded = entries("", except: ["cpp", "ios", "third_party", "Package.swift"])
     + entries("ios", except: ["Sources"])
+    + entries("third_party", except: ["libwebm"])
+    + entries("third_party/libwebm", except: ["webm_parser"])
     + ["cpp/WebMAlphaPlayer_jni.cpp"]
 
 let package = Package(
@@ -40,20 +44,23 @@ let package = Package(
         // headers unless they turn on C++ interop.
         .target(
             name: "AlphaVideo",
-            dependencies: ["FFmpegVPX"],
+            dependencies: ["AlphaVideoCodecs"],
             path: ".",
             exclude: excluded,
-            sources: ["cpp", "ios/Sources/AlphaVideo"],
+            sources: ["cpp", "ios/Sources/AlphaVideo", webmParser],
             publicHeadersPath: "ios/Sources/AlphaVideo/include",
             cSettings: [.headerSearchPath("cpp")],
-            cxxSettings: [.headerSearchPath("cpp"), .define("__STDC_CONSTANT_MACROS")],
+            cxxSettings: [
+                .headerSearchPath("cpp"),
+                .headerSearchPath(webmParser),
+                .headerSearchPath("\(webmParser)/include"),
+            ],
             linkerSettings: [
-                .linkedLibrary("z"),
                 .linkedFramework("Metal"),
                 .linkedFramework("MetalKit"),
             ]
         ),
-        ffmpegVPX,
+        codecs,
     ],
     cxxLanguageStandard: .cxx17
 )

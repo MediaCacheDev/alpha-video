@@ -1,10 +1,10 @@
 /**
  * WebMAlphaPlayer.h
- * High-performance VP9+Alpha WebM player using FFmpeg C API
+ * High-performance VP9+Alpha WebM player: libwebm's parser, libvpx and dav1d
  * Fully self-contained C++ implementation for iOS and Android
  * 
  * This is a complete native implementation - no delegation to Java/Swift layers.
- * FFmpeg is linked directly as a static library.
+ * The decoders are linked directly as static libraries.
  */
 
 #ifndef WEBM_ALPHA_PLAYER_H
@@ -25,14 +25,11 @@
 
 #include "YuvToRgb.h"
 
-// Forward declarations for FFmpeg types (avoid including heavy headers here)
-struct AVFormatContext;
-struct AVCodecContext;
-struct AVFrame;
-struct AVPacket;
-struct AVIOContext;
-
 namespace webm {
+
+class AlphaDemuxer;
+class ByteSource;
+class VideoDecoder;
 
 /**
  * Represents a decoded YUVA frame with zero-copy plane access
@@ -55,8 +52,8 @@ struct YUVAFrame {
     int height;
     
     // Timing
-    int64_t pts;          // Presentation timestamp
-    double timeBase;      // Time base for pts conversion
+    int64_t pts;          // Presentation timestamp, in microseconds
+    double timeBase;      // Time base for pts conversion (1e-6)
     int frameIndex;       // Frame number in sequence
     
     // Strides (bytes per row - may differ from width due to alignment)
@@ -77,11 +74,6 @@ struct YUVAFrame {
     
     // Allocate plane memory
     bool allocate(int w, int h);
-    
-    // Copy from AVFrame (used during decode)
-    void copyFromAVFrame(AVFrame* colorFrame, AVFrame* alphaFrame);
-    // Fill the alpha plane from a two-stream file's alpha frame (its plane 0)
-    void copyAlphaFromAVFrame(const AVFrame* alphaFrame);
     
     // Get duration in milliseconds
     double getDurationMs() const;
@@ -189,7 +181,7 @@ enum class PlaybackMode {
  * Configuration for the player
  */
 struct PlayerConfig {
-    int decodeThreads = 4;          // FFmpeg decoder threads
+    int decodeThreads = 4;          // Threads per decoder (libvpx, dav1d)
     bool useHardwareAccel = false;  // Try hardware decode (rarely works for VP9+alpha)
     int cacheSize = 250;            // Max frames in cache (should be >= totalFrames when preloading)
     bool preloadAllFrames = true;   // Decode all frames upfront (ignored if mode != Preload)
@@ -232,7 +224,7 @@ public:
     bool loadFromFileRange(int fd, int64_t offset, int64_t length);
     // A cache file that may still be downloading (GrowingFile): reads wait for bytes that haven't
     // arrived, so playback starts with the first frames. Use with Stream or StreamAndPreload;
-    // Preload's first seek reads the Cues, usually at the end, so it waits for the whole file.
+    // Preload decodes the whole clip before the first frame, so it waits for the whole file.
     bool loadFromDownload(const std::string& path);
     void unload();
     
@@ -272,8 +264,8 @@ public:
     double getFrameRate() const;
     // The shader's YUV to RGB for the loaded clip (its range and matrix)
     YuvToRgb getYuvToRgb() const;
-    // FFmpeg's name for the loaded clip's decoder, e.g. "libvpx-vp9" or "libdav1d"; both,
-    // comma-separated, if the colour and alpha tracks differ
+    // The loaded clip's decoder, "libvpx" (VP9) or "dav1d" (AV1); both, comma-separated, if the
+    // colour and alpha tracks differ
     std::string getDecoderName() const;
     
     // Callbacks
@@ -289,19 +281,14 @@ public:
     DecoderStatsSnapshot getStats() const;
     void resetStats();
     
-    // Static utilities
-    static bool isFFmpegInitialized();
-    static void initializeFFmpeg();
-    static std::string getFFmpegVersion();
+    // The decoder libraries' versions, e.g. "libvpx v1.14.0, dav1d 1.5.1"
+    static std::string getLibraryVersions();
     
 private:
-    // FFmpeg contexts
-    AVFormatContext* formatCtx_ = nullptr;
-    AVCodecContext* colorCodecCtx_ = nullptr;
-    AVCodecContext* alphaCodecCtx_ = nullptr;
-    
-    int colorStreamIndex_ = -1;
-    int alphaStreamIndex_ = -1;
+    std::unique_ptr<AlphaDemuxer> demuxer_;
+    std::unique_ptr<VideoDecoder> colorDecoder_;
+    std::unique_ptr<VideoDecoder> alphaDecoder_;  // For an alpha track or BlockAdditional alpha
+    bool alphaAsIs_ = false;  // BlockAdditional alpha says limited range but is 0-255
     
     // Video info
     int width_ = 0;
@@ -309,8 +296,7 @@ private:
     int totalFrames_ = 0;
     double duration_ = 0.0;
     double frameRate_ = 30.0;
-    double timeBase_ = 0.0;
-    int64_t startPts_ = 0;  // The color stream's first timestamp, in timeBase_ units
+    int64_t startUs_ = 0;  // The colour stream's first timestamp
     mutable std::mutex yuvToRgbMutex_;  // Set on load, read from render threads
     YuvToRgb yuvToRgb_{};
     mutable std::mutex decoderNameMutex_;  // Set on load, read from the platform layers
@@ -365,14 +351,13 @@ private:
     DecoderStats stats_;
     
     // Private methods
-    bool finishLoad();  // After avformat_open_input: streams, codecs, "loaded", playback mode
+    bool finishLoad(std::unique_ptr<ByteSource> source);  // Demuxer, codecs, "loaded", playback mode
     bool openStreams();
     bool initCodecs();
-    AVCodecContext* openDecoder(int streamIndex, const char* track);  // nullptr after an error event
     void closeCodecs();
     
     std::shared_ptr<YUVAFrame> decodeFrame(int index);
-    int frameIndexForPts(int64_t pts) const;
+    int frameIndexForPts(int64_t ptsUs) const;
     void decodeAllFrames();
     void playbackLoop();
     void streamingPrefetch(int currentFrame);  // Prefetch frames ahead in streaming mode
@@ -386,21 +371,6 @@ private:
     void emitFrame(std::shared_ptr<YUVAFrame> frame);
     
     std::string makeFrameKey(int index) const;
-    
-    // Memory-mapped file support
-    uint8_t* mappedData_ = nullptr;
-    size_t mappedSize_ = 0;
-    bool useMmap_ = false;
-    
-    // Custom I/O support for memory buffers
-    struct AVIOContext* avioCtx_ = nullptr;
-    void* bufferCtx_ = nullptr;    // Opaque context for memory buffer
-    uint8_t* avioBuffer_ = nullptr; // I/O buffer (must be freed separately)
-    struct AVIOContext* rangeIO_ = nullptr;  // loadFromFileRange / loadFromDownload reader (FileRangeIO)
-    bool openCustomInput(struct AVIOContext* io);  // Takes ownership of io as rangeIO_
-    
-    void unmapFile();
-    void cleanupIO();
 };
 
 } // namespace webm

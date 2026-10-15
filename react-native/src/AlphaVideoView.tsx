@@ -50,7 +50,7 @@ export interface AlphaVideoLoadEvent {
   width: number;
   height: number;
   /**
-   * The engine and decoders playing the file: `'software (libvpx-vp9)'`, `'software (libdav1d)'` (AV1),
+   * The engine and decoders playing the file: `'software (libvpx)'`, `'software (dav1d)'` (AV1),
    * `'mediacodec-hw (c2.qti.vp9.decoder)'`, `'mediacodec-sw (...)'`, `'mediacodec (hardware, software)'`
    * for one of each. On the web: `'browser'`, `'webcodecs (vp09.00.41.08)'` (with the alpha track's
    * codec when it differs), `'software (vp9)'`, `'software (vp9, 4+2 threads)'` or `'software (libdav1d)'`.
@@ -83,14 +83,14 @@ export interface AlphaVideoViewProps extends ViewProps {
    * - 'preload': Decode all frames upfront before playback starts.
    * - 'streamAndPreload': Start playing immediately while decoding in background.
    *
-   * Applies to FFmpeg only: a file MediaCodec plays on Android (see `decoder`) decodes as it is read.
+   * Applies to the software decoders only: a file MediaCodec plays on Android (see `decoder`) decodes as it is read.
    */
   mode?: PlaybackMode;
 
   /**
    * Android: the decoder for files with colour and alpha as separate VP9/AV1 bitstreams
    * (default `'auto'`; see {@link Decoder}). `onLoad` reports the one used. iOS always uses
-   * FFmpeg; the web has `webDecoder`.
+   * the C++ core; the web has `webDecoder`.
    */
   decoder?: Decoder;
 

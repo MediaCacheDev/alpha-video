@@ -1,5 +1,6 @@
-// The WebAssembly API of alpha-video-web's demuxer: cpp/AlphaDemuxer and cpp/YuvToRgb over a
-// file held in WebAssembly memory. Plain C exports; src/wasm/demuxer.ts wraps them.
+// The WebAssembly API of alpha-video-web's demuxer: AlphaDemuxer (FFmpeg's Matroska demuxer, next
+// to this file) and cpp/YuvToRgb over a file held in WebAssembly memory. Plain C exports;
+// src/wasm/demuxer.ts wraps them.
 
 #include "AlphaDemuxer.h"
 #include "YuvToRgb.h"
