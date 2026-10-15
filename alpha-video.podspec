@@ -4,18 +4,18 @@
 # The source is alpha-video-<version>-ios.zip from the GitHub Release (scripts/package_release.sh),
 # because FFmpegVPX.xcframework isn't in git. 1.0.0 is on CocoaPods trunk, which is read-only from
 # 2 December 2026. Later versions are used through the podspec at their tag:
-#   pod 'alpha-video', :podspec => 'https://raw.githubusercontent.com/danielkpl2/alpha-video/v<version>/alpha-video.podspec'
+#   pod 'alpha-video', :podspec => 'https://raw.githubusercontent.com/MediaCacheDev/alpha-video/v<version>/alpha-video.podspec'
 
 Pod::Spec.new do |s|
   s.name         = 'alpha-video'
   s.module_name  = 'AlphaVideo'
   s.version      = '1.0.0'
   s.summary      = 'Transparent video for iOS: VP9 WebM with alpha, decoded by FFmpeg + libvpx and drawn with Metal.'
-  s.homepage     = 'https://github.com/danielkpl2/alpha-video'
+  s.homepage     = 'https://github.com/MediaCacheDev/alpha-video'
   s.license      = { :type => 'MIT', :file => 'LICENSE' }
   s.author       = { 'Daniel Kasprowicz' => '9932671+danielkpl2@users.noreply.github.com' }
   s.platform     = :ios, '13.0'
-  s.source       = { :http => "https://github.com/danielkpl2/alpha-video/releases/download/v#{s.version}/alpha-video-#{s.version}-ios.zip",
+  s.source       = { :http => "https://github.com/MediaCacheDev/alpha-video/releases/download/v#{s.version}/alpha-video-#{s.version}-ios.zip",
                      :sha256 => 'aad3af2d4126c0f981d523acc5b732da7f6a3498274d490ec988d95086f694b4' }
 
   s.source_files        = 'cpp/*.{h,cpp}', 'ios/Sources/AlphaVideo/**/*.{h,mm}'

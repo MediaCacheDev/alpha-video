@@ -14,12 +14,12 @@ See it next to the other formats in the [demo app](#demo-and-related-packages).
 
 ## alpha-video or alpha-video-gpu?
 
-Both play transparent videos on Android, iOS and the web, and they suit different jobs. alpha-video plays video codecs. [alpha-video-gpu](https://github.com/danielkpl2/alpha-video-gpu) doesn't decode anything: its frames are ASTC textures, which the GPU samples as they are.
+Both play transparent videos on Android, iOS and the web, and they suit different jobs. alpha-video plays video codecs. [alpha-video-gpu](https://github.com/MediaCacheDev/alpha-video-gpu) doesn't decode anything: its frames are ASTC textures, which the GPU samples as they are.
 
-| | alpha-video (this package) | [alpha-video-gpu](https://github.com/danielkpl2/alpha-video-gpu) |
+| | alpha-video (this package) | [alpha-video-gpu](https://github.com/MediaCacheDev/alpha-video-gpu) |
 |---|---|---|
 | **Format** | WebM: VP9 with alpha, or dual-stream VP9/AV1 | KTX2: an ASTC texture array, one layer per frame |
-| **Made with** | ffmpeg, or any tool that exports alpha WebM | [alpha-video-gpu-encoder](https://github.com/danielkpl2/alpha-video-gpu-encoder) (`texenc`) |
+| **Made with** | ffmpeg, or any tool that exports alpha WebM | [alpha-video-gpu-encoder](https://github.com/MediaCacheDev/alpha-video-gpu-encoder) (`texenc`) |
 | **Decoding** | Every frame: libvpx or dav1d on the CPU, or MediaCodec on Android | None |
 | **CPU and battery** | A decode per frame, or one pass up front with `mode="preload"` | Near zero |
 | **What the device needs** | Nothing for software decoding. Hardware decoding needs a VP9 or AV1 decoder (Android only), and each player takes 2 of its few instances | ASTC texture support: every iPhone and iPad since the A8 (2014), nearly every Android GPU, Apple silicon Macs and mobile browsers. That covers more devices than VP9 or AV1 hardware decoding |
@@ -29,7 +29,7 @@ Both play transparent videos on Android, iOS and the web, and they suit differen
 | **Web** | `<video>` in Chrome and Firefox | WebGL where the browser has ASTC |
 | **Best for** | Long or large clips, downloads where size matters, files from standard video tools | UI effects, stickers and glows, many simultaneous loops, short to medium videos |
 
-[alpha-video-ffmpegkit](https://github.com/danielkpl2/alpha-video-ffmpegkit) was the first attempt at transparent WebM, built on FFmpegKit. It still works and stays as a reference implementation, but alpha-video does everything it does, and more.
+[alpha-video-ffmpegkit](https://github.com/MediaCacheDev/alpha-video-ffmpegkit) was the first attempt at transparent WebM, built on FFmpegKit. It still works and stays as a reference implementation, but alpha-video does everything it does, and more.
 
 ## Features
 
@@ -176,7 +176,7 @@ pod 'alpha-video', '1.0.0'
 **Swift Package Manager**, package `alpha-video`, product `AlphaVideo`:
 
 ```swift
-.package(url: "https://github.com/danielkpl2/alpha-video", from: "1.0.0")
+.package(url: "https://github.com/MediaCacheDev/alpha-video", from: "1.0.0")
 // in the target's dependencies:
 .product(name: "AlphaVideo", package: "alpha-video")
 ```
@@ -295,7 +295,7 @@ stop.
 ### Glow buttons
 
 A button that plays a multi-state glow sheet (default, hover and press stacked as rows in one
-file) lives in its own package, [alpha-glow-button](https://github.com/danielkpl2/alpha-glow-button).
+file) lives in its own package, [alpha-glow-button](https://github.com/MediaCacheDev/alpha-glow-button).
 Its `alpha-glow-button/alpha-video` entry point uses this player, and relies on the live
 `playbackSpeed` above to change speed per state without restarting the loop.
 
@@ -636,13 +636,13 @@ A release carries the prebuilt archive, `FFmpegVPX.xcframework.zip`, the CocoaPo
 
 ## Demo and related packages
 
-[alpha-video-test](https://github.com/danielkpl2/alpha-video-test) is a React Native app (Android, iOS and web) that plays the same video in each of these formats side by side, with FPS, CPU and memory readouts, so you can compare them on your own device.
+[alpha-video-test](https://github.com/MediaCacheDev/alpha-video-test) is a React Native app (Android, iOS and web) that plays the same video in each of these formats side by side, with FPS, CPU and memory readouts, so you can compare them on your own device.
 
-- [alpha-video-gpu](https://github.com/danielkpl2/alpha-video-gpu): ASTC texture arrays in KTX2, drawn without decoding. The lowest CPU and battery use.
-- [alpha-video-gpu-encoder](https://github.com/danielkpl2/alpha-video-gpu-encoder): makes the KTX2 files for alpha-video-gpu (`texenc`).
-- [alpha-video-ffmpegkit](https://github.com/danielkpl2/alpha-video-ffmpegkit): the first attempt at WebM alpha, on FFmpegKit, kept as a reference.
-- [react-native-apng-avif](https://github.com/danielkpl2/react-native-apng-avif): animated APNG and AVIF with alpha.
-- [alpha-glow-button](https://github.com/danielkpl2/alpha-glow-button): buttons whose glow is a transparent video, played by alpha-video, react-native-apng-avif or a `<video>`.
+- [alpha-video-gpu](https://github.com/MediaCacheDev/alpha-video-gpu): ASTC texture arrays in KTX2, drawn without decoding. The lowest CPU and battery use.
+- [alpha-video-gpu-encoder](https://github.com/MediaCacheDev/alpha-video-gpu-encoder): makes the KTX2 files for alpha-video-gpu (`texenc`).
+- [alpha-video-ffmpegkit](https://github.com/MediaCacheDev/alpha-video-ffmpegkit): the first attempt at WebM alpha, on FFmpegKit, kept as a reference.
+- [react-native-apng-avif](https://github.com/MediaCacheDev/react-native-apng-avif): animated APNG and AVIF with alpha.
+- [alpha-glow-button](https://github.com/MediaCacheDev/alpha-glow-button): buttons whose glow is a transparent video, played by alpha-video, react-native-apng-avif or a `<video>`.
 
 ## Potential future work
 

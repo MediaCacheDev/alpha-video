@@ -14,7 +14,7 @@ set -euo pipefail
 RELEASE="v1.0.0"
 ARCHIVE="prebuilt-ffmpeg6.1-libvpx1.14.0.tar.gz"
 SHA256="4d9fb7452ba0ee60712fea5179b9275e76dabca0c34ad78e482add7eb9badd10"
-URL="https://github.com/danielkpl2/alpha-video/releases/download/$RELEASE/$ARCHIVE"
+URL="https://github.com/MediaCacheDev/alpha-video/releases/download/$RELEASE/$ARCHIVE"
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 PREBUILT="$ROOT/prebuilt"

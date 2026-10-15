@@ -73,14 +73,14 @@
   ],
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/danielkpl2/alpha-video.git"
+    "url": "git+https://github.com/MediaCacheDev/alpha-video.git"
   },
   "author": "Daniel Kasprowicz",
   "license": "MIT",
   "bugs": {
-    "url": "https://github.com/danielkpl2/alpha-video/issues"
+    "url": "https://github.com/MediaCacheDev/alpha-video/issues"
   },
-  "homepage": "https://github.com/danielkpl2/alpha-video#readme",
+  "homepage": "https://github.com/MediaCacheDev/alpha-video#readme",
   "codegenConfig": {
     "name": "RNAlphaVideoSpec",
     "type": "all",

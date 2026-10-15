@@ -10,7 +10,7 @@ let ffmpegVPX: Target = FileManager.default.fileExists(atPath: packageDir.append
     ? .binaryTarget(name: "FFmpegVPX", path: localFFmpegVPX)
     : .binaryTarget(
         name: "FFmpegVPX",
-        url: "https://github.com/danielkpl2/alpha-video/releases/download/v1.0.0/FFmpegVPX.xcframework.zip",
+        url: "https://github.com/MediaCacheDev/alpha-video/releases/download/v1.0.0/FFmpegVPX.xcframework.zip",
         checksum: "7860611adec6ac8b92c1cf8bc161912d89ca70cb8c55e36e3f63115b7dd35fb4"
     )
 
