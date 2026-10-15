@@ -1,0 +1,75 @@
+{
+  "name": "alpha-video-web",
+  "version": "1.0.0",
+  "description": "Transparent WebM video (VP9 and AV1 with alpha, single- or dual-stream) in every browser that can show it: <video> where it keeps WebM alpha, otherwise WebCodecs into WebGL2. Plain JS/TS, with an optional React component.",
+  "main": "dist/index.js",
+  "module": "dist/index.mjs",
+  "types": "dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.mjs",
+      "require": "./dist/index.js"
+    },
+    "./react": {
+      "types": "./dist/react.d.ts",
+      "import": "./dist/react.mjs",
+      "require": "./dist/react.js"
+    },
+    "./package.json": "./package.json"
+  },
+  "files": [
+    "dist",
+    "README.md",
+    "LICENSE",
+    "THIRD_PARTY_NOTICES.md",
+    "licenses"
+  ],
+  "sideEffects": false,
+  "scripts": {
+    "build": "tsup",
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run",
+    "test:browsers": "node test/browsers/run.mjs",
+    "prepack": "npm run build"
+  },
+  "keywords": [
+    "webm",
+    "vp9",
+    "av1",
+    "alpha",
+    "transparent",
+    "transparency",
+    "video",
+    "webcodecs",
+    "webgl",
+    "react"
+  ],
+  "author": "Daniel Kasprowicz",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/MediaCacheDev/alpha-video.git",
+    "directory": "web"
+  },
+  "homepage": "https://github.com/MediaCacheDev/alpha-video/tree/main/web#readme",
+  "bugs": {
+    "url": "https://github.com/MediaCacheDev/alpha-video/issues"
+  },
+  "peerDependencies": {
+    "react": ">=16.8"
+  },
+  "peerDependenciesMeta": {
+    "react": {
+      "optional": true
+    }
+  },
+  "devDependencies": {
+    "@types/react": "^18.3.31",
+    "playwright": "1.62.1",
+    "react": "^18.3.1",
+    "tsup": "^8.5.1",
+    "typescript": "^5.9.3",
+    "vitest": "^3.2.7"
+  }
+}
