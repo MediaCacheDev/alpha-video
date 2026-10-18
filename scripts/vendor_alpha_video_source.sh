@@ -2,11 +2,25 @@
 # Copies the native range reader and stores from an alpha-video-source checkout into
 # third_party/alpha-video-source, and records its commit there.
 #
-#   scripts/vendor_alpha_video_source.sh [path to alpha-video-source, default ../alpha-video-source]
+#   scripts/vendor_alpha_video_source.sh [path to alpha-video-source]
+#
+# Without a path it looks for a checkout beside this repository, or one folder further up.
 set -euo pipefail
 
 PROJECT_DIR="$(cd "$(dirname "$0")/.." && pwd)"
-SOURCE_DIR="$(cd "${1:-$PROJECT_DIR/../alpha-video-source}" && pwd)"
+if [ $# -ge 1 ]; then
+    SOURCE_DIR="$1"
+else
+    SOURCE_DIR=""
+    for candidate in "$PROJECT_DIR/../alpha-video-source" "$PROJECT_DIR/../../alpha-video-source"; do
+        if [ -d "$candidate/native/src" ]; then SOURCE_DIR="$candidate"; break; fi
+    done
+fi
+if [ -z "$SOURCE_DIR" ] || [ ! -d "$SOURCE_DIR/native/src" ]; then
+    echo "No alpha-video-source checkout found${SOURCE_DIR:+ at $SOURCE_DIR}; pass its path." >&2
+    exit 1
+fi
+SOURCE_DIR="$(cd "$SOURCE_DIR" && pwd)"
 DEST="$PROJECT_DIR/third_party/alpha-video-source"
 
 COMMIT="$(git -C "$SOURCE_DIR" rev-parse HEAD)"

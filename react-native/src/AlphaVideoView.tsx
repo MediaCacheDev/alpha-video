@@ -6,7 +6,7 @@
  * is inside a render, which makes it a trap rather than a design.
  */
 
-import React, { useRef, forwardRef, useImperativeHandle, useMemo } from 'react';
+import React, { useRef, forwardRef, useImperativeHandle, useMemo, useEffect } from 'react';
 import {
   Platform,
   ViewProps,
@@ -15,8 +15,9 @@ import {
 } from 'react-native';
 import NativeAlphaVideoView, { Commands, type Decoder } from './AlphaVideoViewNativeComponent';
 import { WebPlayer } from './WebPlayer';
+import type { ByteSource } from 'alpha-video-web';
 
-export type { Decoder };
+export type { Decoder, ByteSource };
 
 /**
  * The web engine (default `'auto'`): `'browser'` (`<video>`), `'webcodecs'`, `'webcodecs-hw'`,
@@ -48,6 +49,18 @@ export interface AlphaVideoSource {
 }
 
 /**
+ * Web only: the file itself (a Blob or File), or a byte source that reads it by offset
+ * (`{ size, read(offset, length, signal) }`, the app's own fetcher or decryption). Keep the same
+ * object between renders: a new one loads again. On iOS and Android use `source.dataSource`.
+ */
+export type AlphaVideoWebSource = Blob | ByteSource;
+
+/** True for `{ uri, ... }`, false for a web-only Blob or byte source. */
+export function isUriSource(source: AlphaVideoSource | AlphaVideoWebSource | null | undefined): source is AlphaVideoSource {
+  return source != null && typeof (source as AlphaVideoSource).uri === 'string';
+}
+
+/**
  * Where a URL's bytes are kept between plays, read back by range: `'disk'` (the cache folder;
  * OPFS, else IndexedDB, on the web), `'memory'` (for the app's lifetime) or `'none'`. `'auto'`,
  * the default, is `'disk'` for URLs and `'none'` for a `dataSource` and local files.
@@ -76,8 +89,8 @@ export interface AlphaVideoLoadEvent {
 }
 
 export interface AlphaVideoViewProps extends ViewProps {
-  /** Video source URL or path */
-  source: AlphaVideoSource;
+  /** Video source URL or path; on the web also a Blob or byte source ({@link AlphaVideoWebSource}) */
+  source: AlphaVideoSource | AlphaVideoWebSource;
   /** Auto-play video when loaded (default: true) */
   autoPlay?: boolean;
   /** Loop video playback (default: true) */
@@ -215,7 +228,8 @@ const NativePlayer = forwardRef<AlphaVideoViewRef, AlphaVideoViewProps>(
       seekToTime: (seconds: number) => withView(view => Commands.seekToTime(view, seconds)),
     }));
 
-    const { uri, headers, dataSource } = props.source ?? {};
+    const uriSource = isUriSource(props.source) ? props.source : undefined;
+    const { uri, headers, dataSource } = uriSource ?? {};
     const headersKey = headers ? JSON.stringify(headers) : '';
     // Rebuilt only when a value changes, so a new source object each render doesn't reload
     const nativeSource = useMemo(
@@ -227,6 +241,14 @@ const NativePlayer = forwardRef<AlphaVideoViewRef, AlphaVideoViewProps>(
       // eslint-disable-next-line react-hooks/exhaustive-deps
       [uri, headersKey, dataSource],
     );
+
+    const webOnlySource = props.source != null && !uriSource;
+    useEffect(() => {
+      if (webOnlySource) {
+        props.onError?.({ error: 'A Blob or byte source plays only on the web; on iOS and Android, use source.dataSource' });
+      }
+      // eslint-disable-next-line react-hooks/exhaustive-deps
+    }, [webOnlySource, props.source]);
 
     if (!NativeAlphaVideoViewOrNull) {
       return null;
@@ -259,7 +281,7 @@ const NativePlayer = forwardRef<AlphaVideoViewRef, AlphaVideoViewProps>(
         loop={props.loop}
         paused={props.paused}
         playbackSpeed={props.playbackSpeed}
-        cacheKey={props.source?.cacheKey || props.cacheKey}
+        cacheKey={uriSource?.cacheKey || props.cacheKey}
         storage={props.storage}
         maxStorageBytes={props.maxStorageBytes}
         mode={resolveMode(props.mode, props.stream)}

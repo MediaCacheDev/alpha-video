@@ -7,7 +7,7 @@
 import React, { forwardRef } from 'react';
 import { View, StyleSheet } from 'react-native';
 import { AlphaVideo } from 'alpha-video-web/react';
-import type { AlphaVideoViewProps, AlphaVideoViewRef } from './AlphaVideoView';
+import { isUriSource, type AlphaVideoViewProps, type AlphaVideoViewRef } from './AlphaVideoView';
 
 /** asset://path names the app's bundled media; on the web it is served from the site root. */
 function toWebUrl(uri: string): string {
@@ -18,23 +18,24 @@ export const WebPlayer = forwardRef<AlphaVideoViewRef, AlphaVideoViewProps>((pro
   const { source, autoPlay = true, loop = true, paused = false, playbackSpeed = 1, webDecoder = 'auto', cacheKey } = props;
   const { storage, maxStorageBytes } = props;
   const { style, onLoad, onError, onEnd } = props;
-  const uri = source?.uri;
   // Streamed by range from http(s) URLs and kept in the browser's storage (OPFS, else IndexedDB)
-  // by the canvas engines; <video> uses the HTTP cache
+  // by the canvas engines; <video> uses the HTTP cache. A Blob or byte source plays as it is.
+  const uriSource = isUriSource(source) ? source : undefined;
+  const src = isUriSource(source) ? (source.uri ? toWebUrl(source.uri) : undefined) : source;
 
   return (
     <View style={[styles.container, style]}>
-      {uri ? (
+      {src ? (
         <AlphaVideo
           ref={ref}
-          src={toWebUrl(uri)}
+          src={src}
           autoPlay={autoPlay}
           loop={loop}
           paused={paused}
           playbackSpeed={playbackSpeed}
           decoder={webDecoder}
-          headers={source.headers}
-          cacheKey={source.cacheKey || cacheKey}
+          headers={uriSource?.headers}
+          cacheKey={uriSource?.cacheKey || cacheKey}
           storage={storage === 'disk' ? 'auto' : storage}
           maxStorageBytes={maxStorageBytes}
           style={fill}
