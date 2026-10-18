@@ -3,8 +3,9 @@
 # publish-android.sh [local|central]
 #
 # Builds the standalone Android library in android/ and publishes it as
-# dev.mediacache:alpha-video:<version>, the version in android/build.gradle. Needs libvpx and
-# dav1d in prebuilt/android (build_codecs_android.sh, or fetch-prebuilt.sh).
+# dev.mediacache:alpha-video:<version>, the version in android/build.gradle, with its Media3
+# adapter dev.mediacache:alpha-video-media3 (android/media3). Needs libvpx and dav1d in
+# prebuilt/android (build_codecs_android.sh, or fetch-prebuilt.sh).
 #
 #   local    publishToMavenLocal (~/.m2), unsigned unless a key is set. The default.
 #   central  signs, bundles and uploads to the Maven Central Portal. Needs:
@@ -36,7 +37,7 @@ fi
 case "$MODE" in
     local)
         "${GRADLE[@]}" publishToMavenLocal
-        echo "✅ dev.mediacache:alpha-video:$VERSION in ~/.m2/repository"
+        echo "✅ dev.mediacache:alpha-video:$VERSION and alpha-video-media3:$VERSION in ~/.m2/repository"
         ;;
     central)
         for var in ORG_GRADLE_PROJECT_mavenCentralUsername ORG_GRADLE_PROJECT_mavenCentralPassword \
@@ -51,15 +52,17 @@ case "$MODE" in
         rm -rf "$STAGING"
         "${GRADLE[@]}" publishReleasePublicationToStagingRepository
 
-        VERSION_DIR="dev/mediacache/alpha-video/$VERSION"
-        if ! ls "$STAGING/$VERSION_DIR"/*.aar.asc > /dev/null 2>&1; then
-            echo "❌ Artifacts were not signed"
-            exit 1
-        fi
+        VERSION_DIRS=("dev/mediacache/alpha-video/$VERSION" "dev/mediacache/alpha-video-media3/$VERSION")
+        for dir in "${VERSION_DIRS[@]}"; do
+            if ! ls "$STAGING/$dir"/*.aar.asc > /dev/null 2>&1; then
+                echo "❌ $dir was not signed"
+                exit 1
+            fi
+        done
 
         BUNDLE="$GRADLE_DIR/build/alpha-video-$VERSION-bundle.zip"
         rm -f "$BUNDLE"
-        (cd "$STAGING" && zip -qr "$BUNDLE" "$VERSION_DIR")
+        (cd "$STAGING" && zip -qr "$BUNDLE" "${VERSION_DIRS[@]}")
         echo "📦 $BUNDLE"
         unzip -l "$BUNDLE" | awk 'NR > 3 { print "   " $4 }' | sed '/^   $/d'
 

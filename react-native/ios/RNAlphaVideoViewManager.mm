@@ -16,7 +16,7 @@
 /** AlphaVideoView with the React Native props and events. */
 @interface RNAlphaVideoView : AlphaVideoView <AlphaVideoViewDelegate>
 
-// `source` prop: { uri }
+// `source` prop: { uri, headers?: [name, value, ...], dataSource? }
 @property (nonatomic, copy) NSDictionary *reactSource;
 // `decoder` prop: accepted for the shared JS API; iOS always decodes on the C++ core
 @property (nonatomic, copy) NSString *decoder;
@@ -39,6 +39,17 @@
 
 - (void)setReactSource:(NSDictionary *)reactSource {
     _reactSource = [reactSource copy];
+    NSArray *flat = [reactSource[@"headers"] isKindOfClass:[NSArray class]] ? reactSource[@"headers"] : @[];
+    NSMutableDictionary<NSString *, NSString *> *headers = [NSMutableDictionary dictionary];
+    for (NSUInteger i = 0; i + 1 < flat.count; i += 2) {
+        if ([flat[i] isKindOfClass:[NSString class]] && [flat[i + 1] isKindOfClass:[NSString class]]) {
+            headers[flat[i]] = flat[i + 1];
+        }
+    }
+    id dataSource = reactSource[@"dataSource"];
+    // Before the source, so a new source loads with them; a change on its own reloads it
+    self.headers = headers;
+    self.dataSource = [dataSource isKindOfClass:[NSString class]] && [dataSource length] > 0 ? dataSource : nil;
     self.source = reactSource[@"uri"];
 }
 
@@ -90,6 +101,8 @@ RCT_EXPORT_VIEW_PROPERTY(loop, BOOL)
 RCT_EXPORT_VIEW_PROPERTY(paused, BOOL)
 RCT_EXPORT_VIEW_PROPERTY(playbackSpeed, double)
 RCT_EXPORT_VIEW_PROPERTY(cacheKey, NSString)
+RCT_EXPORT_VIEW_PROPERTY(storage, NSString)
+RCT_EXPORT_VIEW_PROPERTY(maxStorageBytes, int64_t)
 RCT_EXPORT_VIEW_PROPERTY(mode, NSString)
 RCT_EXPORT_VIEW_PROPERTY(decoder, NSString)
 RCT_EXPORT_VIEW_PROPERTY(streamCacheSize, int)

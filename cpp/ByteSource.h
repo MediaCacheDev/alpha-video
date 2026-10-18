@@ -5,11 +5,15 @@
 #include <memory>
 #include <string>
 
+namespace avsource {
+class RangeReader;
+}
+
 namespace webm {
 
 /**
- * The bytes of a video, read at any position: a file, a range of one, a download still in
- * progress (GrowingFile), or memory. The demuxer reads through one of these.
+ * The bytes of a video, read at any position: a file, a range of one, a URL or an app's data
+ * source read by range (avsource::RangeReader), or memory. The demuxer reads through one of these.
  */
 class ByteSource {
 public:
@@ -20,13 +24,13 @@ public:
 
     /**
      * Reads up to `size` bytes at `pos` into `out` and returns how many it read: fewer near the
-     * end, 0 at or past the end, -1 on an error. A download returns once some bytes at `pos`
+     * end, 0 at or past the end, -1 on an error. A range reader returns once some bytes at `pos`
      * have arrived. A source that can't wait (the web's, which fetches asynchronously) returns
      * kPending instead; the demuxer then stops, and carries on when called again.
      */
     virtual int64_t read(int64_t pos, uint8_t* out, int64_t size) = 0;
 
-    /** The total size, or -1 while it isn't known (a download without a Content-Length). */
+    /** The total size, or -1 while it isn't known (a response without a Content-Length). */
     virtual int64_t size() const = 0;
 };
 
@@ -43,15 +47,13 @@ std::unique_ptr<ByteSource> openFileRange(int fd, int64_t offset, int64_t length
 std::unique_ptr<ByteSource> openFile(const std::string& path);
 
 /**
- * A downloaded cache file, which may still be downloading (GrowingFile).
+ * A file read by range: a URL or an app's data source, through blocks in memory and a store.
  *
- * While it downloads, reads wait for bytes that haven't arrived. They fail if the download fails
- * first, or once `abort` (may be null; must outlive the source) becomes true, so a player can
- * unload without waiting for the network. A finished file is read like any other.
- *
- * Returns nullptr if the file can't be opened.
+ * Reads wait for bytes being fetched. They fail if the fetch fails, or once `abort` (may be null;
+ * must outlive the source) becomes true, so a player can unload without waiting for the network.
+ * The reader may be shared, by a probe and then the player.
  */
-std::unique_ptr<ByteSource> openDownload(const std::string& path, const std::atomic<bool>* abort);
+std::unique_ptr<ByteSource> openReader(std::shared_ptr<avsource::RangeReader> reader, const std::atomic<bool>* abort);
 
 /** A copy of `size` bytes at `data`. */
 std::unique_ptr<ByteSource> openMemory(const uint8_t* data, size_t size);

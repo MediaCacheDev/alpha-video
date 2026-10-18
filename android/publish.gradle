@@ -1,4 +1,6 @@
-// Maven publication for dev.mediacache:alpha-video. Run it through scripts/publish-android.sh.
+// Maven publication for dev.mediacache:alpha-video, and for alpha-video-media3 (media3/build.gradle
+// sets publishArtifactId, publishDescription and publishBundlesCodecs before applying this). Run it
+// through scripts/publish-android.sh.
 //
 // Signing reads ORG_GRADLE_PROJECT_signingInMemoryKey (armored secret key), …KeyPassword and
 // optionally …KeyId. Without a key the artifacts are left unsigned, which is enough for
@@ -8,17 +10,19 @@ apply plugin: 'maven-publish'
 apply plugin: 'signing'
 
 def repoUrl = 'https://github.com/MediaCacheDev/alpha-video'
+def artifact = project.ext.has('publishArtifactId') ? project.ext.publishArtifactId : 'alpha-video'
+def bundlesCodecs = project.ext.has('publishBundlesCodecs') ? project.ext.publishBundlesCodecs : true
 
 afterEvaluate {
     publishing {
         publications {
             release(MavenPublication) {
                 from components.release
-                artifactId = 'alpha-video'
+                artifactId = artifact
 
                 pom {
-                    name = 'alpha-video'
-                    description = 'Transparent video for Android: VP9 WebM with alpha in software (FFmpeg + libvpx), and dual-stream VP9 or AV1 on the hardware decoders, drawn into a TextureView.'
+                    name = artifact
+                    description = project.ext.has('publishDescription') ? project.ext.publishDescription : 'Transparent video for Android: VP9 WebM with alpha in software (FFmpeg + libvpx), and dual-stream VP9 or AV1 on the hardware decoders, drawn into a TextureView.'
                     url = repoUrl
                     inceptionYear = '2026'
                     licenses {
@@ -27,17 +31,17 @@ afterEvaluate {
                             url = 'https://opensource.org/licenses/MIT'
                             distribution = 'repo'
                         }
-                        license {
+                        if (bundlesCodecs) license {
                             name = 'GNU Lesser General Public License v2.1 or later (bundled FFmpeg)'
                             url = 'https://www.gnu.org/licenses/old-licenses/lgpl-2.1.txt'
                             distribution = 'repo'
                         }
-                        license {
+                        if (bundlesCodecs) license {
                             name = 'BSD-3-Clause (bundled libvpx)'
                             url = 'https://chromium.googlesource.com/webm/libvpx/+/refs/tags/v1.14.0/LICENSE'
                             distribution = 'repo'
                         }
-                        license {
+                        if (bundlesCodecs) license {
                             name = 'BSD-2-Clause (bundled dav1d)'
                             url = 'https://code.videolan.org/videolan/dav1d/-/blob/1.5.1/COPYING'
                             distribution = 'repo'
@@ -62,7 +66,8 @@ afterEvaluate {
         repositories {
             maven {
                 name = 'staging'
-                url = layout.buildDirectory.dir('staging-repo')
+                // Both artifacts, so that one bundle uploads them together
+                url = rootProject.layout.buildDirectory.dir('staging-repo')
             }
         }
     }

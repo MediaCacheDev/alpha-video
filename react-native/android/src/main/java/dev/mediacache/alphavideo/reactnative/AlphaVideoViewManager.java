@@ -21,6 +21,7 @@ import com.facebook.react.uimanager.annotations.ReactProp;
 import com.facebook.react.uimanager.events.Event;
 import com.facebook.react.uimanager.events.EventDispatcher;
 
+import java.util.LinkedHashMap;
 import java.util.Map;
 
 /**
@@ -28,13 +29,15 @@ import java.util.Map;
  * Uses TextureView for proper z-ordering and ScrollView compatibility
  * 
  * Props match WebMAlphaView interface:
- * - source: { uri: string } or { path: string }, where uri is https://, file://, an absolute
- *   path, asset:// or content://
+ * - source: { uri, headers?, dataSource? } or { path }, where uri is https://, file://, an
+ *   absolute path, asset:// or content://, or anything the named data source reads; headers come
+ *   as a flat [name, value, ...] array
  * - autoPlay: boolean (default true)
  * - loop: boolean (default true)
  * - paused: boolean (default false)
  * - playbackSpeed: double (default 1.0, changeable while playing)
- * - cacheKey: string (optional cache file name for https sources)
+ * - cacheKey: string (what the store keeps the source under, instead of its URL)
+ * - storage: "auto" | "disk" | "memory" | "none"; maxStorageBytes: double (0 for 512 MB)
  * 
  * Commands: play, pause, stop, seekToFrame(frame), seekToTime(seconds). Events: onLoad, onError, onEnd, onPreloadComplete.
  * Every prop and event is declared in the codegen spec, react-native/src/AlphaVideoViewNativeComponent.ts.
@@ -88,6 +91,16 @@ public class AlphaVideoViewManager extends AlphaVideoViewManagerSpec<AlphaVideoV
         }
         
         if (sourceUri == null || sourceUri.isEmpty()) return;
+        Map<String, String> headers = new LinkedHashMap<>();
+        if (source.hasKey("headers") && !source.isNull("headers")) {
+            ReadableArray flat = source.getArray("headers");
+            for (int i = 0; flat != null && i + 1 < flat.size(); i += 2) {
+                headers.put(flat.getString(i), flat.getString(i + 1));
+            }
+        }
+        view.setHeaders(headers);
+        view.setDataSource(source.hasKey("dataSource") && !source.isNull("dataSource")
+            ? source.getString("dataSource") : null);
         view.setSource(sourceUri);
     }
     
@@ -123,6 +136,20 @@ public class AlphaVideoViewManager extends AlphaVideoViewManagerSpec<AlphaVideoV
     @Override
     public void setCacheKey(AlphaVideoView view, @Nullable String cacheKey) {
         view.setCacheKey(cacheKey);
+    }
+    
+    /** "auto" (default), "disk", "memory" or "none"; see AlphaVideoView.setStorage. */
+    @ReactProp(name = "storage")
+    @Override
+    public void setStorage(AlphaVideoView view, @Nullable String storage) {
+        view.setStorage(storage);
+    }
+    
+    /** 0 for the default, 512 MB. */
+    @ReactProp(name = "maxStorageBytes", defaultDouble = 0)
+    @Override
+    public void setMaxStorageBytes(AlphaVideoView view, double maxStorageBytes) {
+        view.setMaxStorageBytes((long) maxStorageBytes);
     }
     
     /**

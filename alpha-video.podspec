@@ -19,13 +19,14 @@ Pod::Spec.new do |s|
                      :sha256 => '42cfc0297a74da447102fd1620f64a398b904661991467a675deb01adb83cd1c' }
 
   s.source_files        = 'cpp/*.{h,cpp}', 'ios/Sources/AlphaVideo/**/*.{h,mm}',
-                          'third_party/libwebm/webm_parser/**/*.{h,cc}'
+                          'third_party/libwebm/webm_parser/**/*.{h,cc}',
+                          'third_party/alpha-video-source/src/*.{h,cpp}'
   s.public_header_files = 'ios/Sources/AlphaVideo/include/AlphaVideo.h'
   s.vendored_frameworks = 'AlphaVideoCodecs.xcframework'
   s.frameworks          = 'Metal', 'MetalKit', 'UIKit'
   s.libraries           = 'c++'
   s.pod_target_xcconfig = {
     'CLANG_CXX_LANGUAGE_STANDARD' => 'c++17',
-    'HEADER_SEARCH_PATHS' => '"$(PODS_TARGET_SRCROOT)/cpp" "$(PODS_TARGET_SRCROOT)/third_party/libwebm/webm_parser" "$(PODS_TARGET_SRCROOT)/third_party/libwebm/webm_parser/include"'
+    'HEADER_SEARCH_PATHS' => '"$(PODS_TARGET_SRCROOT)/cpp" "$(PODS_TARGET_SRCROOT)/third_party/alpha-video-source/src" "$(PODS_TARGET_SRCROOT)/third_party/libwebm/webm_parser" "$(PODS_TARGET_SRCROOT)/third_party/libwebm/webm_parser/include"'
   }
 end

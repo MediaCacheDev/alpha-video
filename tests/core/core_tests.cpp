@@ -8,7 +8,7 @@
 #include "WebMAlphaPlayer.h"
 #include "AlphaDemuxer.h"
 #include "ByteSource.h"
-#include "GrowingFile.h"
+#include "RangeReader.h"
 
 #include <algorithm>
 #include <chrono>
@@ -224,6 +224,68 @@ struct FrameWaiter {
         codes.clear();
     }
 };
+
+/** A clip served slowly, a KB at a time, through SlowUpstream connections. */
+struct SlowRemote {
+    std::vector<uint8_t> data;
+    std::chrono::microseconds delay{2000};
+    std::mutex mutex;
+    std::vector<int64_t> opens;
+    int64_t sent = 0;
+
+    explicit SlowRemote(const std::string& path) {
+        std::ifstream in(path, std::ios::binary);
+        data.assign(std::istreambuf_iterator<char>(in), std::istreambuf_iterator<char>());
+    }
+    int64_t bytesSent() {
+        std::lock_guard<std::mutex> lock(mutex);
+        return sent;
+    }
+    std::vector<int64_t> openPositions() {
+        std::lock_guard<std::mutex> lock(mutex);
+        return opens;
+    }
+};
+
+class SlowUpstream : public avsource::Upstream {
+public:
+    explicit SlowUpstream(std::shared_ptr<SlowRemote> remote) : remote_(std::move(remote)) {}
+
+    bool open(int64_t position, avsource::SourceInfo& info, std::string&) override {
+        std::lock_guard<std::mutex> lock(remote_->mutex);
+        remote_->opens.push_back(position);
+        pos_ = std::min<int64_t>(position, static_cast<int64_t>(remote_->data.size()));
+        info.size = static_cast<int64_t>(remote_->data.size());
+        info.etag = "1";
+        return true;
+    }
+    int64_t read(uint8_t* out, int64_t size, std::string&) override {
+        std::this_thread::sleep_for(remote_->delay);
+        std::lock_guard<std::mutex> lock(remote_->mutex);
+        const int64_t n = std::min<int64_t>({size, 1024, static_cast<int64_t>(remote_->data.size()) - pos_});
+        std::memcpy(out, remote_->data.data() + pos_, static_cast<size_t>(n));
+        pos_ += n;
+        remote_->sent += n;
+        return n;
+    }
+    void close() override {}
+
+private:
+    std::shared_ptr<SlowRemote> remote_;
+    int64_t pos_ = 0;
+};
+
+/** A reader over remote with blocks small enough that the test cards (5-25 KB) span many. */
+static std::shared_ptr<avsource::RangeReader> slowReader(std::shared_ptr<SlowRemote> remote, int64_t blockSize = 4096) {
+    avsource::ReaderOptions options;
+    options.blockSize = blockSize;
+    options.readAheadBytes = blockSize;
+    options.reconnectGap = 0;
+    std::string error;
+    auto reader = avsource::RangeReader::open(std::make_unique<SlowUpstream>(std::move(remote)), nullptr, "", options, error);
+    CHECK(reader, "RangeReader::open: " << error);
+    return reader;
+}
 
 /**
  * A file whose bytes arrive only when asked for, as on the web: a read of bytes not yet loaded
@@ -602,33 +664,8 @@ static void registerTests() {
             for (int i : {0, 31, 59}) checkFrame(p.getFrame(i), fx.card, i);
         });
 
-        add("plays while the file is still downloading", [](const Fixture& fx) {
-            std::ifstream in(fx.path, std::ios::binary);
-            std::vector<char> clip((std::istreambuf_iterator<char>(in)), {});
-            std::string base = tempPath("download");
-            std::string path = base + ".webm", part = base + ".part";
-            unlink(path.c_str());
-            FILE* out = fopen(part.c_str(), "wb");
-            CHECK(out != nullptr, part);
-            auto download = GrowingFile::begin(path, part, static_cast<int64_t>(clip.size()));
-            CHECK(download != nullptr, "GrowingFile::begin");
-
-            std::atomic<bool> finished{false};
-            std::thread writer([&] {
-                const size_t chunk = std::max<size_t>(1024, clip.size() / 40);
-                for (size_t off = 0; off < clip.size(); off += chunk) {
-                    size_t n = std::min(chunk, clip.size() - off);
-                    fwrite(clip.data() + off, 1, n, out);
-                    fflush(out);
-                    download->setWritten(static_cast<int64_t>(off + n));
-                    std::this_thread::sleep_for(std::chrono::milliseconds(25));
-                }
-                fclose(out);
-                rename(part.c_str(), path.c_str());
-                download->finish();
-                finished = true;
-            });
-
+        add("plays while a range reader fetches the file", [](const Fixture& fx) {
+            auto remote = std::make_shared<SlowRemote>(fx.path);
             PlayerConfig config;
             config.mode = PlaybackMode::Stream;
             config.loopPlayback = false;
@@ -637,18 +674,42 @@ static void registerTests() {
             FrameWaiter waiter;
             waiter.card = fx.card;
             waiter.attach(p);
-            bool loaded = p.loadFromDownload(path);
+            bool loaded = p.loadFromReader(slowReader(remote));
             if (loaded) p.play();
             bool firstFrame = loaded && waiter.waitFor(0, std::chrono::seconds(5));
-            bool beforeEnd = !finished;
-            bool lastFrame = firstFrame && waiter.waitFor(fx.card.frames - 1, std::chrono::seconds(10));
+            const int64_t sentByFirstFrame = remote->bytesSent();
+            bool lastFrame = firstFrame && waiter.waitFor(fx.card.frames - 1, std::chrono::seconds(20));
             p.unload();
-            writer.join();
-            unlink(path.c_str());
-            CHECK(loaded, "loadFromDownload");
+            CHECK(loaded, "loadFromReader");
             CHECK(firstFrame, "frame 0 never arrived");
-            CHECK(beforeEnd, "frame 0 only arrived after the download finished");
+            CHECK(sentByFirstFrame < static_cast<int64_t>(remote->data.size()),
+                  "frame 0 only arrived after all " << remote->data.size() << " bytes");
             CHECK(lastFrame, "playback never reached the last frame");
+        });
+
+        add("a seek through a range reader jumps to the Cues", [](const Fixture& fx) {
+            auto remote = std::make_shared<SlowRemote>(fx.path);
+            remote->delay = std::chrono::microseconds(4000);
+            PlayerConfig config;
+            config.mode = PlaybackMode::Stream;
+            config.loopPlayback = false;
+            config.streamPrefetchAhead = 2;
+            WebMAlphaPlayer p;
+            p.setConfig(config);
+            FrameWaiter waiter;
+            waiter.card = fx.card;
+            waiter.attach(p);
+            CHECK(p.loadFromReader(slowReader(remote, 512)), "loadFromReader");
+            CHECK(waiter.waitFor(0, std::chrono::seconds(5)), "frame 0 never arrived");
+            const int target = fx.card.frames - 5;
+            p.seekToFrame(target);
+            bool shown = waiter.waitFor(target, std::chrono::seconds(10));
+            std::vector<int64_t> opens = remote->openPositions();
+            p.unload();
+            CHECK(shown, "seekToFrame(" << target << ") showed no such frame");
+            const int64_t size = static_cast<int64_t>(remote->data.size());
+            CHECK(opens.size() >= 2 && *std::max_element(opens.begin(), opens.end()) > size / 2,
+                  opens.size() << " opens, none in the second half of " << size << " bytes");
         });
     }
 

@@ -25,6 +25,10 @@
 
 #include "YuvToRgb.h"
 
+namespace avsource {
+class RangeReader;
+}
+
 namespace webm {
 
 class AlphaDemuxer;
@@ -222,10 +226,10 @@ public:
     // Reads bytes [offset, offset + length) of fd in place (APK assets, content:// streams).
     // fd is duplicated; the caller keeps ownership. A negative length means "to end of file".
     bool loadFromFileRange(int fd, int64_t offset, int64_t length);
-    // A cache file that may still be downloading (GrowingFile): reads wait for bytes that haven't
-    // arrived, so playback starts with the first frames. Use with Stream or StreamAndPreload;
-    // Preload decodes the whole clip before the first frame, so it waits for the whole file.
-    bool loadFromDownload(const std::string& path);
+    // A URL or an app's data source, read by range: reads wait for bytes being fetched, so the
+    // stream modes start with the first frames. Preload decodes the whole clip before the first
+    // frame, so it waits for the whole file. The reader may be shared with a probe.
+    bool loadFromReader(std::shared_ptr<avsource::RangeReader> reader);
     void unload();
     
     // Playback control
@@ -233,8 +237,8 @@ public:
     void pause();
     void stop();
     // Both clamp to the clip and keep playing or paused; a paused player shows the new frame.
-    // In the stream modes the frame appears once it's decoded, which during a download waits
-    // for the end of the file (the Cues).
+    // In the stream modes the frame appears once it's decoded; read by range, a seek fetches the
+    // Cues and the cluster it lands in.
     void seekTo(double timeSeconds);  // To the frame showing at timeSeconds
     void seekToFrame(int frameIndex);
 
@@ -328,7 +332,8 @@ private:
     std::condition_variable decodeCV_;
     std::condition_variable_any prefetchCV_;  // Signal prefetch thread
     std::atomic<bool> shouldStop_{false};
-    std::atomic<bool> ioAbort_{false};  // Set by unload() so reads waiting on a download return
+    std::atomic<bool> ioAbort_{false};  // Set by unload() so reads waiting on the network return
+    std::shared_ptr<avsource::RangeReader> reader_;  // For loadFromReader: why a read failed
     std::atomic<int> prefetchTarget_{-1};  // Target frame for prefetch thread
     std::atomic<int> streamDecodePos_{0};  // Current sequential decode position for streaming
     std::atomic<bool> firstPassComplete_{false};  // For streamAndPreload: all frames cached after first pass

@@ -11,11 +11,15 @@ get_filename_component(MODULE_ROOT "${CMAKE_SOURCE_DIR}/../../../.." ABSOLUTE)
 set(WEBM_PARSER "${MODULE_ROOT}/third_party/libwebm/webm_parser")
 file(GLOB WEBM_PARSER_SOURCES "${WEBM_PARSER}/src/*.cc")
 
+# Range reading and storage, vendored from alpha-video-source (scripts/vendor_alpha_video_source.sh)
+set(SOURCE_READER "${MODULE_ROOT}/third_party/alpha-video-source/src")
+
 # Source files
 set(NATIVE_SOURCES
     ${MODULE_ROOT}/cpp/AlphaDemuxer.cpp
     ${MODULE_ROOT}/cpp/ByteSource.cpp
-    ${MODULE_ROOT}/cpp/GrowingFile.cpp
+    ${SOURCE_READER}/RangeReader.cpp
+    ${SOURCE_READER}/Store.cpp
     ${MODULE_ROOT}/cpp/VideoDecoder.cpp
     ${MODULE_ROOT}/cpp/WebMAlphaPlayer.cpp
     ${MODULE_ROOT}/cpp/WebMAlphaPlayer_jni.cpp
@@ -29,6 +33,7 @@ set(CODECS_ROOT "${MODULE_ROOT}/prebuilt/android/${ANDROID_ABI}")
 # Include directories
 include_directories(
     ${MODULE_ROOT}/cpp
+    ${SOURCE_READER}
     ${MODULE_ROOT}/prebuilt/include
     ${WEBM_PARSER}
     ${WEBM_PARSER}/include

@@ -22,7 +22,10 @@ public abstract class AlphaVideoViewManagerSpec<T extends View> extends SimpleVi
     public abstract void setPaused(T view, boolean value);
     public abstract void setPlaybackSpeed(T view, double value);
     public abstract void setCacheKey(T view, @Nullable String value);
+    public abstract void setStorage(T view, @Nullable String value);
+    public abstract void setMaxStorageBytes(T view, double value);
     public abstract void setMode(T view, @Nullable String value);
+    public abstract void setDecoder(T view, @Nullable String value);
     public abstract void setStreamCacheSize(T view, int value);
     public abstract void setStreamPrefetchAhead(T view, int value);
     public abstract void setUseDecodeQueue(T view, boolean value);

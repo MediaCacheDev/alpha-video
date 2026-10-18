@@ -8,6 +8,8 @@ The code in this repository is MIT-licensed (see `LICENSE`). The native player (
 | [libvpx](https://chromium.googlesource.com/webm/libvpx) | 1.14.0, unmodified | BSD-3-Clause, plus the WebM patent grant | `libvpx.a` in `prebuilt/` |
 | [dav1d](https://code.videolan.org/videolan/dav1d) | 1.5.1, unmodified | BSD-2-Clause | `libdav1d.a` in `prebuilt/` |
 
+It also compiles in the C++ reader of [alpha-video-source](https://github.com/MediaCacheDev/alpha-video-source) (`third_party/alpha-video-source`), MIT-licensed by the same author, which reads files by range and keeps them between plays.
+
 On Android they are linked into the player's native library, on iOS into the app. Licence texts: `licenses/libwebm-LICENSE.txt`, `licenses/libwebm-PATENTS.txt`, `licenses/libvpx-LICENSE.txt`, `licenses/libvpx-PATENTS.txt`, `licenses/dav1d-COPYING.txt`. An app shipping the player must reproduce these notices, for example on an open-source licences screen.
 
 The web player, `alpha-video-web` (in `web/`, and a dependency of the React Native package for react-native-web), is built with FFmpeg, which is LGPL-2.1-or-later. Its own [THIRD_PARTY_NOTICES.md](web/THIRD_PARTY_NOTICES.md) covers it.

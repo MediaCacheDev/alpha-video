@@ -1,1 +1,4 @@
 rootProject.name = 'alpha-video'
+
+// dev.mediacache:alpha-video-media3
+include ':media3'

@@ -124,11 +124,8 @@ NS_ASSUME_NONNULL_BEGIN
 // C++ core info logging; errors are always logged
 - (void)setVerbose:(BOOL)verbose;
 
-// Loading
+// Loading. AlphaVideoView also plays URLs and data sources, read by range as they play.
 - (BOOL)loadFromFile:(NSString *)path;
-// A AlphaVideoSourceResolver cache file that may still be downloading; reads wait for the rest.
-// Use with the stream modes (preload's first seek waits for the whole file).
-- (BOOL)loadFromDownload:(NSString *)path;
 - (BOOL)loadFromData:(NSData *)data;
 - (void)unload;
 
@@ -187,7 +184,6 @@ NS_ASSUME_NONNULL_BEGIN
 
 // Loading
 - (BOOL)loadFromPath:(NSString *)path;
-- (BOOL)loadFromDownloadPath:(NSString *)path;  // See -[AlphaVideoPlayer loadFromDownload:]
 - (void)unloadVideo;
 
 // Playback control
@@ -200,6 +196,71 @@ NS_ASSUME_NONNULL_BEGIN
 // Rendering
 - (void)renderFrame:(AlphaVideoFrame *)frame;
 - (void)renderCurrentFrame;
+
+@end
+
+/** What a data source knows about a file, given at the start of each read. */
+@interface AlphaVideoDataInfo : NSObject
+
+/** The whole file's size in bytes (not what's left after the offset), or -1 if not known. */
+@property (nonatomic, readonly) int64_t size;
+/** An ETag, or any string that changes when the content does. */
+@property (nonatomic, copy, readonly, nullable) NSString *etag;
+/** Last-Modified, for sources without an ETag. */
+@property (nonatomic, copy, readonly, nullable) NSString *lastModified;
+
+- (instancetype)initWithSize:(int64_t)size
+                        etag:(nullable NSString *)etag
+                lastModified:(nullable NSString *)lastModified NS_DESIGNATED_INITIALIZER;
+- (instancetype)init NS_UNAVAILABLE;
+
+@end
+
+/** A read in progress. */
+@protocol AlphaVideoCancellable <NSObject>
+/** Stops the read; the source may still call its handlers, which are then ignored. */
+- (void)cancel;
+@end
+
+/**
+ * Where a video's bytes come from, for an app that fetches, caches or decrypts them itself: the
+ * role of AVAssetResourceLoaderDelegate, without the AVFoundation types. The player asks for byte
+ * ranges as it plays, a window of a few megabytes at a time, and a new one at a seek.
+ *
+ * Shared by every player it's registered for, so a read must not depend on the one before.
+ */
+@protocol AlphaVideoDataSource <NSObject>
+
+/**
+ * Reads `length` bytes of `url` from `offset`, fewer at the end of the file. Call `response`
+ * once, then `data` with the bytes in order (any number of times), then `completion` once: nil
+ * when done, an error otherwise. A read at or past the end calls `response`, then `completion`
+ * with nil. The handlers may be called on any thread, and soon after this returns or much later.
+ *
+ * @param headers the source's `headers`, for sources that make HTTP requests; may be empty
+ */
+- (id<AlphaVideoCancellable>)readURL:(NSURL *)url
+                              offset:(int64_t)offset
+                              length:(int64_t)length
+                             headers:(NSDictionary<NSString *, NSString *> *)headers
+                            response:(void (^)(AlphaVideoDataInfo *info))response
+                                data:(void (^)(NSData *data))data
+                          completion:(void (^)(NSError *_Nullable error))completion
+    NS_SWIFT_NAME(read(url:offset:length:headers:response:data:completion:));
+
+@end
+
+/**
+ * Data sources by name, for React Native: register one here, then pass
+ * `source={{ uri, dataSource: 'name' }}` to AlphaVideoView. Thread-safe.
+ */
+@interface AlphaVideoDataSources : NSObject
+
+/** Registers `dataSource` under `name`, replacing any registered before. */
++ (void)registerDataSource:(id<AlphaVideoDataSource>)dataSource name:(NSString *)name
+    NS_SWIFT_NAME(register(_:name:));
++ (void)unregisterName:(NSString *)name NS_SWIFT_NAME(unregister(name:));
++ (nullable id<AlphaVideoDataSource>)dataSourceNamed:(NSString *)name NS_SWIFT_NAME(dataSource(named:));
 
 @end
 
@@ -216,21 +277,33 @@ NS_ASSUME_NONNULL_BEGIN
 /**
  * The player view: resolves a source, loads it in the chosen mode and draws it with Metal.
  *
- * `source` takes an https:// or http:// URL (downloaded into Caches, see AlphaVideoSourceResolver),
- * asset://path inside the app bundle, a file:// URL or an absolute path. A new source loads on the
- * next main-queue turn, so set the other properties in the same turn and they apply to it.
+ * `source` takes an https:// or http:// URL (read by range requests as it plays),
+ * asset://path inside the app bundle, a file:// URL or an absolute path, or with `dataSource` any
+ * URL that data source reads. A new source loads on the next main-queue turn, so set the other
+ * properties in the same turn and they apply to it.
  */
 @interface AlphaVideoView : UIView
 
 @property (nonatomic, weak, nullable) id<AlphaVideoViewDelegate> delegate;
 
 @property (nonatomic, copy, nullable) NSString *source;
-// Cache file name for http(s) sources, which may include subfolders; default: a hash of the URL
+// Sent with every request for an http(s) source, and given to a data source
+@property (nonatomic, copy, nullable) NSDictionary<NSString *, NSString *> *headers;
+// Reads the source through the data source registered under this name (AlphaVideoDataSources)
+@property (nonatomic, copy, nullable) NSString *dataSource;
+// What the store keeps the source under, instead of its URL (for presigned URLs that change)
 @property (nonatomic, copy, nullable) NSString *cacheKey;
+// Where a URL's or data source's bytes are kept between plays: "disk" (Caches/alpha-video),
+// "memory" (for the app's lifetime) or "none". "auto" (default) is disk for URLs and none for a
+// data source. The store is partial: it keeps what has been played, and a clip held whole plays
+// again offline.
+@property (nonatomic, copy) NSString *storage;
+// The store's cap over every clip in it, least recently played out first. Default: 512 MB
+@property (nonatomic) int64_t maxStorageBytes;
 
 // "stream" (default) decodes a few frames ahead while playing; "preload" decodes every frame
 // before playing; "streamAndPreload" starts like stream and keeps every frame after the first
-// pass. The stream modes play http(s) sources while they download.
+// pass. The stream modes play URLs as they arrive; preload fetches the whole file first.
 @property (nonatomic, copy) NSString *mode;
 @property (nonatomic) int streamCacheSize;      // Frames kept while streaming. Default: 30
 @property (nonatomic) int streamPrefetchAhead;  // Frames decoded ahead while streaming. Default: 15
@@ -254,34 +327,6 @@ NS_ASSUME_NONNULL_BEGIN
 // Both clamp to the clip and keep playing or stay paused; a paused view shows the frame.
 - (void)seekToFrame:(int)frame;
 - (void)seekToTime:(double)seconds;
-
-@end
-
-/**
- * Turns a source URI into a local file the player can open.
- *
- * - https:// and http:// are downloaded into Caches, named by cacheKey (which may include
- *   subfolders) or by a hash of the URL, and reused on later calls. Views asking for the same
- *   file while it downloads share one download.
- * - asset://relative/path is a file inside the app bundle
- * - file:// URLs and absolute paths are used as they are
- */
-@interface AlphaVideoSourceResolver : NSObject
-
-/**
- * Both blocks run on the main queue.
- *
- * `ready` runs once with the file to load. For an http(s) source with `whileDownloading`, that is
- * as soon as the download starts, with `downloading` YES: load it with `loadFromDownload:`, which
- * waits for the bytes still to come. Otherwise it runs when the file is complete.
- *
- * `failed` runs if the source can't be resolved, and also after `ready` if a download breaks off.
- */
-+ (void)resolveSource:(NSString *)uri
-             cacheKey:(nullable NSString *)cacheKey
-     whileDownloading:(BOOL)whileDownloading
-                ready:(void (^)(NSString *path, BOOL downloading))ready
-               failed:(void (^)(NSString *error))failed;
 
 @end
 

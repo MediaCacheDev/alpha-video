@@ -7,7 +7,8 @@
 #   prebuilt-libvpx<V>-dav1d<D>.tar.gz    prebuilt/ for Android and iOS, what fetch-prebuilt.sh unpacks
 #   AlphaVideoCodecs.xcframework.zip      the Package.swift binary target, as built by build_xcframework.sh
 #   alpha-video-<version>-ios.zip         the CocoaPods source (alpha-video.podspec): the iOS sources,
-#                                         libwebm's parser and AlphaVideoCodecs.xcframework
+#                                         libwebm's parser, alpha-video-source's reader and
+#                                         AlphaVideoCodecs.xcframework
 #   SHA256SUMS
 #
 # Uploads nothing. Afterwards, fetch-prebuilt.sh's SHA256 must be the prebuilt archive's,
@@ -73,7 +74,7 @@ mkdir -p "$POD/cpp" "$POD/ios/Sources" "$POD/third_party"
 cp "$ROOT"/cpp/*.h "$ROOT"/cpp/*.cpp "$POD/cpp/"
 rm "$POD/cpp/WebMAlphaPlayer_jni.cpp"
 cp -R "$ROOT/ios/Sources/AlphaVideo" "$POD/ios/Sources/"
-cp -R "$ROOT/third_party/libwebm" "$POD/third_party/"
+cp -R "$ROOT/third_party/libwebm" "$ROOT/third_party/alpha-video-source" "$POD/third_party/"
 cp -R "$ROOT/prebuilt/AlphaVideoCodecs.xcframework" "$POD/"
 cp -R "$ROOT/LICENSE" "$ROOT/THIRD_PARTY_NOTICES.md" "$ROOT/licenses" "$POD/"
 find "$POD" -name .DS_Store -delete

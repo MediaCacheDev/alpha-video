@@ -9,6 +9,7 @@
 #include "WebMAlphaPlayer.h"
 #include "AlphaDemuxer.h"
 #include "ByteSource.h"
+#include "RangeReader.h"
 #include "VideoDecoder.h"
 
 #include <chrono>
@@ -501,24 +502,26 @@ bool WebMAlphaPlayer::loadFromFileRange(int fd, int64_t offset, int64_t length) 
     return finishLoad(std::move(source));
 }
 
-bool WebMAlphaPlayer::loadFromDownload(const std::string& path) {
+bool WebMAlphaPlayer::loadFromReader(std::shared_ptr<avsource::RangeReader> reader) {
     unload();
     
     shouldStop_ = false;
     ioAbort_ = false;
     
-    std::unique_ptr<ByteSource> source = openDownload(path, &ioAbort_);
-    if (!source) {
-        emitEvent("error", "Failed to open " + path);
+    if (!reader) {
+        emitEvent("error", "No source to read");
         return false;
     }
-    return finishLoad(std::move(source));
+    reader_ = reader;
+    return finishLoad(openReader(std::move(reader), &ioAbort_));
 }
 
 bool WebMAlphaPlayer::finishLoad(std::unique_ptr<ByteSource> source) {
     demuxer_ = AlphaDemuxer::open(std::move(source));
     if (!demuxer_) {
-        emitEvent("error", "Failed to open video: not a WebM with a VP9 or AV1 track");
+        std::string readError = reader_ ? reader_->lastError() : std::string();
+        emitEvent("error", readError.empty() ? "Failed to open video: not a WebM with a VP9 or AV1 track"
+                                             : "Reading the video failed: " + readError);
         return false;
     }
 
@@ -655,6 +658,7 @@ void WebMAlphaPlayer::unload() {
     
     closeCodecs();
     demuxer_.reset();
+    reader_.reset();
     
     if (frameCache_) {
         frameCache_->clear();
@@ -1474,10 +1478,12 @@ void WebMAlphaPlayer::prefetchLoop() {
         }
         if (!demuxer_->readPacket(&packet)) {
             if (shouldStop_ || ioAbort_) break;
-            // The input itself failed, e.g. a download broke off: looping would replay only the
+            // The input itself failed, e.g. the network went away: looping would replay only the
             // part that arrived, so stop decoding instead.
             if (demuxer_->failed()) {
                 LOGE("📺 Read failed at frame %d, stopping decode", frameIndex);
+                std::string why = reader_ ? reader_->lastError() : "";
+                emitEvent("error", "Reading the video failed" + (why.empty() ? std::string() : ": " + why));
                 break;
             }
             // End of file: take the frames the decoder still holds, then let the frame count

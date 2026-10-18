@@ -102,7 +102,9 @@ import { AlphaVideoView } from 'react-native-alpha-video';
 
 <AlphaVideoView
   source={{ uri: 'https://example.com/video.webm' }}
-  cacheKey="videos/intro.webm" // http(s) only: the cache file's name; default, a hash of the URL
+  cacheKey="videos/intro.webm" // what the stored copy is named; default, the URL
+  storage="auto"               // where the bytes are kept between plays; see Streaming and storage
+  maxStorageBytes={512 * 1024 * 1024} // the store's cap, over every clip in it
   style={{ width: 300, height: 300 }}
   autoPlay={true}              // the default; false shows the first frame and waits for play()
   loop={true}                  // the default; false plays once, then calls onEnd
@@ -140,13 +142,15 @@ dependencies {
 }
 ```
 
-The AAR includes libvpx and dav1d, built for `arm64-v8a`, `armeabi-v7a` and `x86_64`. Android 7.0 (API 24) or later.
+The AAR includes libvpx and dav1d, built for `arm64-v8a`, `armeabi-v7a` and `x86_64`. Android 7.0 (API 24) or later. To read videos through a Media3 `DataSource.Factory`, add `dev.mediacache:alpha-video-media3` too ([Data sources](#data-sources)).
 
 `dev.mediacache.alphavideo.AlphaVideoView` is a `TextureView`. It takes the same sources and options as the React Native component, through setters:
 
 ```kotlin
 val view = AlphaVideoView(context)
-view.setCacheKey("videos/intro.webm")  // http(s) only: the cache file's name; default, a hash of the URL
+view.setCacheKey("videos/intro.webm")  // what the stored copy is named; default, the URL
+view.setStorage("auto")                // where the bytes are kept between plays; see Streaming and storage
+view.setMaxStorageBytes(512L * 1024 * 1024)  // the store's cap, over every clip in it
 view.setAutoPlay(true)                 // the default; false shows the first frame and waits for play()
 view.setLoop(true)                     // the default; false plays once, then calls onEnd
 view.setPaused(false)                  // a hold, for example while the screen is hidden
@@ -195,7 +199,9 @@ import AlphaVideo
 
 let view = AlphaVideoView(frame: bounds)
 view.delegate = self                   // see below
-view.cacheKey = "videos/intro.webm"    // http(s) only: the cache file's name; default, a hash of the URL
+view.cacheKey = "videos/intro.webm"    // what the stored copy is named; default, the URL
+view.storage = "auto"                  // where the bytes are kept between plays; see Streaming and storage
+view.maxStorageBytes = 512 * 1024 * 1024  // the store's cap, over every clip in it
 view.autoPlay = true                   // the default; false shows the first frame and waits for play
 view.loop = true                       // the default; false plays once, then calls didEnd
 view.paused = false                    // a hold, for example while the screen is hidden
@@ -230,7 +236,9 @@ function MyComponent() {
     <AlphaVideoView
       ref={player}
       source={{ uri: 'https://example.com/video.webm' }}
-      cacheKey="videos/intro.webm" // http(s) only: the cache file's name; default, a hash of the URL
+      cacheKey="videos/intro.webm" // what the stored copy is named; default, the URL
+      storage="auto"               // where the bytes are kept between plays; see Streaming and storage
+      maxStorageBytes={512 * 1024 * 1024} // the store's cap, over every clip in it
       style={{ width: 300, height: 300 }}
       autoPlay={true}              // the default; false shows the first frame and waits for play()
       loop={true}                  // the default; false plays once, then calls onEnd
@@ -260,14 +268,16 @@ The player automatically detects whether a file contains a single YUVA stream or
 
 The examples under [Installation](#installation) and [Usage](#usage) set every option, each to its default. `paused`, `playbackSpeed` and `verbose` change at once; the others are read when a source loads, so set them before the source.
 
-iOS has no `decoder`: it always decodes in software. The cache, prefetch and queue settings apply to the C++ core's software decoding; MediaCodec on Android streams with its own buffers and ignores them, and so does the web, where the browser plays the file. On the web only `source`, `autoPlay`, `loop`, `paused` and `playbackSpeed` apply (see [Web](#web)).
+iOS has no `decoder`: it always decodes in software. The cache, prefetch and queue settings apply to the C++ core's software decoding; MediaCodec on Android streams with its own buffers and ignores them, and so does the web, where the browser plays the file. On the web `mode`, `decoder`, `source.dataSource` and the stream and queue props have no effect (see [Web](#web)).
 
 ### Props
 
 | Prop | Type | Default | Description |
 |------|------|---------|-------------|
-| `source` | `{ uri: string }` | required | Video source URL or local file path (see [Supported Source Types](#supported-source-types)) |
-| `cacheKey` | `string` | hash of the URL | Cache file path for an http(s) source, relative to the app's cache directory (may include subfolders, must stay inside it) |
+| `source` | `{ uri: string, headers?: Record<string, string>, dataSource?: string }` | required | Video source URL or local file path (see [Supported Source Types](#supported-source-types)). `headers` go with every request for it; `dataSource` names a registered [data source](#data-sources) to read it through |
+| `cacheKey` | `string` | the URL | What the store keeps the clip under, for URLs that change while the file doesn't (presigned URLs) |
+| `storage` | `'auto' \| 'disk' \| 'memory' \| 'none'` | `'auto'` | Where the bytes are kept between plays: `'auto'` is `'disk'` for URLs and `'none'` for a data source (see [Streaming and storage](#streaming-and-storage)) |
+| `maxStorageBytes` | `number` | 512 MB | The store's cap, over every clip in it, least recently played out first |
 | `autoPlay` | `boolean` | `true` | Start playing once loaded. Off, the first frame shows and waits for `play()` |
 | `loop` | `boolean` | `true` | Loop video playback |
 | `paused` | `boolean` | `false` | Hold playback. Unpausing plays on when `autoPlay` is on |
@@ -385,7 +395,8 @@ console.log(info);
 
 ## Supported Source Types
 
-- **HTTP/HTTPS URLs**: `{ uri: 'https://example.com/video.webm' }`. Downloaded once into the app's cache directory by the platform's HTTP stack (`HttpURLConnection` on Android, `NSURLSession` on iOS) and played from there. The file is named by `cacheKey` if you give one (it may include subfolders), otherwise by a hash of the URL. See [Playing while downloading](#playing-while-downloading).
+- **HTTP/HTTPS URLs**: `{ uri: 'https://example.com/video.webm', headers: { Authorization: '…' } }`. Read by range requests as it plays, by the platform's HTTP stack (`HttpURLConnection` on Android, `URLSession` on iOS), and kept on disk between plays. See [Streaming and storage](#streaming-and-storage).
+- **Anything a data source reads**: `{ uri, dataSource: 'name' }`, for an app that fetches, caches or decrypts the bytes itself. See [Data sources](#data-sources).
 - **Local files**: `{ uri: 'file:///path/to/video.webm' }` or an absolute path.
 - **Bundled files**: `{ uri: 'asset://videos/glow.webm' }`. On Android this is `android/app/src/main/assets/videos/glow.webm`. On iOS it is `videos/glow.webm` inside the app bundle. On web it is `/videos/glow.webm` from the site root.
 - **Android `content://` URIs**, for example from a document picker.
@@ -393,14 +404,70 @@ console.log(info);
 
 Nothing is copied. Android reads `asset://` files and `res/raw` resources directly from the APK, so they must be stored uncompressed. `.webm` and `.mkv` are uncompressed by default. For other extensions, add them to `android.androidResources.noCompress` in the app's `build.gradle`.
 
-### Playing while downloading
+### Streaming and storage
 
-In `stream` and `streamAndPreload` mode (and on the Android hardware path in those modes), an http(s) clip starts playing as soon as its first bytes arrive: the decoder reads the cache file while it is still being written. `preload` waits for the whole file, since it decodes every frame before showing one.
+An http(s) source is read by HTTP range requests as it plays, through the same reader as the web player ([alpha-video-source](https://github.com/MediaCacheDev/alpha-video-source)):
 
-- Views that ask for the same URL at the same time share one download. Once it is complete, later views play the cached file without a request.
-- A download that fails, including one cut off part way, is reported through `onError` as `Download failed: …`. The player stops at the last frame that arrived instead of looping over a partial file. Nothing is cached, so the next load starts over.
+- In `stream` and `streamAndPreload` mode (and on the Android hardware path in those modes) playback starts with the first frames. Playing from the start is one request, read on as the player needs it; a seek opens another where it lands, after one for the Cues (the seek index, which a WebM file keeps at the end). `preload` fetches the whole file first, since it decodes every frame before showing one.
+- A server without range support works too. The file is then read from the start, and a seek reads it again up to where it lands.
+- A dropped connection is retried 3 times, carrying on from where it stopped. A read that still fails is reported through `onError` as `Reading the video failed: …`, and the player stops at the last frame it has.
 - If the network is slower than the clip's bitrate, playback waits for frames on the software path. On the Android hardware path its clock can run ahead during the stall and catch up quickly afterwards.
-- A seek during a download waits until the file is complete, because a WebM file keeps its seek index (Cues) at the end. Looping back to the start only happens after the end has arrived, so it isn't affected.
+
+`storage` sets where the bytes are kept between plays:
+
+| Value | Kept |
+|---|---|
+| `'auto'` (default) | `'disk'` for a URL, `'none'` for a data source |
+| `'disk'` | In the app's cache folder: `alpha-video` in `getCacheDir()` on Android, in `Caches` on iOS. The system may clear it when space runs low |
+| `'memory'` | In memory, for the app's lifetime |
+| `'none'` | Nowhere: each play fetches again |
+
+Storage is partial: it keeps the ranges played so far, and a clip held whole plays again without the network, offline too. `maxStorageBytes` (default 512 MB) caps the store across every clip, evicting the least recently played. Every view shares one disk store and one memory store, so the cap set last applies to it. Stored clips are named by `cacheKey`, else the URL, so a presigned URL that changes on each visit can keep the same copy. A copy is dropped when the server's `ETag`, `Last-Modified` or length no longer matches it. A clip held whole isn't checked again; give a changed file a new `cacheKey` or URL.
+
+Local files, bundled files and `content://` URIs are read in place and never stored.
+
+### Data sources
+
+An app that fetches, caches or decrypts video bytes itself registers a data source under a name, and names it in `source`. The player asks it for byte ranges as it plays and passes `uri` and `headers` through, so the URI can be anything the data source understands:
+
+```tsx
+<AlphaVideoView source={{ uri: 'https://cdn.example.com/intro.webm', dataSource: 'media3' }} />
+```
+
+A data source's bytes aren't stored by default, since it usually caches them itself; `storage="disk"` or `"memory"` stores them too. On the native views, set `setDataSource("name")` (Android) or `dataSource = "name"` (iOS) before the source, with `setHeaders` or `headers`.
+
+**Android:** implement `dev.mediacache.alphavideo.AlphaVideoDataSource`. `open(uri, position, headers)` starts a read at `position` and returns the file's size and version (`new Info(size, etag, lastModified)`); `read` and `close` follow, and `cancel` (optional) stops a read blocked on the network from another thread. Register a factory, which makes one per player:
+
+```kotlin
+AlphaVideoDataSources.register("mine") { MyDataSource() }
+```
+
+To read through a Media3 `DataSource.Factory` (OkHttp, Cronet, a `CacheDataSource`), add the adapter, which uses the app's own `androidx.media3:media3-datasource` (compiled against 1.8.0):
+
+```gradle
+implementation 'dev.mediacache:alpha-video-media3:1.0.0'
+```
+
+```kotlin
+AlphaVideoDataSources.register("media3", Media3AlphaVideoDataSource.factory(dataSourceFactory))
+```
+
+The built-in fetcher is public too, to register with other timeouts or a user agent: `AlphaVideoHttpDataSource.Factory().setConnectTimeoutMs(…).setReadTimeoutMs(…).setUserAgent(…)`.
+
+**iOS:** conform to `AlphaVideoDataSource`, the role of `AVAssetResourceLoaderDelegate` without the AVFoundation types. Each call reads a window of a few megabytes: call `response` once with the file's size and version, then `data` with the bytes in order, then `completion`. One instance serves every player, so a read mustn't depend on the one before:
+
+```swift
+final class MyDataSource: NSObject, AlphaVideoDataSource {
+    func read(url: URL, offset: Int64, length: Int64, headers: [String: String],
+              response: @escaping (AlphaVideoDataInfo) -> Void,
+              data: @escaping (Data) -> Void,
+              completion: @escaping (Error?) -> Void) -> AlphaVideoCancellable {
+        // response(AlphaVideoDataInfo(size: total, etag: etag, lastModified: nil)), data(…), completion(nil)
+    }
+}
+
+AlphaVideoDataSources.register(MyDataSource(), name: "mine")
+```
 
 ### Web
 
@@ -412,7 +479,7 @@ In `stream` and `streamAndPreload` mode (and on the Android hardware path in tho
 
 Only a file that no engine can decode ends in an error (`NO_ALPHA_PATH`). Each WebAssembly module is loaded only when its engine runs, and nothing needs hosting: the modules and Workers are inside the package. Every test card passes through every engine that can decode it, in Playwright's Chromium, Firefox and WebKit; real Safari and phones are still to be tested. The API, the React component and speed figures are in [web/README.md](web/README.md).
 
-**On react-native-web, `AlphaVideoView` plays through `alpha-video-web`**, which is installed with this package. iOS and Android bundles don't include it: the component imports it from a `.web.tsx` file. It honours `source` (with `source.headers`, sent with every request), `cacheKey` (naming the stored copy), `autoPlay`, `loop`, `paused`, `playbackSpeed`, `webDecoder`, `onLoad`, `onError`, `onEnd` and the ref methods. `mode`, `decoder` and the stream and queue props have no effect. `asset://path` is served from the site root.
+**On react-native-web, `AlphaVideoView` plays through `alpha-video-web`**, which is installed with this package. iOS and Android bundles don't include it: the component imports it from a `.web.tsx` file. It honours `source` (with `source.headers`, sent with every request), `cacheKey` (naming the stored copy), `storage` (`'disk'` is the browser's storage, as `'auto'`), `maxStorageBytes`, `autoPlay`, `loop`, `paused`, `playbackSpeed`, `webDecoder`, `onLoad`, `onError`, `onEnd` and the ref methods. `mode`, `decoder`, `source.dataSource` and the stream and queue props have no effect. `asset://path` is served from the site root.
 
 - **Bundling:** the WebAssembly engines are separate chunks, loaded by `import()` only when a file needs them. With webpack, Vite or esbuild that needs nothing extra.
 - **Content-Security-Policy:** the software engine's Workers start from `blob:` URLs, so a page with a CSP must allow `worker-src blob:`.
@@ -497,7 +564,7 @@ The `mode` prop controls the software decode path; the default is `stream`. The 
 | `preload` | Wait for full decode | High (all frames) | Seamless | Short loops, many simultaneous players |
 | `streamAndPreload` | Immediate | High (after 1st pass) | Seamless | Fast start + smooth loops |
 
-For http(s) sources, "Immediate" means as soon as the first bytes have downloaded, and `preload` also waits for the download ([Playing while downloading](#playing-while-downloading)).
+For http(s) sources, "Immediate" means as soon as the first frames have arrived, and `preload` also waits for the whole file ([Streaming and storage](#streaming-and-storage)).
 
 **Key insight**: `preload` mode has **zero CPU cost during playback** since all frames are already decoded. This means 20+ preloaded videos can play simultaneously with minimal CPU impact (only GPU rendering).
 

@@ -128,6 +128,7 @@ export {
   type AlphaVideoViewProps,
   type AlphaVideoViewRef,
   type AlphaVideoSource,
+  type AlphaVideoStorage,
   type PlaybackMode,
   type Decoder,
   type WebDecoder,

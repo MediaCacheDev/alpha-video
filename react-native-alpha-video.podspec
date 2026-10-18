@@ -20,7 +20,8 @@ Pod::Spec.new do |s|
     'ios/Sources/AlphaVideo/**/*.{h,mm}',
     'react-native/ios/**/*.{h,mm}',
     'cpp/**/*.{h,cpp}',
-    'third_party/libwebm/webm_parser/**/*.{h,cc}'
+    'third_party/libwebm/webm_parser/**/*.{h,cc}',
+    'third_party/alpha-video-source/src/*.{h,cpp}'
   ]
   s.exclude_files = [
     'cpp/*_jni.cpp'
@@ -37,7 +38,7 @@ Pod::Spec.new do |s|
   s.pod_target_xcconfig = {
     'CLANG_CXX_LANGUAGE_STANDARD' => 'c++17',
     'CLANG_CXX_LIBRARY' => 'libc++',
-    'HEADER_SEARCH_PATHS' => '"$(PODS_TARGET_SRCROOT)/prebuilt/include" "$(PODS_TARGET_SRCROOT)/ios/Sources/AlphaVideo/include" "$(PODS_TARGET_SRCROOT)/cpp" "$(PODS_TARGET_SRCROOT)/third_party/libwebm/webm_parser" "$(PODS_TARGET_SRCROOT)/third_party/libwebm/webm_parser/include"',
+    'HEADER_SEARCH_PATHS' => '"$(PODS_TARGET_SRCROOT)/prebuilt/include" "$(PODS_TARGET_SRCROOT)/ios/Sources/AlphaVideo/include" "$(PODS_TARGET_SRCROOT)/cpp" "$(PODS_TARGET_SRCROOT)/third_party/alpha-video-source/src" "$(PODS_TARGET_SRCROOT)/third_party/libwebm/webm_parser" "$(PODS_TARGET_SRCROOT)/third_party/libwebm/webm_parser/include"',
     'LIBRARY_SEARCH_PATHS[sdk=iphoneos*]' => '"$(PODS_TARGET_SRCROOT)/prebuilt/ios/lib"',
     'LIBRARY_SEARCH_PATHS[sdk=iphonesimulator*]' => '"$(PODS_TARGET_SRCROOT)/prebuilt/ios-simulator/lib"'
   }

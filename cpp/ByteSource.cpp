@@ -1,6 +1,6 @@
 #include "ByteSource.h"
 
-#include "GrowingFile.h"
+#include "RangeReader.h"
 
 #include <algorithm>
 #include <cerrno>
@@ -16,21 +16,13 @@ namespace {
 
 class FileRangeSource : public ByteSource {
 public:
-    // Takes ownership of fd. `download` is set while the file is still downloading; `length`
-    // is unused then.
-    FileRangeSource(int fd, int64_t offset, int64_t length, std::shared_ptr<GrowingFile> download,
-                    const std::atomic<bool>* abort)
-        : fd_(fd), offset_(offset), length_(length), download_(std::move(download)), abort_(abort) {}
+    // Takes ownership of fd
+    FileRangeSource(int fd, int64_t offset, int64_t length) : fd_(fd), offset_(offset), length_(length) {}
 
     ~FileRangeSource() override { close(fd_); }
 
     int64_t read(int64_t pos, uint8_t* out, int64_t size) override {
-        int64_t end = length_;
-        if (download_) {
-            end = download_->waitForData(pos, abort_);
-            if (end < 0) return -1;
-        }
-        const int64_t remaining = end - pos;
+        const int64_t remaining = length_ - pos;
         if (remaining <= 0 || size <= 0) return 0;
 
         const size_t toRead = static_cast<size_t>(std::min(size, remaining));
@@ -41,13 +33,25 @@ public:
         return n < 0 ? -1 : n;
     }
 
-    int64_t size() const override { return download_ ? download_->size() : length_; }
+    int64_t size() const override { return length_; }
 
 private:
     const int fd_;
     const int64_t offset_;
     const int64_t length_;
-    const std::shared_ptr<GrowingFile> download_;
+};
+
+class ReaderSource : public ByteSource {
+public:
+    ReaderSource(std::shared_ptr<avsource::RangeReader> reader, const std::atomic<bool>* abort)
+        : reader_(std::move(reader)), abort_(abort) {}
+
+    int64_t read(int64_t pos, uint8_t* out, int64_t size) override { return reader_->read(pos, out, size, abort_); }
+
+    int64_t size() const override { return reader_->size(); }
+
+private:
+    const std::shared_ptr<avsource::RangeReader> reader_;
     const std::atomic<bool>* const abort_;
 };
 
@@ -90,7 +94,7 @@ std::unique_ptr<ByteSource> openFileRange(int fd, int64_t offset, int64_t length
 
     int ownFd = dup(fd);
     if (ownFd < 0) return nullptr;
-    return std::make_unique<FileRangeSource>(ownFd, offset, length, nullptr, nullptr);
+    return std::make_unique<FileRangeSource>(ownFd, offset, length);
 }
 
 std::unique_ptr<ByteSource> openFile(const std::string& path) {
@@ -101,12 +105,9 @@ std::unique_ptr<ByteSource> openFile(const std::string& path) {
     return source;
 }
 
-std::unique_ptr<ByteSource> openDownload(const std::string& path, const std::atomic<bool>* abort) {
-    std::shared_ptr<GrowingFile> download = GrowingFile::find(path);
-    if (!download) return openFile(path);
-    int fd = dup(download->fd());
-    if (fd < 0) return nullptr;
-    return std::make_unique<FileRangeSource>(fd, 0, -1, std::move(download), abort);
+std::unique_ptr<ByteSource> openReader(std::shared_ptr<avsource::RangeReader> reader, const std::atomic<bool>* abort) {
+    if (!reader) return nullptr;
+    return std::make_unique<ReaderSource>(std::move(reader), abort);
 }
 
 std::unique_ptr<ByteSource> openMemory(const uint8_t* data, size_t size) {

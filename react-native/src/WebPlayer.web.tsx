@@ -16,6 +16,7 @@ function toWebUrl(uri: string): string {
 
 export const WebPlayer = forwardRef<AlphaVideoViewRef, AlphaVideoViewProps>((props, ref) => {
   const { source, autoPlay = true, loop = true, paused = false, playbackSpeed = 1, webDecoder = 'auto', cacheKey } = props;
+  const { storage, maxStorageBytes } = props;
   const { style, onLoad, onError, onEnd } = props;
   const uri = source?.uri;
   // Streamed by range from http(s) URLs and kept in the browser's storage (OPFS, else IndexedDB)
@@ -34,6 +35,8 @@ export const WebPlayer = forwardRef<AlphaVideoViewRef, AlphaVideoViewProps>((pro
           decoder={webDecoder}
           headers={source.headers}
           cacheKey={source.cacheKey || cacheKey}
+          storage={storage === 'disk' ? 'auto' : storage}
+          maxStorageBytes={maxStorageBytes}
           style={fill}
           onLoad={({ totalFrames, width, height, decoder }) => onLoad?.({ totalFrames, width, height, decoder })}
           onError={(error) => onError?.({ error: error.message, code: error.code })}

@@ -6,7 +6,7 @@
  * is inside a render, which makes it a trap rather than a design.
  */
 
-import React, { useRef, forwardRef, useImperativeHandle } from 'react';
+import React, { useRef, forwardRef, useImperativeHandle, useMemo } from 'react';
 import {
   Platform,
   ViewProps,
@@ -30,16 +30,29 @@ export type WebDecoder = 'auto' | 'browser' | 'webcodecs' | 'webcodecs-hw' | 'we
  */
 export interface AlphaVideoSource {
   /**
-   * https:// (downloaded to the cache), file://, an absolute path, asset://relative/path
+   * https:// (read by range as it plays), file://, an absolute path, asset://relative/path
    * (app bundle / APK assets; the site root on web), content:// (Android), or
-   * Image.resolveAssetSource(require(...)).uri
+   * Image.resolveAssetSource(require(...)).uri. With `dataSource`, any URI that source reads.
    */
   uri: string;
-  /** Names the cached copy, for URLs that change while the file doesn't (presigned URLs); same as the `cacheKey` prop */
+  /** Names the stored copy, for URLs that change while the file doesn't (presigned URLs); same as the `cacheKey` prop */
   cacheKey?: string;
-  /** Web: sent with every request for the URL, e.g. Authorization */
+  /** Sent with every request for the URL, e.g. Authorization; given to a `dataSource` too */
   headers?: Record<string, string>;
+  /**
+   * iOS and Android: read the file through the data source the app registered under this name
+   * (`AlphaVideoDataSources.register` on Android, `AlphaVideoDataSources.register(_:name:)`
+   * on iOS) instead of the built-in fetcher.
+   */
+  dataSource?: string;
 }
+
+/**
+ * Where a URL's bytes are kept between plays, read back by range: `'disk'` (the cache folder;
+ * OPFS, else IndexedDB, on the web), `'memory'` (for the app's lifetime) or `'none'`. `'auto'`,
+ * the default, is `'disk'` for URLs and `'none'` for a `dataSource` and local files.
+ */
+export type AlphaVideoStorage = 'auto' | 'disk' | 'memory' | 'none';
 
 /**
  * Props for the AlphaVideoView component
@@ -73,13 +86,20 @@ export interface AlphaVideoViewProps extends ViewProps {
   paused?: boolean;
   /** Playback speed multiplier (default: 1.0) */
   playbackSpeed?: number;
-  /** 
-   * Custom cache key/path for downloaded files.
-   * If provided, downloaded files will be saved to this path under the cache directory.
-  * Example: 'videos/custom-paths/abc123-60x60.webm'
-   * If not provided, files are cached using a hash of the URL.
+  /**
+   * Names the stored copy instead of the URL, for URLs that change while the file doesn't
+   * (presigned URLs). `source.cacheKey` wins over it.
    */
   cacheKey?: string;
+
+  /** See {@link AlphaVideoStorage}. */
+  storage?: AlphaVideoStorage;
+
+  /**
+   * Cap on the bytes this player stores across every clip, evicting the least recently played
+   * (default 512 MB).
+   */
+  maxStorageBytes?: number;
   
   /**
    * Playback mode for the player.
@@ -195,6 +215,19 @@ const NativePlayer = forwardRef<AlphaVideoViewRef, AlphaVideoViewProps>(
       seekToTime: (seconds: number) => withView(view => Commands.seekToTime(view, seconds)),
     }));
 
+    const { uri, headers, dataSource } = props.source ?? {};
+    const headersKey = headers ? JSON.stringify(headers) : '';
+    // Rebuilt only when a value changes, so a new source object each render doesn't reload
+    const nativeSource = useMemo(
+      () => ({
+        uri,
+        headers: headers ? ([] as string[]).concat(...Object.entries(headers)) : undefined,
+        dataSource,
+      }),
+      // eslint-disable-next-line react-hooks/exhaustive-deps
+      [uri, headersKey, dataSource],
+    );
+
     if (!NativeAlphaVideoViewOrNull) {
       return null;
     }
@@ -221,12 +254,14 @@ const NativePlayer = forwardRef<AlphaVideoViewRef, AlphaVideoViewProps>(
     return (
       <NativeAlphaVideoViewOrNull
         ref={nativeRef}
-        source={props.source}
+        source={nativeSource}
         autoPlay={props.autoPlay}
         loop={props.loop}
         paused={props.paused}
         playbackSpeed={props.playbackSpeed}
         cacheKey={props.source?.cacheKey || props.cacheKey}
+        storage={props.storage}
+        maxStorageBytes={props.maxStorageBytes}
         mode={resolveMode(props.mode, props.stream)}
         decoder={props.decoder}
         streamCacheSize={props.streamCacheSize}

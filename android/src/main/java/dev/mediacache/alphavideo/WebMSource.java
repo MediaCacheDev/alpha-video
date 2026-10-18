@@ -15,14 +15,13 @@ import java.util.regex.Pattern;
  * A local video the player can read in place: a file, an APK asset, a raw resource, or a
  * content:// URI.
  *
- * Every kind but a download opens as an {@link AssetFileDescriptor} (descriptor + byte range),
- * which native code reads directly, so nothing is copied out first. Remote URLs are not sources;
- * {@link WebMDownloader} fetches them into the cache, and the file is played as a download (read
- * by native code as it arrives) or, once complete, as a plain file.
+ * Every local kind opens as an {@link AssetFileDescriptor} (descriptor + byte range), which
+ * native code reads directly, so nothing is copied out first. A URL or an app's data source is read
+ * through a {@link SourceReader} instead, by range as it plays.
  */
 final class WebMSource {
 
-    private enum Kind { FILE, ASSET, RAW, CONTENT, DOWNLOAD }
+    private enum Kind { FILE, ASSET, RAW, CONTENT, READER }
 
     private static final String ASSET_SCHEME = "asset://";
     // What Image.resolveAssetSource(require(...)) gives in a release build: a res/raw name
@@ -30,28 +29,31 @@ final class WebMSource {
 
     private final Kind kind;
     private final String location;
+    // READER only
+    private final SourceReader reader;
 
     private WebMSource(Kind kind, String location) {
+        this(kind, location, null);
+    }
+
+    private WebMSource(Kind kind, String location, SourceReader reader) {
         this.kind = kind;
         this.location = location;
+        this.reader = reader;
     }
 
     static WebMSource file(String path) {
         return new WebMSource(Kind.FILE, path);
     }
 
-    /** A {@link WebMDownloader} cache file that may still be downloading. */
-    static WebMSource download(String path) {
-        return new WebMSource(Kind.DOWNLOAD, path);
+    /** {@code uri} read through {@code reader}. */
+    static WebMSource reader(String uri, SourceReader reader) {
+        return new WebMSource(Kind.READER, uri, reader);
     }
 
-    /** Read it through the native {@code ...Download} loaders by {@link #path()}, not {@link #open}. */
-    boolean isDownload() {
-        return kind == Kind.DOWNLOAD;
-    }
-
-    String path() {
-        return location;
+    /** Null unless this is read through a reader, not {@link #open}. */
+    SourceReader reader() {
+        return reader;
     }
 
     /**
@@ -92,8 +94,8 @@ final class WebMSource {
                 return openAsset(context);
             case RAW:
                 return openRawResource(context);
-            case DOWNLOAD:
-                throw new IllegalStateException("A download is read through the native download loaders: " + location);
+            case READER:
+                throw new IllegalStateException(location + " is read through its SourceReader");
             case CONTENT: {
                 AssetFileDescriptor afd = context.getContentResolver()
                     .openAssetFileDescriptor(Uri.parse(location), "r");

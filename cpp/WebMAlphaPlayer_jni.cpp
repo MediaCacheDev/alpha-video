@@ -11,7 +11,9 @@
 #include "WebMAlphaPlayer.h"
 #include "AlphaDemuxer.h"
 #include "ByteSource.h"
-#include "GrowingFile.h"
+#include "RangeReader.h"
+#include <pthread.h>
+#include <algorithm>
 #include <atomic>
 #include <memory>
 #include <unordered_map>
@@ -93,10 +95,149 @@ JNIEnv* getJNIEnv(JavaVM* jvm) {
 }
 
 std::string stringFromJava(JNIEnv* env, jstring value) {
+    if (!value) return {};
     const char* chars = env->GetStringUTFChars(value, nullptr);
     std::string result(chars);
     env->ReleaseStringUTFChars(value, chars);
     return result;
+}
+
+//==============================================================================
+// Range readers over a Java AlphaVideoDataSource (SourceReader.Upstream)
+//==============================================================================
+
+pthread_key_t detachKey;
+pthread_once_t detachKeyOnce = PTHREAD_ONCE_INIT;
+
+void detachThread(void* vm) {
+    static_cast<JavaVM*>(vm)->DetachCurrentThread();
+}
+
+// This thread's env. A native thread is attached until it exits, as a reader's fetch thread calls
+// into Java for as long as it runs.
+JNIEnv* threadEnv(JavaVM* vm) {
+    JNIEnv* env = nullptr;
+    if (vm->GetEnv(reinterpret_cast<void**>(&env), JNI_VERSION_1_6) == JNI_OK) return env;
+    if (vm->AttachCurrentThread(&env, nullptr) != JNI_OK) return nullptr;
+    pthread_once(&detachKeyOnce, [] { pthread_key_create(&detachKey, detachThread); });
+    pthread_setspecific(detachKey, vm);
+    return env;
+}
+
+// Clears a pending Java exception; true if there was one.
+bool clearException(JNIEnv* env) {
+    if (!env->ExceptionCheck()) return false;
+    env->ExceptionDescribe();
+    env->ExceptionClear();
+    return true;
+}
+
+class JavaUpstream : public avsource::Upstream {
+public:
+    static std::unique_ptr<JavaUpstream> create(JNIEnv* env, jobject upstream) {
+        auto result = std::unique_ptr<JavaUpstream>(new JavaUpstream());
+        env->GetJavaVM(&result->vm_);
+        jclass cls = env->GetObjectClass(upstream);
+        result->open_ = env->GetMethodID(cls, "open", "(J)J");
+        result->read_ = env->GetMethodID(cls, "read", "([BI)I");
+        result->close_ = env->GetMethodID(cls, "close", "()V");
+        result->cancel_ = env->GetMethodID(cls, "cancel", "()V");
+        result->etag_ = env->GetFieldID(cls, "etag", "Ljava/lang/String;");
+        result->lastModified_ = env->GetFieldID(cls, "lastModified", "Ljava/lang/String;");
+        result->error_ = env->GetFieldID(cls, "error", "Ljava/lang/String;");
+        env->DeleteLocalRef(cls);
+        jbyteArray buffer = env->NewByteArray(kBufferBytes);
+        if (clearException(env) || !buffer || !result->open_ || !result->read_ || !result->close_ ||
+            !result->cancel_ || !result->etag_ || !result->lastModified_ || !result->error_) {
+            return nullptr;
+        }
+        result->object_ = env->NewGlobalRef(upstream);
+        result->buffer_ = static_cast<jbyteArray>(env->NewGlobalRef(buffer));
+        env->DeleteLocalRef(buffer);
+        return result;
+    }
+
+    ~JavaUpstream() override {
+        JNIEnv* env = threadEnv(vm_);
+        if (!env) return;
+        if (object_) env->DeleteGlobalRef(object_);
+        if (buffer_) env->DeleteGlobalRef(buffer_);
+    }
+
+    bool open(int64_t position, avsource::SourceInfo& info, std::string& error) override {
+        JNIEnv* env = threadEnv(vm_);
+        if (!env) {
+            error = "Cannot attach the reader's thread to Java";
+            return false;
+        }
+        jlong size = env->CallLongMethod(object_, open_, static_cast<jlong>(position));
+        if (clearException(env)) {
+            error = "The data source threw";
+            return false;
+        }
+        if (size == -2) {
+            error = stringField(env, error_);
+            return false;
+        }
+        info.size = size >= 0 ? size : -1;
+        info.etag = stringField(env, etag_);
+        info.lastModified = stringField(env, lastModified_);
+        return true;
+    }
+
+    int64_t read(uint8_t* out, int64_t size, std::string& error) override {
+        JNIEnv* env = threadEnv(vm_);
+        if (!env) {
+            error = "Cannot attach the reader's thread to Java";
+            return -1;
+        }
+        jint n = env->CallIntMethod(object_, read_, buffer_, static_cast<jint>(std::min<int64_t>(size, kBufferBytes)));
+        if (clearException(env)) {
+            error = "The data source threw";
+            return -1;
+        }
+        if (n < 0) {
+            error = stringField(env, error_);
+            return -1;
+        }
+        if (n > 0) env->GetByteArrayRegion(buffer_, 0, n, reinterpret_cast<jbyte*>(out));
+        return n;
+    }
+
+    void close() override { call(close_); }
+    void cancel() override { call(cancel_); }
+
+private:
+    static constexpr jint kBufferBytes = 64 * 1024;
+
+    JavaUpstream() = default;
+
+    void call(jmethodID method) {
+        JNIEnv* env = threadEnv(vm_);
+        if (!env) return;
+        env->CallVoidMethod(object_, method);
+        clearException(env);
+    }
+
+    std::string stringField(JNIEnv* env, jfieldID field) {
+        auto value = static_cast<jstring>(env->GetObjectField(object_, field));
+        std::string result = stringFromJava(env, value);
+        if (value) env->DeleteLocalRef(value);
+        return result;
+    }
+
+    JavaVM* vm_ = nullptr;
+    jobject object_ = nullptr;
+    jbyteArray buffer_ = nullptr;
+    jmethodID open_ = nullptr, read_ = nullptr, close_ = nullptr, cancel_ = nullptr;
+    jfieldID etag_ = nullptr, lastModified_ = nullptr, error_ = nullptr;
+};
+
+// A SourceReader reference: a shared_ptr of its own, so each holder frees only its own.
+using ReaderRef = std::shared_ptr<avsource::RangeReader>;
+
+const ReaderRef& readerOf(jlong reference) {
+    return *reinterpret_cast<ReaderRef*>(reference);
 }
 
 } // anonymous namespace
@@ -508,11 +649,11 @@ Java_dev_mediacache_alphavideo_WebMAlphaPlayerNative_nativeLoadFromFd(
 }
 
 JNIEXPORT jboolean JNICALL
-Java_dev_mediacache_alphavideo_WebMAlphaPlayerNative_nativeLoadFromDownload(
+Java_dev_mediacache_alphavideo_WebMAlphaPlayerNative_nativeLoadFromReader(
     JNIEnv* env,
     jclass clazz,
     jlong playerId,
-    jstring path
+    jlong reader
 ) {
     {
         std::lock_guard<std::mutex> dlock(destroyedMutex);
@@ -524,69 +665,68 @@ Java_dev_mediacache_alphavideo_WebMAlphaPlayerNative_nativeLoadFromDownload(
         stoppedPlayers.erase(playerId);
     }
     
-    std::shared_ptr<webm::WebMAlphaPlayer> player;
-    {
-        std::lock_guard<std::mutex> lock(playersMutex);
-        auto it = players.find(playerId);
-        if (it == players.end()) return JNI_FALSE;
-        player = it->second;
-    }
-    
-    std::string pathCopy = stringFromJava(env, path);
-    
-    {
-        std::lock_guard<std::mutex> dlock(destroyedMutex);
-        if (destroyedPlayers.count(playerId)) {
-            LOGI("LoadFromDownload aborted - player %lld destroyed", playerId);
-            return JNI_FALSE;
-        }
-    }
-    
-    bool result = player->loadFromDownload(pathCopy);
-    return result ? JNI_TRUE : JNI_FALSE;
+    std::shared_ptr<webm::WebMAlphaPlayer> player = findPlayer(playerId);
+    if (!player) return JNI_FALSE;
+    return player->loadFromReader(readerOf(reader)) ? JNI_TRUE : JNI_FALSE;
 }
 
 //==============================================================================
-// Downloads into the cache (WebMDownloader), readable while they run
+// Range readers (SourceReader)
 //==============================================================================
 
 JNIEXPORT jlong JNICALL
-Java_dev_mediacache_alphavideo_WebMDownloader_nativeBegin(
+Java_dev_mediacache_alphavideo_SourceReader_nativeOpen(
     JNIEnv* env,
     jclass clazz,
-    jstring path,
-    jstring partPath,
-    jlong expectedSize
+    jobject upstream,
+    jint storage,
+    jstring storeDir,
+    jstring key,
+    jlong maxStorageBytes,
+    jobjectArray errorOut
 ) {
-    auto file = webm::GrowingFile::begin(stringFromJava(env, path), stringFromJava(env, partPath), expectedSize);
-    if (!file) return 0;
-    return reinterpret_cast<jlong>(new std::shared_ptr<webm::GrowingFile>(std::move(file)));
-}
-
-JNIEXPORT void JNICALL
-Java_dev_mediacache_alphavideo_WebMDownloader_nativeSetWritten(
-    JNIEnv* env,
-    jclass clazz,
-    jlong handle,
-    jlong bytes
-) {
-    (*reinterpret_cast<std::shared_ptr<webm::GrowingFile>*>(handle))->setWritten(bytes);
-}
-
-JNIEXPORT void JNICALL
-Java_dev_mediacache_alphavideo_WebMDownloader_nativeEnd(
-    JNIEnv* env,
-    jclass clazz,
-    jlong handle,
-    jboolean finished
-) {
-    auto* file = reinterpret_cast<std::shared_ptr<webm::GrowingFile>*>(handle);
-    if (finished) {
-        (*file)->finish();
+    // SourceReader.Storage ordinals
+    enum { kDisk = 0, kMemory = 1 };
+    std::string error;
+    std::shared_ptr<avsource::RangeReader> reader;
+    std::unique_ptr<JavaUpstream> javaUpstream = JavaUpstream::create(env, upstream);
+    if (javaUpstream) {
+        std::shared_ptr<avsource::Store> store;
+        if (storage == kDisk) {
+            store = avsource::Store::disk(stringFromJava(env, storeDir), maxStorageBytes);
+        } else if (storage == kMemory) {
+            store = avsource::Store::memory(stringFromJava(env, storeDir), maxStorageBytes);
+        }
+        reader = avsource::RangeReader::open(std::move(javaUpstream), std::move(store), stringFromJava(env, key),
+                                             avsource::ReaderOptions(), error);
     } else {
-        (*file)->fail();
+        error = "Cannot call the data source";
     }
-    delete file;
+    if (!reader) {
+        jstring message = env->NewStringUTF(error.c_str());
+        env->SetObjectArrayElement(errorOut, 0, message);
+        env->DeleteLocalRef(message);
+        return 0;
+    }
+    return reinterpret_cast<jlong>(new ReaderRef(std::move(reader)));
+}
+
+JNIEXPORT jlong JNICALL
+Java_dev_mediacache_alphavideo_SourceReader_nativeRetain(JNIEnv* env, jclass clazz, jlong reference) {
+    return reinterpret_cast<jlong>(new ReaderRef(readerOf(reference)));
+}
+
+JNIEXPORT void JNICALL
+Java_dev_mediacache_alphavideo_SourceReader_nativeRelease(JNIEnv* env, jclass clazz, jlong reference) {
+    delete reinterpret_cast<ReaderRef*>(reference);
+}
+
+JNIEXPORT jstring JNICALL
+Java_dev_mediacache_alphavideo_SourceReader_nativeFetchAll(JNIEnv* env, jclass clazz, jlong reference) {
+    const ReaderRef& reader = readerOf(reference);
+    if (reader->fetchAll()) return nullptr;
+    std::string error = reader->lastError();
+    return env->NewStringUTF(error.empty() ? "Reading the video failed" : error.c_str());
 }
 
 JNIEXPORT jboolean JNICALL
@@ -1028,17 +1168,12 @@ Java_dev_mediacache_alphavideo_BufferedDualStreamPlayer_nativeColorAlphaTracks(
 }
 
 JNIEXPORT jintArray JNICALL
-Java_dev_mediacache_alphavideo_BufferedDualStreamPlayer_nativeColorAlphaTracksDownload(
+Java_dev_mediacache_alphavideo_BufferedDualStreamPlayer_nativeColorAlphaTracksReader(
     JNIEnv* env,
     jclass clazz,
-    jstring path
+    jlong reader
 ) {
-    std::unique_ptr<webm::ByteSource> source = webm::openDownload(stringFromJava(env, path), nullptr);
-    if (!source) {
-        LOGE("Failed to open the download");
-        return nullptr;
-    }
-    return colorAlphaTracks(env, std::move(source));
+    return colorAlphaTracks(env, webm::openReader(readerOf(reader), nullptr));
 }
 
 // ============================================================================
@@ -1059,13 +1194,13 @@ Java_dev_mediacache_alphavideo_BufferedDualStreamPlayer_nativeCreateDemuxer(
 }
 
 JNIEXPORT jlong JNICALL
-Java_dev_mediacache_alphavideo_BufferedDualStreamPlayer_nativeCreateDemuxerFromDownload(
+Java_dev_mediacache_alphavideo_BufferedDualStreamPlayer_nativeCreateDemuxerFromReader(
     JNIEnv* env,
     jclass clazz,
-    jstring path
+    jlong reader
 ) {
     auto demuxer = std::make_shared<DualStreamDemuxer>();
-    std::unique_ptr<webm::ByteSource> source = webm::openDownload(stringFromJava(env, path), &demuxer->aborted);
+    std::unique_ptr<webm::ByteSource> source = webm::openReader(readerOf(reader), &demuxer->aborted);
     return registerDemuxer(std::move(demuxer), std::move(source));
 }
 

@@ -16,7 +16,7 @@ let codecs: Target = FileManager.default.fileExists(atPath: packageDir.appending
 
 // The target lives at the repo root, and SwiftPM takes resource-like files anywhere under a
 // target as its resources (the codec sources in scripts/build, node_modules), so everything
-// except cpp, ios/Sources and libwebm's parser is excluded. Listed from disk: excluding a missing
+// except cpp, ios/Sources, libwebm's parser and alpha-video-source's reader is excluded. Listed from disk: excluding a missing
 // path warns.
 func entries(_ dir: String, except kept: Set<String>) -> [String] {
     let url = dir.isEmpty ? packageDir : packageDir.appendingPathComponent(dir)
@@ -26,10 +26,13 @@ func entries(_ dir: String, except kept: Set<String>) -> [String] {
         .map { dir.isEmpty ? $0 : "\(dir)/\($0)" }
 }
 let webmParser = "third_party/libwebm/webm_parser"
+// Range reading and storage, vendored by scripts/vendor_alpha_video_source.sh
+let sourceReader = "third_party/alpha-video-source/src"
 let excluded = entries("", except: ["cpp", "ios", "third_party", "Package.swift"])
     + entries("ios", except: ["Sources"])
-    + entries("third_party", except: ["libwebm"])
+    + entries("third_party", except: ["libwebm", "alpha-video-source"])
     + entries("third_party/libwebm", except: ["webm_parser"])
+    + entries("third_party/alpha-video-source", except: ["src"])
     + ["cpp/WebMAlphaPlayer_jni.cpp"]
 
 let package = Package(
@@ -47,11 +50,12 @@ let package = Package(
             dependencies: ["AlphaVideoCodecs"],
             path: ".",
             exclude: excluded,
-            sources: ["cpp", "ios/Sources/AlphaVideo", webmParser],
+            sources: ["cpp", "ios/Sources/AlphaVideo", webmParser, sourceReader],
             publicHeadersPath: "ios/Sources/AlphaVideo/include",
             cSettings: [.headerSearchPath("cpp")],
             cxxSettings: [
                 .headerSearchPath("cpp"),
+                .headerSearchPath(sourceReader),
                 .headerSearchPath(webmParser),
                 .headerSearchPath("\(webmParser)/include"),
             ],

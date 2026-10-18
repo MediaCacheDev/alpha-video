@@ -187,14 +187,20 @@ public class BufferedDualStreamPlayer implements SurfaceTextureVideoDecoder.Fram
     }
     
     /**
-     * Load a {@link WebMDownloader} cache file, reading it as it downloads.
+     * Load through a range reader, which fetches the file as it plays.
      * MUST be called from GL thread so OES textures are created in correct EGL context.
      */
-    public boolean loadFromDownload(String path) {
+    boolean loadFromReader(SourceReader reader) {
         if (isLoaded.get()) {
             unload();
         }
-        return load(nativeCreateDemuxerFromDownload(path));
+        long reference = reader.retain();
+        if (reference == 0) return false;
+        try {
+            return load(nativeCreateDemuxerFromReader(reference));
+        } finally {
+            SourceReader.release(reference);
+        }
     }
     
     private boolean load(long demuxerPtr) {
@@ -940,7 +946,7 @@ public class BufferedDualStreamPlayer implements SurfaceTextureVideoDecoder.Fram
     // -------------------------------------------------------------------------
     
     private static native long nativeCreateDemuxer(int fd, long offset, long length);
-    private static native long nativeCreateDemuxerFromDownload(String path);
+    private static native long nativeCreateDemuxerFromReader(long reader);
     private static native void nativeDestroyDemuxer(long ptr);
     private static native int[] nativeGetVideoInfo(long ptr);
     private static native int[] nativeGetColorInfo(long ptr);
@@ -959,8 +965,8 @@ public class BufferedDualStreamPlayer implements SurfaceTextureVideoDecoder.Fram
      */
     public static native int[] nativeColorAlphaTracks(int fd, long offset, long length);
     
-    /** The same for a {@link WebMDownloader} cache file; waits for its first bytes if still downloading. */
-    public static native int[] nativeColorAlphaTracksDownload(String path);
+    /** The same for a {@link SourceReader} reference; blocks while the header is fetched. */
+    static native int[] nativeColorAlphaTracksReader(long reader);
     
     /**
      * The decoders to load with, colour then alpha, reserved by {@link MediaCodecDecoders#reserve}.

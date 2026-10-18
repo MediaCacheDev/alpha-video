@@ -28,6 +28,7 @@
     "!android/.gradle",
     "!android/.cxx",
     "!android/local.properties",
+    "!android/media3",
     "!react-native/android/build",
     "!react-native/android/.gradle",
     "!react-native/android/.cxx",

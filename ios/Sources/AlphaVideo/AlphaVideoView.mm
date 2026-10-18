@@ -3,7 +3,7 @@
  * The player view: source resolving, playback mode, the global decode queue and the Metal view.
  */
 
-#import "AlphaVideo.h"
+#import "AlphaVideoInternal.h"
 
 #define WEBM_VLOG(...) do { if (self.verbose) NSLog(__VA_ARGS__); } while (0)
 
@@ -43,10 +43,19 @@ static void releaseGlobalDecodeQueue(void) {
 
 #pragma mark - AlphaVideoView
 
+static const int64_t AlphaVideoDefaultMaxStorageBytes = 512LL * 1024 * 1024;
+
 @interface AlphaVideoView () <AlphaVideoPlayerDelegate>
 @end
 
-@implementation AlphaVideoView
+@implementation AlphaVideoView {
+    // Bumped on every source, so a slow open can't load over a newer source. Main queue only.
+    NSUInteger _sourceGeneration;
+    // The reader of the current source, for URLs and data sources. Main queue only.
+    AlphaVideoSourceReader *_reader;
+    // Loads that read over the network, in order and off the main queue
+    dispatch_queue_t _loadQueue;
+}
 
 - (instancetype)initWithFrame:(CGRect)frame {
     self = [super initWithFrame:frame];
@@ -75,6 +84,9 @@ static void releaseGlobalDecodeQueue(void) {
     _streamCacheSize = 30;
     _streamPrefetchAhead = 15;
     _useDecodeQueue = YES;
+    _storage = @"auto";
+    _maxStorageBytes = AlphaVideoDefaultMaxStorageBytes;
+    _loadQueue = dispatch_queue_create("dev.mediacache.alphavideo.load", DISPATCH_QUEUE_SERIAL);
     
     _metalView = [[AlphaVideoMetalView alloc] initWithFrame:self.bounds config:[AlphaVideoConfig defaultConfig]];
     _metalView.playerDelegate = self;
@@ -98,11 +110,42 @@ static void releaseGlobalDecodeQueue(void) {
 - (void)setSource:(NSString *)source {
     if (source == _source || [source isEqualToString:_source]) return;
     _source = [source copy];
-    // Load on the next turn, once the other properties set in this turn have been applied
+    [self scheduleLoad];
+}
+
+// What a source is read with: a change reloads it
+- (void)setHeaders:(NSDictionary<NSString *, NSString *> *)headers {
+    if (headers == _headers || [headers isEqualToDictionary:_headers]) return;
+    _headers = [headers copy];
+    if (_source) [self scheduleLoad];
+}
+
+- (void)setDataSource:(NSString *)dataSource {
+    if (dataSource == _dataSource || [dataSource isEqualToString:_dataSource]) return;
+    _dataSource = [dataSource copy];
+    if (_source) [self scheduleLoad];
+}
+
+/** Loads on the next turn, once the other properties set in this turn have been applied. */
+- (void)scheduleLoad {
+    NSUInteger generation = ++_sourceGeneration;
     __weak AlphaVideoView *weakSelf = self;
     dispatch_async(dispatch_get_main_queue(), ^{
-        [weakSelf loadSource];
+        AlphaVideoView *strongSelf = weakSelf;
+        if (strongSelf && generation == strongSelf->_sourceGeneration) [strongSelf loadSource];
     });
+}
+
+- (void)setStorage:(NSString *)storage {
+    if ([storage isEqualToString:@"disk"] || [storage isEqualToString:@"memory"] || [storage isEqualToString:@"none"]) {
+        _storage = [storage copy];
+    } else {
+        _storage = @"auto";
+    }
+}
+
+- (void)setMaxStorageBytes:(int64_t)maxStorageBytes {
+    _maxStorageBytes = maxStorageBytes > 0 ? maxStorageBytes : AlphaVideoDefaultMaxStorageBytes;
 }
 
 - (void)setAutoPlay:(BOOL)autoPlay {
@@ -173,62 +216,96 @@ static void releaseGlobalDecodeQueue(void) {
     if (sourceUri.length == 0) return;
     
     [self updatePlayerConfig];
+    _reader = nil;
     
     WEBM_VLOG(@"AlphaVideoView loading: %@ (mode=%@, useDecodeQueue=%d)", sourceUri, _mode, _useDecodeQueue);
     
-    // The stream modes start on the first bytes. Preload decodes the whole clip before showing
-    // anything, and would hold the global decode queue for the whole download.
-    BOOL whileDownloading = ![_mode isEqualToString:@"preload"];
-    __weak AlphaVideoView *weakSelf = self;
-    [AlphaVideoSourceResolver resolveSource:sourceUri
-                                   cacheKey:self.cacheKey
-                           whileDownloading:whileDownloading
-                                      ready:^(NSString *path, BOOL downloading) {
-        AlphaVideoView *strongSelf = weakSelf;
-        if (!strongSelf || ![sourceUri isEqualToString:strongSelf.source]) return;
-        [strongSelf loadFromPathWithQueue:path downloading:downloading];
+    BOOL appSource = self.dataSource.length > 0;
+    BOOL remote = [sourceUri hasPrefix:@"https://"] || [sourceUri hasPrefix:@"http://"];
+    if (!appSource && !remote) {
+        NSString *path = AlphaVideoLocalPathForSource(sourceUri);
+        if (!path) {
+            [self playerDidEncounterError:[NSString stringWithFormat:
+                @"Unsupported source '%@'. Use https://, file://, an absolute path or asset://", sourceUri]];
+        } else if (![[NSFileManager defaultManager] fileExistsAtPath:path]) {
+            [self playerDidEncounterError:[NSString stringWithFormat:@"File not found: %@", sourceUri]];
+        } else {
+            [self loadWithQueue:^(AlphaVideoView *view) { [view.metalView loadFromPath:path]; } offMain:NO];
+        }
+        return;
     }
-                                     failed:^(NSString *error) {
-        AlphaVideoView *strongSelf = weakSelf;
-        if (!strongSelf || ![sourceUri isEqualToString:strongSelf.source]) return;
-        [strongSelf playerDidEncounterError:error];
-    }];
+    
+    id<AlphaVideoDataSource> dataSource = nil;
+    if (appSource) {
+        dataSource = [AlphaVideoDataSources dataSourceNamed:self.dataSource];
+        if (!dataSource) {
+            [self playerDidEncounterError:[NSString stringWithFormat:
+                @"No data source is registered as \"%@\" (AlphaVideoDataSources)", self.dataSource]];
+            return;
+        }
+    }
+    NSURL *url = [NSURL URLWithString:sourceUri];
+    if (!url) {
+        [self playerDidEncounterError:[NSString stringWithFormat:@"Invalid URL: %@", sourceUri]];
+        return;
+    }
+    NSString *storage = [_storage isEqualToString:@"auto"] ? (appSource ? @"none" : @"disk") : _storage;
+    NSString *key = self.cacheKey.length > 0 ? self.cacheKey : sourceUri;
+    NSDictionary<NSString *, NSString *> *headers = self.headers ?: @{};
+    int64_t maxStorageBytes = _maxStorageBytes;
+    // The stream modes start on the first bytes. Preload decodes the whole clip before showing
+    // anything, and would hold the global decode queue for the whole transfer.
+    BOOL fetchFirst = [_mode isEqualToString:@"preload"];
+    NSUInteger generation = _sourceGeneration;
+    __weak AlphaVideoView *weakSelf = self;
+    dispatch_async(dispatch_get_global_queue(QOS_CLASS_USER_INITIATED, 0), ^{
+        NSString *error = nil;
+        AlphaVideoSourceReader *reader = [AlphaVideoSourceReader openURL:url
+                                                              dataSource:dataSource
+                                                                 headers:headers
+                                                                 storage:storage
+                                                                     key:key
+                                                         maxStorageBytes:maxStorageBytes
+                                                                   error:&error];
+        if (reader && fetchFirst && ![reader fetchAll:&error]) reader = nil;
+        dispatch_async(dispatch_get_main_queue(), ^{
+            AlphaVideoView *strongSelf = weakSelf;
+            if (!strongSelf || generation != strongSelf->_sourceGeneration) return;
+            if (!reader) {
+                [strongSelf playerDidEncounterError:[NSString stringWithFormat:@"Loading %@ failed: %@", sourceUri, error]];
+                return;
+            }
+            strongSelf->_reader = reader;
+            [strongSelf loadWithQueue:^(AlphaVideoView *view) { [view.metalView loadFromReader:reader]; } offMain:YES];
+        });
+    });
 }
 
 /**
  * Preload and streamAndPreload go through the global decode queue when useDecodeQueue is on;
- * stream mode is light enough to load directly.
- * `downloading`: the file may still be arriving (AlphaVideoSourceResolver), so load it as a download.
+ * stream mode is light enough to load directly, on the main queue for a local file and on this
+ * view's load queue (`offMain`) for one that reads its header over the network.
  */
-- (void)loadFromPathWithQueue:(NSString *)path downloading:(BOOL)downloading {
+- (void)loadWithQueue:(void (^)(AlphaVideoView *view))load offMain:(BOOL)offMain {
     BOOL shouldUseQueue = ![_mode isEqualToString:@"stream"] && _useDecodeQueue;
+    __weak AlphaVideoView *weakSelf = self;
     
     if (shouldUseQueue) {
-        WEBM_VLOG(@"Using global decode queue for: %@", path);
-        __weak AlphaVideoView *weakSelf = self;
+        WEBM_VLOG(@"Using global decode queue for: %@", self.source);
         dispatch_queue_t queue = getGlobalDecodeQueue();
         dispatch_async(queue, ^{
             AlphaVideoView *strongSelf = weakSelf;
-            if (!strongSelf) {
-                releaseGlobalDecodeQueue();
-                return;
-            }
-            
             // Blocks until decodeAllFrames completes
-            [strongSelf loadPath:path downloading:downloading];
-            
+            if (strongSelf) load(strongSelf);
             releaseGlobalDecodeQueue();
         });
+    } else if (offMain) {
+        dispatch_async(_loadQueue, ^{
+            AlphaVideoView *strongSelf = weakSelf;
+            if (strongSelf) load(strongSelf);
+        });
     } else {
-        [self loadPath:path downloading:downloading];
-    }
-}
-
-- (void)loadPath:(NSString *)path downloading:(BOOL)downloading {
-    if (downloading) {
-        [self.metalView loadFromDownloadPath:path];
-    } else {
-        [self.metalView loadFromPath:path];
+        load(self);
     }
 }
 

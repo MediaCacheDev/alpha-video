@@ -61,13 +61,21 @@ type PreloadCompleteEvent = Readonly<{
 export interface NativeProps extends ViewProps {
   source?: Readonly<{
     uri?: string;
+    /** Request headers as name, value, name, value... (codegen has no string maps) */
+    headers?: ReadonlyArray<string>;
+    /** A data source registered in native code under this name */
+    dataSource?: string;
   }>;
   autoPlay?: WithDefault<boolean, true>;
   loop?: WithDefault<boolean, true>;
   paused?: WithDefault<boolean, false>;
   playbackSpeed?: WithDefault<Double, 1.0>;
-  /** Custom cache key/path for downloaded files */
+  /** What the store keeps the source under, instead of its URL */
   cacheKey?: string;
+  /** Where a URL's or data source's bytes are kept between plays */
+  storage?: WithDefault<'auto' | 'disk' | 'memory' | 'none', 'auto'>;
+  /** The store's cap in bytes; 0 for the default (512 MB) */
+  maxStorageBytes?: WithDefault<Double, 0>;
 
   /** See {@link PlaybackMode}. */
   mode?: WithDefault<'preload' | 'stream' | 'streamAndPreload', 'stream'>;

@@ -83,6 +83,19 @@ static const std::shared_ptr<const RNAlphaVideoViewProps> &RNAlphaVideoViewDefau
   if (previous.paused != next.paused) _player.paused = next.paused;
   if (previous.playbackSpeed != next.playbackSpeed) _player.playbackSpeed = next.playbackSpeed;
   if (previous.cacheKey != next.cacheKey) _player.cacheKey = RCTNSStringFromStringNilIfEmpty(next.cacheKey);
+  if (previous.storage != next.storage) _player.storage = RCTNSStringFromString(toString(next.storage));
+  if (previous.maxStorageBytes != next.maxStorageBytes) _player.maxStorageBytes = (int64_t)next.maxStorageBytes;
+  // Before the source, so a new source loads with them; a change on its own reloads it
+  if (previous.source.headers != next.source.headers) {
+    NSMutableDictionary<NSString *, NSString *> *headers = [NSMutableDictionary dictionary];
+    for (size_t i = 0; i + 1 < next.source.headers.size(); i += 2) {
+      headers[RCTNSStringFromString(next.source.headers[i])] = RCTNSStringFromString(next.source.headers[i + 1]);
+    }
+    _player.headers = headers;
+  }
+  if (previous.source.dataSource != next.source.dataSource) {
+    _player.dataSource = RCTNSStringFromStringNilIfEmpty(next.source.dataSource);
+  }
   if (previous.source.uri != next.source.uri) _player.source = RCTNSStringFromStringNilIfEmpty(next.source.uri);
 
   [super updateProps:props oldProps:oldProps];

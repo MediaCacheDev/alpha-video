@@ -3,6 +3,7 @@ package dev.mediacache.alphavideo;
 import android.content.Context;
 import android.content.res.AssetFileDescriptor;
 import android.graphics.SurfaceTexture;
+import android.net.Uri;
 import android.opengl.EGL14;
 import android.opengl.EGLConfig;
 import android.opengl.EGLContext;
@@ -20,6 +21,9 @@ import java.io.IOException;
 import java.nio.ByteBuffer;
 import java.nio.ByteOrder;
 import java.nio.FloatBuffer;
+import java.util.Collections;
+import java.util.LinkedHashMap;
+import java.util.Map;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.Future;
@@ -150,28 +154,34 @@ public class AlphaVideoView extends TextureView implements
     private Future<?> currentLoadTask;
     private volatile Future<?> softReleaseTask;  // Track soft release for synchronization
     
-    // Downloads are shared by all views; decoding is not, so they never queue behind a decode.
-    private static final ExecutorService downloadExecutor = Executors.newFixedThreadPool(4, r -> {
-        Thread t = new Thread(r, "WebMDownload");
-        t.setDaemon(true);
-        return t;
-    });
-    
-    // Probing a file that is still downloading can wait for its first bytes, so not on the main thread.
+    // Opening a reader and probing through it wait on the network, so not on the main thread, and
+    // never behind a decode.
     private static final ExecutorService probeExecutor = Executors.newCachedThreadPool(r -> {
         Thread t = new Thread(r, "WebMProbe");
         t.setDaemon(true);
         return t;
     });
     
-    // Source as given (may be remote), and the local source to load once a surface exists
-    // and again after reattach. Main thread only.
+    // Where what a reader fetches is kept: cacheDir/alpha-video on disk, or the memory store's name
+    private static final String STORE_NAME = "alpha-video";
+    public static final long DEFAULT_MAX_STORAGE_BYTES = 512L * 1024 * 1024;
+    public static final String STORAGE_AUTO = "auto";
+    public static final String STORAGE_DISK = "disk";
+    public static final String STORAGE_MEMORY = "memory";
+    public static final String STORAGE_NONE = "none";
+    
+    // Source as given (may be remote), and the source to load once a surface exists and again
+    // after reattach. Main thread only.
     private String sourceUri = null;
     private String localSource = null;
-    // localSource is a WebMDownloader cache file, read through the download loaders as it arrives
-    private boolean localSourceIsDownload = false;
+    // Set when localSource is read through a range reader (a URL or a data source)
+    private SourceReader reader = null;
     private String cacheKey = null;
-    // Bumped on every setSource so a slow download can't load over a newer source.
+    private Map<String, String> headers = Collections.emptyMap();
+    private String dataSource = null;
+    private String storage = STORAGE_AUTO;
+    private long maxStorageBytes = DEFAULT_MAX_STORAGE_BYTES;
+    // Bumped on every setSource so a slow open can't load over a newer source.
     private int sourceGeneration = 0;
     
     // Callbacks
@@ -410,72 +420,143 @@ public class AlphaVideoView extends TextureView implements
         }
     }
     
-    /** Used for http(s) sources; set it before or together with the source. */
+    /**
+     * Names what the store keeps a URL's bytes under, instead of the URL (for presigned URLs that
+     * change); set it before or together with the source.
+     */
     public void setCacheKey(String cacheKey) {
         this.cacheKey = cacheKey;
     }
     
+    /** Sent with every request for an http(s) source, and given to a data source; null for none. */
+    public void setHeaders(Map<String, String> headers) {
+        this.headers = headers == null || headers.isEmpty()
+            ? Collections.emptyMap() : Collections.unmodifiableMap(new LinkedHashMap<>(headers));
+    }
+    
     /**
-     * Sets the video: {@code https://} (downloaded to the cache), {@code file://}, an absolute
-     * path, {@code asset://} (read from the APK in place) or {@code content://}.
+     * Reads the source through the data source registered under this name
+     * ({@link AlphaVideoDataSources#register}), whatever its scheme; null for the built-in ones.
+     */
+    public void setDataSource(String name) {
+        this.dataSource = name == null || name.isEmpty() ? null : name;
+    }
+    
+    /**
+     * Where a URL's or data source's bytes are kept between plays: {@code "disk"} (in the cache
+     * folder), {@code "memory"} (for the process's lifetime) or {@code "none"}. {@code "auto"}, the
+     * default, is disk for URLs and none for a data source, whose caching is its own. The store is
+     * partial: it keeps what has been played, and a clip held whole plays again offline.
+     */
+    public void setStorage(String storage) {
+        switch (storage == null ? STORAGE_AUTO : storage) {
+            case STORAGE_DISK:
+            case STORAGE_MEMORY:
+            case STORAGE_NONE:
+                this.storage = storage;
+                break;
+            default:
+                this.storage = STORAGE_AUTO;
+        }
+    }
+    
+    /** The cap of this player's store, over every clip in it, least recently played out first. */
+    public void setMaxStorageBytes(long maxStorageBytes) {
+        this.maxStorageBytes = maxStorageBytes > 0 ? maxStorageBytes : DEFAULT_MAX_STORAGE_BYTES;
+    }
+    
+    /**
+     * Sets the video: {@code https://} (read by range as it plays), {@code file://}, an absolute
+     * path, {@code asset://} (read from the APK in place), {@code content://}, or with
+     * {@link #setDataSource} any URI that data source reads.
      */
     public void setSource(String uri) {
         final int generation = ++sourceGeneration;
         sourceUri = uri;
         localSource = null;
-        localSourceIsDownload = false;
+        closeReader();
         // Props arriving in the same update (cacheKey, mode, ...) are applied after this one.
         post(() -> {
             if (generation == sourceGeneration) resolveSource(uri, generation);
         });
     }
     
+    private static boolean isRemote(String uri) {
+        return uri.startsWith("https://") || uri.startsWith("http://");
+    }
+    
     private void resolveSource(String uri, int generation) {
-        if (!WebMDownloader.isRemote(uri)) {
-            showLocalSource(uri);
+        final boolean appSource = dataSource != null;
+        if (!appSource && !isRemote(uri)) {
+            localSource = uri;
+            loadLocalSource();
             return;
         }
         
+        final AlphaVideoDataSource source;
+        if (appSource) {
+            AlphaVideoDataSource.Factory factory = AlphaVideoDataSources.get(dataSource);
+            if (factory == null) {
+                reportError("No data source is registered as \"" + dataSource + "\" (AlphaVideoDataSources.register)");
+                return;
+            }
+            source = factory.create();
+        } else {
+            source = new AlphaVideoHttpDataSource();
+        }
+        final SourceReader.Storage readerStorage = storageFor(appSource);
+        final String storeDir = readerStorage == SourceReader.Storage.DISK
+            ? new File(getContext().getCacheDir(), STORE_NAME).getPath() : STORE_NAME;
+        final String key = cacheKey != null && !cacheKey.isEmpty() ? cacheKey : uri;
+        final Map<String, String> requestHeaders = headers;
+        final long maxBytes = maxStorageBytes;
         // The stream modes start on the first bytes. Preload decodes the whole clip before
-        // showing anything, and would hold the global decode queue for the whole download.
-        final boolean playWhileDownloading = !MODE_PRELOAD.equals(mode);
-        WebMDownloader.fetch(getContext().getApplicationContext(), uri, cacheKey, downloadExecutor,
-            new WebMDownloader.Listener() {
-                @Override
-                public void onReadable(File cacheFile) {
-                    if (!playWhileDownloading) return;
-                    post(() -> {
-                        if (generation == sourceGeneration) showDownload(cacheFile.getPath());
-                    });
+        // showing anything, and would hold the global decode queue for the whole transfer.
+        final boolean fetchFirst = MODE_PRELOAD.equals(mode);
+        probeExecutor.execute(() -> {
+            SourceReader opened = null;
+            String error = null;
+            try {
+                opened = SourceReader.open(source, Uri.parse(uri), requestHeaders, readerStorage, storeDir, key, maxBytes);
+                if (fetchFirst) opened.fetchAll();
+            } catch (IOException e) {
+                error = e.getMessage();
+                if (opened != null) opened.close();
+                opened = null;
+            }
+            final SourceReader result = opened;
+            final String failure = error;
+            post(() -> {
+                if (generation != sourceGeneration) {
+                    if (result != null) result.close();
+                    return;
                 }
-                
-                @Override
-                public void onComplete(File cacheFile) {
-                    if (playWhileDownloading) return;
-                    post(() -> {
-                        if (generation == sourceGeneration) showLocalSource(cacheFile.getAbsolutePath());
-                    });
+                if (result == null) {
+                    reportError("Loading " + uri + " failed: " + failure);
+                    return;
                 }
-                
-                @Override
-                public void onError(String message) {
-                    post(() -> {
-                        if (generation == sourceGeneration) reportError("Download failed: " + message);
-                    });
-                }
+                reader = result;
+                localSource = uri;
+                loadLocalSource();
             });
+        });
     }
     
-    private void showLocalSource(String uri) {
-        localSource = uri;
-        localSourceIsDownload = false;
-        loadLocalSource();
+    private SourceReader.Storage storageFor(boolean appSource) {
+        switch (storage) {
+            case STORAGE_DISK: return SourceReader.Storage.DISK;
+            case STORAGE_MEMORY: return SourceReader.Storage.MEMORY;
+            case STORAGE_NONE: return SourceReader.Storage.NONE;
+            default: return appSource ? SourceReader.Storage.NONE : SourceReader.Storage.DISK;
+        }
     }
     
-    private void showDownload(String path) {
-        localSource = path;
-        localSourceIsDownload = true;
-        loadLocalSource();
+    /** Drops this view's reference; a player still reading keeps the reader until it unloads. */
+    private void closeReader() {
+        if (reader != null) {
+            reader.close();
+            reader = null;
+        }
     }
     
     /** Loads {@link #localSource} if there is one and the surface is ready; otherwise waits for it. */
@@ -486,8 +567,8 @@ public class AlphaVideoView extends TextureView implements
             logV("Deferring load until the surface is ready: " + uri);
             return;
         }
-        if (localSourceIsDownload) {
-            probeDownload(uri);
+        if (reader != null) {
+            probeReader(uri, reader);
             return;
         }
         
@@ -508,13 +589,20 @@ public class AlphaVideoView extends TextureView implements
         loadProbedSource(source, colorAlphaTracks);
     }
     
-    private void probeDownload(String path) {
+    private void probeReader(String uri, SourceReader sourceReader) {
         final int generation = sourceGeneration;
+        final long reference = sourceReader.retain();
+        if (reference == 0) return;
         probeExecutor.execute(() -> {
-            int[] colorAlphaTracks = BufferedDualStreamPlayer.nativeColorAlphaTracksDownload(path);
+            int[] colorAlphaTracks;
+            try {
+                colorAlphaTracks = BufferedDualStreamPlayer.nativeColorAlphaTracksReader(reference);
+            } finally {
+                SourceReader.release(reference);
+            }
             post(() -> {
-                if (generation != sourceGeneration || !path.equals(localSource) || isReleased || !glReady) return;
-                loadProbedSource(WebMSource.download(path), colorAlphaTracks);
+                if (generation != sourceGeneration || sourceReader != reader || isReleased || !glReady) return;
+                loadProbedSource(WebMSource.reader(uri, sourceReader), colorAlphaTracks);
             });
         });
     }
@@ -662,8 +750,8 @@ public class AlphaVideoView extends TextureView implements
             
             // Load the file (creates OES textures in this GL context)
             boolean loaded;
-            if (source.isDownload()) {
-                loaded = bufferedPlayer.loadFromDownload(source.path());
+            if (source.reader() != null) {
+                loaded = bufferedPlayer.loadFromReader(source.reader());
             } else {
                 try (AssetFileDescriptor afd = source.open(getContext())) {
                     loaded = bufferedPlayer.loadFromFd(
@@ -704,8 +792,15 @@ public class AlphaVideoView extends TextureView implements
         
         final Context context = getContext();
         enqueueNativeLoad(() -> {
-            if (source.isDownload()) {
-                return WebMAlphaPlayerNative.nativeLoadFromDownload(playerId, source.path());
+            SourceReader sourceReader = source.reader();
+            if (sourceReader != null) {
+                long reference = sourceReader.retain();
+                if (reference == 0) return false;
+                try {
+                    return WebMAlphaPlayerNative.nativeLoadFromReader(playerId, reference);
+                } finally {
+                    SourceReader.release(reference);
+                }
             }
             try (AssetFileDescriptor afd = source.open(context)) {
                 return WebMAlphaPlayerNative.nativeLoadFromFd(playerId,
@@ -718,6 +813,7 @@ public class AlphaVideoView extends TextureView implements
         ++sourceGeneration;
         sourceUri = null;
         localSource = null;
+        closeReader();
         
         if (isReleased || playerId == 0) {
             Log.w(TAG, "Cannot load from bytes before player is initialized");
@@ -1609,6 +1705,9 @@ public class AlphaVideoView extends TextureView implements
         final long pid = playerId;
         playerId = 0;
         isReleased = true;
+        // A reader still opening is closed when it arrives
+        ++sourceGeneration;
+        closeReader();
         
         cancelNativeLoad();
         
