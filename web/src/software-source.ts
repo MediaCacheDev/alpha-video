@@ -35,17 +35,31 @@ function threadCounts(): [number, number] | null {
   return [Math.min(4, free >> 1), Math.min(2, free >> 2)];
 }
 
-const workerUrls = new Map<boolean, Promise<string>>();
+type WorkerKind = `${StreamInfo['codec']}${'' | '-mt'}`;
 
-/** The decode Worker's script as a blob: URL, once per page per build. */
-function workerUrl(threaded: boolean): Promise<string> {
-  let url = workerUrls.get(threaded);
+/** Each codec's decoder is its own module, loaded only for streams in that codec. */
+function workerScript(kind: WorkerKind): Promise<{ default: string }> {
+  switch (kind) {
+    case 'vp9':
+      return import('./worker/decode-worker-vp9?worker');
+    case 'vp9-mt':
+      return import('./worker/decode-worker-vp9-mt?worker');
+    case 'av1':
+      return import('./worker/decode-worker-av1?worker');
+    case 'av1-mt':
+      return import('./worker/decode-worker-av1-mt?worker');
+  }
+}
+
+const workerUrls = new Map<WorkerKind, Promise<string>>();
+
+/** A decode Worker's script as a blob: URL, once per page per codec and build. */
+function workerUrl(kind: WorkerKind): Promise<string> {
+  let url = workerUrls.get(kind);
   if (!url) {
-    url = (threaded ? import('./worker/decode-worker-mt?worker') : import('./worker/decode-worker?worker')).then((m) =>
-      URL.createObjectURL(new Blob([m.default], { type: 'text/javascript' })),
-    );
-    url.catch(() => workerUrls.delete(threaded));
-    workerUrls.set(threaded, url);
+    url = workerScript(kind).then((m) => URL.createObjectURL(new Blob([m.default], { type: 'text/javascript' })));
+    url.catch(() => workerUrls.delete(kind));
+    workerUrls.set(kind, url);
   }
   return url;
 }
@@ -88,9 +102,11 @@ function startWorker(url: string, stream: StreamInfo, threads: number, alpha: bo
 }
 
 async function startWorkers(info: DemuxInfo, threads: [number, number] | null): Promise<OpenedWorker[]> {
-  const url = await workerUrl(threads !== null);
   const streams = [info.color, info.alpha!];
-  const started = streams.map((stream, i) => startWorker(url, stream, threads?.[i] ?? 1, i === 1));
+  const started = streams.map(async (stream, i) => {
+    const url = await workerUrl(threads ? `${stream.codec}-mt` : stream.codec);
+    return startWorker(url, stream, threads?.[i] ?? 1, i === 1);
+  });
   const results = await Promise.allSettled(started);
   const failed = results.find((r): r is PromiseRejectedResult => r.status === 'rejected');
   if (failed) {

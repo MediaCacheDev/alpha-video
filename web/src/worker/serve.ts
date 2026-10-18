@@ -1,9 +1,9 @@
 /**
- * The decode Worker: one FFmpeg decoder (VP9, or dav1d for AV1) for one stream. Packets come in,
- * frames go out as transferred buffers, which come back for reuse once drawn. Decoding blocks
+ * The decode Worker: one decoder (FFmpeg's for VP9, dav1d for AV1) for one stream. Packets come
+ * in, frames go out as transferred buffers, which come back for reuse once drawn. Decoding blocks
  * this Worker only, never the page.
  */
-import type { DecoderModule } from '../wasm/software.mjs';
+import type { DecoderModule } from '../wasm/decoder-module.mjs';
 import type { DecodedFrame, FromWorker, PlaneLayout, ToWorker, WorkerScope } from './protocol';
 
 const FRAME_NUMBERS = 16;

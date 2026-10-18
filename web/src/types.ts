@@ -39,7 +39,7 @@ export interface AlphaVideoLoadEvent {
   height: number;
   /**
    * `'browser'`, `'webcodecs (vp09.00.10.08)'` with the decoders' codec strings, or
-   * `'software (vp9)'` / `'software (libdav1d)'`
+   * `'software (vp9)'` / `'software (dav1d)'`
    */
   decoder: string;
 }

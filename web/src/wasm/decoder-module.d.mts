@@ -1,5 +1,6 @@
-// Types for software.mjs and software-mt.mjs, which scripts/build_wasm.sh generates from
-// web/wasm/decoder_bindings.cpp
+// Types for the software decoder modules, which scripts/build_wasm.sh generates: software-vp9.mjs
+// from web/wasm/decoder_bindings.cpp, software-av1.mjs from web/wasm/plugin_bindings.cpp, and
+// their threaded builds software-vp9-mt.mjs and software-av1-mt.mjs
 
 export interface DecoderModule {
   readonly wasmMemory: WebAssembly.Memory;
@@ -14,10 +15,10 @@ export interface DecoderModule {
 }
 
 export interface DecoderModuleOptions {
-  /** software-mt.mjs: the script its pthread Workers load, the one that imported it */
+  /** Threaded builds: the script their pthread Workers load, the one that imported the module */
   mainScriptUrlOrBlob?: string;
-  /** software-mt.mjs: pthread Workers started with the module, enough for every decoder thread */
+  /** Threaded builds: pthread Workers started with the module, enough for every decoder thread */
   pthreadPoolSize?: number;
 }
 
-export default function createModule(options?: DecoderModuleOptions): Promise<DecoderModule>;
+export type CreateDecoderModule = (options?: DecoderModuleOptions) => Promise<DecoderModule>;

@@ -16,7 +16,7 @@ npm install alpha-video-web
 2. **`webcodecs`**: the C++ demuxer in WebAssembly reads the file by range and feeds two WebCodecs `VideoDecoder`s, one for colour and one for alpha, and WebGL2 draws the pair with the native players' colour matrix. For dual-stream files, and for every alpha WebM in Safari.
 3. **`software`**: the same demuxer feeding FFmpeg's VP9 decoder and dav1d (AV1) in WebAssembly, for streams WebCodecs can't decode: VP9 profile 1 alpha, the RGB-coded kind, in Safari (no decoder) and Firefox (converts it as if it were YUV). Colour and alpha each decode in their own Web Worker, in parallel and off the page's thread. On a [cross-origin isolated](#threads) page each decoder also runs threads of its own.
 
-The WebAssembly modules are inlined in the package, in their own chunks, and loaded by dynamic `import()` only when an engine needs them: the demuxer (184 KB, 63 KB gzipped) for `webcodecs` and `software`, and for `software` the decode Worker (1.4 MB), or its threaded build (1.6 MB) on cross-origin isolated pages.
+The WebAssembly modules are inlined in the package, in their own chunks, and loaded by dynamic `import()` only when an engine needs them: the demuxer (183 KB, 63 KB gzipped) for `webcodecs` and `software`, and for `software` one decode Worker per codec the file uses, VP9 (1.0 MB, 348 KB gzipped) or AV1 (480 KB, 211 KB gzipped). Cross-origin isolated pages load their threaded builds (1.1 MB and 518 KB).
 
 | | Chromium | Firefox | Safari |
 |---|---|---|---|

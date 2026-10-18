@@ -7,9 +7,11 @@
 #                                 through JavaScript so files stream in by range, and the shared
 #                                 colour conversion (cpp/YuvToRgb), for the WebCodecs and software
 #                                 engines
-#   web/src/wasm/software.mjs     FFmpeg's VP9 decoder and dav1d for AV1, single-threaded, run in
-#                                 a Web Worker per stream by the software engine
-#   web/src/wasm/software-mt.mjs  the same with threads (FFmpeg's frame threads, dav1d's own),
+#   web/src/wasm/software-vp9.mjs FFmpeg's VP9 decoder, single-threaded, run in a Web Worker per
+#                                 stream by the software engine; loaded only for VP9 streams
+#   web/src/wasm/software-av1.mjs dav1d through the av1 codec module's plugin (codecs/av1), as on
+#                                 Android and iOS; no FFmpeg. Loaded only for AV1 streams
+#   web/src/wasm/software-*-mt.mjs the same with threads (FFmpeg's frame threads, dav1d's own),
 #                                 for cross-origin isolated pages, where SharedArrayBuffer exists
 #
 # Needs Emscripten, meson and ninja (brew install emscripten meson ninja).
@@ -78,8 +80,8 @@ endian = 'little'
 EOF
     rm -rf "$BUILD_DIR/$variant-build"
     # Meson's threads dependency always adds -pthread, which needs SharedArrayBuffer at run time;
-    # the cross file adds it for the threaded variant only. Single-threaded, FFmpeg's wrapper is
-    # given one thread, so dav1d starts none.
+    # the cross file adds it for the threaded variant only. Single-threaded, the plugin is given
+    # one thread, so dav1d starts none.
     sed -i '' "s/^    thread_dependency = dependency('threads')$/    thread_dependency = host_machine.system() == 'emscripten' ? declare_dependency() : dependency('threads')/" \
         "$BUILD_DIR/dav1d-$DAV1D_VERSION/meson.build"
     meson setup "$BUILD_DIR/$variant-build" "$BUILD_DIR/dav1d-$DAV1D_VERSION" \
@@ -181,11 +183,8 @@ fi
 
 build_dav1d dav1d
 build_dav1d dav1d-mt -pthread
-# emconfigure points pkg-config at Emscripten's sysroot, adding EM_PKG_CONFIG_PATH
-EM_PKG_CONFIG_PATH="$BUILD_DIR/stage-dav1d/lib/pkgconfig" \
-    build_ffmpeg software --disable-avformat --enable-decoder=vp9,libdav1d --enable-libdav1d
-EM_PKG_CONFIG_PATH="$BUILD_DIR/stage-dav1d-mt/lib/pkgconfig" \
-    build_ffmpeg software-mt --disable-avformat --enable-decoder=vp9,libdav1d --enable-libdav1d \
+build_ffmpeg software-vp9 --disable-avformat --enable-decoder=vp9
+build_ffmpeg software-vp9-mt --disable-avformat --enable-decoder=vp9 \
     --enable-pthreads --extra-cflags=-pthread --extra-ldflags=-pthread
 
 WEBM_PARSER="$PROJECT_DIR/third_party/libwebm/webm_parser"
@@ -195,22 +194,36 @@ link_module demuxer.mjs \
     "$PROJECT_DIR/cpp/Av1SequenceHeader.cpp" "$PROJECT_DIR/cpp/YuvToRgb.cpp" "$WEBM_PARSER"/src/*.cc \
     -sMALLOC=emmalloc -sINITIAL_MEMORY=16777216
 
-# software_module <output> <FFmpeg variant> <dav1d variant> <flags...>
-software_module() {
-    local output=$1 stage="$BUILD_DIR/stage-$2" dav1d="$BUILD_DIR/stage-$3"
-    shift 3
+# vp9_module <output> <FFmpeg variant> <flags...>
+vp9_module() {
+    local output=$1 stage="$BUILD_DIR/stage-$2"
+    shift 2
     link_module "$output" \
         -I"$stage/include" "$PROJECT_DIR/web/wasm/decoder_bindings.cpp" \
-        "$stage/lib/libavcodec.a" "$stage/lib/libavutil.a" "$dav1d/lib/libdav1d.a" \
+        "$stage/lib/libavcodec.a" "$stage/lib/libavutil.a" \
         -sINITIAL_MEMORY=33554432 "$@"
 }
-software_module software.mjs software dav1d -sMALLOC=emmalloc
+
+# av1_module <output> <dav1d variant> <flags...>
+av1_module() {
+    local output=$1 stage="$BUILD_DIR/stage-$2"
+    shift 2
+    link_module "$output" \
+        -I"$PROJECT_DIR/cpp" -I"$PROJECT_DIR/codecs/av1" -I"$stage/include" \
+        "$PROJECT_DIR/web/wasm/plugin_bindings.cpp" "$PROJECT_DIR/codecs/av1/Dav1dDecoderPlugin.cpp" \
+        "$stage/lib/libdav1d.a" \
+        -sINITIAL_MEMORY=33554432 "$@"
+}
+
 # The pool is created when the module starts, sized by its pthreadPoolSize option: a thread
 # started later would wait for a Worker to load while its creator blocks. Running out is an
 # error rather than a hang. Its Workers load mainScriptUrlOrBlob, the decode Worker's own blob:
-# URL, as there is no software-mt.mjs file next to the code.
+# URL, as there is no module file next to the code.
 # Shared memory can't move, so browsers reserve its maximum up front; WebKit runs out of address
 # space after a few at the default 2 GB.
-software_module software-mt.mjs software-mt dav1d-mt \
-    -pthread -sPTHREAD_POOL_SIZE=Module.pthreadPoolSize -sPTHREAD_POOL_SIZE_STRICT=2 \
-    -sINCOMING_MODULE_JS_API=mainScriptUrlOrBlob -sMAXIMUM_MEMORY=1073741824
+THREADED=(-pthread -sPTHREAD_POOL_SIZE=Module.pthreadPoolSize -sPTHREAD_POOL_SIZE_STRICT=2
+    -sINCOMING_MODULE_JS_API=mainScriptUrlOrBlob -sMAXIMUM_MEMORY=1073741824)
+vp9_module software-vp9.mjs software-vp9 -sMALLOC=emmalloc
+vp9_module software-vp9-mt.mjs software-vp9-mt "${THREADED[@]}"
+av1_module software-av1.mjs dav1d -sMALLOC=emmalloc
+av1_module software-av1-mt.mjs dav1d-mt "${THREADED[@]}"

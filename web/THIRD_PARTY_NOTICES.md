@@ -1,12 +1,12 @@
 # Third-party notices
 
-The code of alpha-video-web is MIT-licensed (see `LICENSE`). Its WebAssembly modules, inlined in `dist/demuxer-*.{js,mjs}` and in the decode Workers `dist/decode-worker-*.{js,mjs}` (single-threaded) and `dist/decode-worker-mt-*.{js,mjs}` (threaded), also contain:
+The code of alpha-video-web is MIT-licensed (see `LICENSE`). Its WebAssembly modules are inlined in `dist/demuxer-*.{js,mjs}` and in the decode Workers, one per codec: `dist/decode-worker-vp9-*.{js,mjs}` and `dist/decode-worker-av1-*.{js,mjs}` (single-threaded), and `dist/decode-worker-vp9-mt-*` and `dist/decode-worker-av1-mt-*` (threaded). A page loads a codec's Worker only to software-decode a stream in that codec. Besides the repository's C++ core (MIT), they contain:
 
 | Component | Version | Licence | In |
 |---|---|---|---|
-| [libwebm](https://chromium.googlesource.com/webm/libwebm)'s WebM parser | commit `6184f448`, unmodified | BSD-3-Clause, plus the WebM patent grant | the demuxer, with the repository's C++ core (`cpp/AlphaDemuxer`, `cpp/YuvToRgb`, MIT) |
-| [FFmpeg](https://ffmpeg.org) | 6.1, unmodified | LGPL-2.1-or-later | the decoders: libavcodec, libavutil |
-| [dav1d](https://code.videolan.org/videolan/dav1d) | 1.5.1, source unmodified | BSD-2-Clause | the decoders; the demuxer, for its AV1 sequence header parser |
+| [libwebm](https://chromium.googlesource.com/webm/libwebm)'s WebM parser | commit `6184f448`, unmodified | BSD-3-Clause, plus the WebM patent grant | the demuxer, with `cpp/AlphaDemuxer`, `cpp/Av1SequenceHeader` and `cpp/YuvToRgb` |
+| [FFmpeg](https://ffmpeg.org) | 6.1, unmodified | LGPL-2.1-or-later | the VP9 Workers only: libavcodec, libavutil |
+| [dav1d](https://code.videolan.org/videolan/dav1d) | 1.5.1, source unmodified | BSD-2-Clause | the AV1 Workers only, with the av1 codec module's adapter (`codecs/av1`) |
 
 Licence texts: `licenses/libwebm-LICENSE.txt`, `licenses/libwebm-PATENTS.txt`, `licenses/LGPL-2.1.txt`, `licenses/FFmpeg-LICENSE.md`, `licenses/dav1d-COPYING.txt`.
 
@@ -14,7 +14,7 @@ The JavaScript also bundles [alpha-video-source](https://github.com/MediaCacheDe
 
 ## What the build contains
 
-`scripts/build_wasm.sh` in the [repository](https://github.com/MediaCacheDev/alpha-video) builds the modules with Emscripten. The demuxer is the C++ core and libwebm's parser, from the repository's `cpp/` and `third_party/libwebm`, linked with dav1d. FFmpeg, in the decoder modules only, is configured with only what the player uses, and with no GPL or LGPL-3.0 code (no `--enable-gpl`, no `--enable-version3`):
+`scripts/build_wasm.sh` in the [repository](https://github.com/MediaCacheDev/alpha-video) builds the modules with Emscripten. The demuxer is the C++ core and libwebm's parser, from the repository's `cpp/` and `third_party/libwebm`. FFmpeg, in the VP9 modules only, is configured with only what the player uses, and with no GPL or LGPL-3.0 code (no `--enable-gpl`, no `--enable-version3`):
 
 ```
 --target-os=none --arch=x86_32 --enable-cross-compile --disable-asm --disable-inline-asm --disable-x86asm
@@ -23,7 +23,7 @@ The JavaScript also bundles [alpha-video-source](https://github.com/MediaCacheDe
 --disable-swresample --disable-swscale --enable-demuxer=matroska,webm --enable-static --disable-shared
 ```
 
-plus `--disable-avformat --enable-decoder=vp9,libdav1d --enable-libdav1d`, and for the threaded module `--enable-pthreads --extra-cflags=-pthread --extra-ldflags=-pthread`. dav1d is built for 8-bit and 10/12-bit video without assembly, tools or tests (`-Denable_asm=false -Dbitdepths=8,16 -Denable_tools=false -Denable_tests=false`), and with `-pthread` for the threaded module. The script edits one line of dav1d's `meson.build` so that Meson doesn't add `-pthread` to the single-threaded build.
+plus `--disable-avformat --enable-decoder=vp9`, and for the threaded module `--enable-pthreads --extra-cflags=-pthread --extra-ldflags=-pthread`. dav1d, in the AV1 modules only, is built for 8-bit and 10/12-bit video without assembly, tools or tests (`-Denable_asm=false -Dbitdepths=8,16 -Denable_tools=false -Denable_tests=false`), and with `-pthread` for the threaded module. The script edits one line of dav1d's `meson.build` so that Meson doesn't add `-pthread` to the single-threaded build.
 
 ## Source code
 
@@ -36,4 +36,4 @@ libwebm's parser is in the repository's `third_party/libwebm`, whose README give
 
 ## Replacing FFmpeg
 
-The decoder modules are separate files in `dist/`, loaded at run time by dynamic `import()`. To use a modified FFmpeg, as LGPL-2.1 allows, rebuild them with `scripts/build_wasm.sh` against your FFmpeg, rebuild the package (`npm run build`, which bundles the decoder modules into the Worker files), and replace the `decode-worker` files.
+The VP9 decoder modules are separate files in `dist/`, loaded at run time by dynamic `import()`. To use a modified FFmpeg, as LGPL-2.1 allows, rebuild them with `scripts/build_wasm.sh` against your FFmpeg, rebuild the package (`npm run build`, which bundles the decoder modules into the Worker files), and replace the `decode-worker-vp9` files.
