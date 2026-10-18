@@ -24,6 +24,17 @@ export type {
   AlphaVideoOptions,
   AlphaVideoPlayer,
   AlphaVideoSource,
+  AlphaVideoStorage,
   Decoder,
   ObjectFit,
 } from './types';
+export { STORAGE_NAMESPACE } from './input';
+export {
+  blobSource,
+  createStore,
+  httpSource,
+  memorySource,
+  HttpSourceError,
+  SourceChangedError,
+} from 'alpha-video-source';
+export type { ByteSource, ByteStore, SourceInfo, StorageKind, HttpSourceOptions } from 'alpha-video-source';

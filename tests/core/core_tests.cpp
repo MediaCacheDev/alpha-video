@@ -225,6 +225,62 @@ struct FrameWaiter {
     }
 };
 
+/**
+ * A file whose bytes arrive only when asked for, as on the web: a read of bytes not yet loaded
+ * answers kPending and records them, and the test loads them before calling the demuxer again.
+ */
+struct HeldBytes {
+    // Small and odd, so pieces end inside element headers and frames
+    static constexpr int64_t kPiece = 97;
+    std::vector<uint8_t> data;
+    std::vector<bool> loaded;
+    int64_t wanted = -1;
+    int pendings = 0;
+
+    explicit HeldBytes(const std::string& path) {
+        std::ifstream in(path, std::ios::binary);
+        data.assign(std::istreambuf_iterator<char>(in), std::istreambuf_iterator<char>());
+        loaded.assign((data.size() + kPiece - 1) / kPiece, false);
+    }
+    /** Loads the piece the last pending read wanted; false if nothing was wanted. */
+    bool loadWanted() {
+        if (wanted < 0) return false;
+        loaded[wanted / kPiece] = true;
+        wanted = -1;
+        return true;
+    }
+};
+
+class HeldSource : public ByteSource {
+public:
+    explicit HeldSource(HeldBytes* bytes) : bytes_(bytes) {}
+    int64_t read(int64_t pos, uint8_t* out, int64_t size) override {
+        const int64_t total = static_cast<int64_t>(bytes_->data.size());
+        if (pos >= total) return 0;
+        if (!bytes_->loaded[pos / HeldBytes::kPiece]) {
+            bytes_->wanted = pos;
+            bytes_->pendings++;
+            return kPending;
+        }
+        const int64_t n = std::min({size, total - pos, (pos / HeldBytes::kPiece + 1) * HeldBytes::kPiece - pos});
+        std::memcpy(out, bytes_->data.data() + pos, n);
+        return n;
+    }
+    int64_t size() const override { return static_cast<int64_t>(bytes_->data.size()); }
+
+private:
+    HeldBytes* bytes_;
+};
+
+/** A packet's identity, to compare two demuxers' output. */
+static std::string describe(const AlphaDemuxer::Packet& p) {
+    uint64_t hash = 1469598103934665603ull;
+    for (int i = 0; i < p.size; i++) hash = (hash ^ p.data[i]) * 1099511628211ull;
+    std::ostringstream s;
+    s << p.stream << "@" << p.ptsUs << (p.key ? "k" : "") << "#" << p.frameIndex << ":" << p.size << ":" << hash;
+    return s.str();
+}
+
 // ---------------------------------------------------------------- tests
 
 static void registerTests() {
@@ -288,6 +344,69 @@ static void registerTests() {
                 std::vector<int64_t> colourKeys2, alphaKeys2;
                 readAll(colourKeys2, alphaKeys2);
                 CHECK(colourKeys2 == colourKeys, "keyframes after seekToStart");
+            }
+        });
+
+        add("demuxer: a source that answers pending gives the same packets and seeks", [](const Fixture& fx) {
+            std::unique_ptr<AlphaDemuxer> plain = AlphaDemuxer::open(openFile(fx.path));
+            CHECK(plain != nullptr, "open");
+            HeldBytes bytes(fx.path);
+            std::unique_ptr<AlphaDemuxer> held = AlphaDemuxer::create(std::make_unique<HeldSource>(&bytes));
+            AlphaDemuxer::Progress progress;
+            while ((progress = held->tryOpen()) == AlphaDemuxer::Progress::kPending) CHECK(bytes.loadWanted(), "pending, wanting nothing");
+            CHECK(progress == AlphaDemuxer::Progress::kDone, "tryOpen failed");
+            const AlphaDemuxer::Info& a = plain->info();
+            const AlphaDemuxer::Info& b = held->info();
+            CHECK(a.width == b.width && a.height == b.height && a.totalFrames == b.totalFrames && a.frameRate == b.frameRate &&
+                      a.durationUs == b.durationUs && a.hasAlpha == b.hasAlpha && a.alphaInBlockAdditional == b.alphaInBlockAdditional &&
+                      a.color.bitDepth == b.color.bitDepth && a.color.colorSpace == b.color.colorSpace,
+                  "info differs");
+
+            // Up to `count` packets, each loading what it waits for
+            auto readHeld = [&](int count) {
+                std::vector<std::string> out;
+                AlphaDemuxer::Packet p;
+                while (static_cast<int>(out.size()) < count) {
+                    if (held->readPacket(&p)) {
+                        out.push_back(describe(p));
+                    } else if (held->pending()) {
+                        CHECK(bytes.loadWanted(), "pending, wanting nothing");
+                    } else {
+                        CHECK(!held->failed(), "failed");
+                        break;
+                    }
+                }
+                return out;
+            };
+            auto readPlain = [&](int count) {
+                std::vector<std::string> out;
+                AlphaDemuxer::Packet p;
+                while (static_cast<int>(out.size()) < count && plain->readPacket(&p)) out.push_back(describe(p));
+                return out;
+            };
+            auto seekHeld = [&](int64_t us) {
+                held->seekToTimeUs(us);
+                while (held->pending()) {
+                    CHECK(bytes.loadWanted(), "pending, wanting nothing");
+                    held->seekToTimeUs(us);
+                }
+            };
+
+            const int everything = std::numeric_limits<int>::max();
+            CHECK(readHeld(everything) == readPlain(everything), "packets differ");
+            CHECK(bytes.pendings * HeldBytes::kPiece * 2 > static_cast<int64_t>(bytes.data.size()), bytes.pendings << " pending reads");
+
+            // Fresh demuxers, so seeks find the keyframes from the Cues and scans, not from a read-through
+            plain = AlphaDemuxer::open(openFile(fx.path));
+            std::fill(bytes.loaded.begin(), bytes.loaded.end(), false);
+            held = AlphaDemuxer::create(std::make_unique<HeldSource>(&bytes));
+            while (held->tryOpen() == AlphaDemuxer::Progress::kPending) bytes.loadWanted();
+            const int64_t frameUs = static_cast<int64_t>(1e6 / fx.card.fps);
+            for (int frame : {37, 5, 59, 0, 31}) {
+                const int64_t us = frame * frameUs;
+                plain->seekToTimeUs(us);
+                seekHeld(us);
+                CHECK(readHeld(6) == readPlain(6), "after seeking to frame " << frame);
             }
         });
 

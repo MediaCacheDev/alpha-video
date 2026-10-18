@@ -13,12 +13,16 @@ namespace webm {
  */
 class ByteSource {
 public:
+    /** What read() returns when the bytes at `pos` aren't there yet and it won't wait for them. */
+    static constexpr int64_t kPending = -2;
+
     virtual ~ByteSource() = default;
 
     /**
      * Reads up to `size` bytes at `pos` into `out` and returns how many it read: fewer near the
      * end, 0 at or past the end, -1 on an error. A download returns once some bytes at `pos`
-     * have arrived.
+     * have arrived. A source that can't wait (the web's, which fetches asynchronously) returns
+     * kPending instead; the demuxer then stops, and carries on when called again.
      */
     virtual int64_t read(int64_t pos, uint8_t* out, int64_t size) = 0;
 

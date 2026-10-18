@@ -1,3 +1,4 @@
+import type { ByteSource, ByteStore, StorageKind } from 'alpha-video-source';
 import type { AlphaVideoError } from './errors';
 
 /**
@@ -15,8 +16,20 @@ import type { AlphaVideoError } from './errors';
  */
 export type Decoder = 'auto' | 'browser' | 'webcodecs' | 'webcodecs-hw' | 'webcodecs-sw' | 'software';
 
-/** A URL (fetched with CORS when it isn't same-origin, unless `<video>` plays it), or the file itself. */
-export type AlphaVideoSource = string | Blob | ArrayBuffer | Uint8Array;
+/**
+ * A URL (fetched with CORS when it isn't same-origin, unless `<video>` plays it), the file itself
+ * (a Blob or File, or its bytes), or a ByteSource that reads it by offset (an app's own fetcher
+ * or cache). The canvas engines read it by range as they play, so a long clip starts at once and
+ * a seek fetches only what it needs; `<video>` loads a URL itself.
+ */
+export type AlphaVideoSource = string | Blob | ArrayBuffer | Uint8Array | ByteSource;
+
+/**
+ * Where the canvas engines keep a URL's bytes between plays: 'auto' (OPFS, else IndexedDB),
+ * 'opfs', 'indexeddb', 'cache' (the Cache API), 'memory' (this page only), 'none', or your own
+ * store.
+ */
+export type AlphaVideoStorage = StorageKind | ByteStore;
 
 export type ObjectFit = 'contain' | 'cover' | 'fill';
 
@@ -45,6 +58,24 @@ export interface AlphaVideoOptions {
   objectFit?: ObjectFit;
   /** Passed to fetch() when the engine needs the file's bytes, e.g. `{ credentials: 'include' }` */
   fetchInit?: RequestInit;
+  /**
+   * Sent with every request for a URL, e.g. Authorization (merged over `fetchInit.headers`).
+   * `<video>` can't send headers, so with them it plays the file from memory once fetched.
+   */
+  headers?: Record<string, string>;
+  /**
+   * Names the stored copy, for URLs that change while the file doesn't (presigned URLs).
+   * Defaults to the URL. A Blob or ByteSource is stored only with storage set and a cacheKey.
+   */
+  cacheKey?: string;
+  /**
+   * Where the canvas engines keep a URL's bytes between plays, read back by range (`<video>`
+   * uses the browser's HTTP cache). Default: 'auto' for URLs, 'none' for the rest. With
+   * 'none', a clip under 16 MB still stays in memory for loops.
+   */
+  storage?: AlphaVideoStorage;
+  /** Cap on the bytes stored across every clip, evicting the least recently played. Default: 512 MB */
+  maxStorageBytes?: number;
   onLoad?: (event: AlphaVideoLoadEvent) => void;
   onError?: (error: AlphaVideoError) => void;
   /** The end of a clip that doesn't loop */

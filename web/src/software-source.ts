@@ -4,7 +4,7 @@
  * own Worker, so the two decode in parallel and the page stays free. On a cross-origin isolated
  * page the decoders also run threads of their own.
  */
-import { WasmDemuxer, type DemuxInfo, type StreamInfo } from './demuxer';
+import { isAbort, type DemuxInfo, type DemuxPacket, type StreamInfo, type WasmDemuxer } from './demuxer';
 import { AlphaVideoError } from './errors';
 import { insertByTimestamp, type FramePair, type PairSource, type Planes, type SourceCallbacks } from './source';
 import type { DecodedFrame, FromWorker, ToWorker } from './worker/protocol';
@@ -119,6 +119,10 @@ export class SoftwareSource implements PairSource {
   private lastPtsUs = 0;
   private dropBeforeUs = -Infinity;
   private closed = false;
+  private pumping = false;
+  private pumpAgain = false;
+  /** A seek for the feed loop to make before reading on */
+  private seekTo: number | null = null;
 
   private constructor(demuxer: WasmDemuxer, opened: OpenedWorker[], threads: [number, number] | null, loop: boolean, callbacks: SourceCallbacks) {
     this.demuxer = demuxer;
@@ -140,32 +144,24 @@ export class SoftwareSource implements PairSource {
   }
 
   /**
-   * Opens `bytes`, a whole WebM with alpha: the demuxer here, a decode Worker per stream.
-   * Threaded where the page allows it, else (or if that fails) single-threaded.
+   * Starts a decode Worker per stream of `demuxer`, which must have alpha, and owns the demuxer
+   * once this resolves; it plays from the start. Threaded where the page allows it, else (or if
+   * that fails) single-threaded.
    */
-  static async create(bytes: Uint8Array, loop: boolean, callbacks: SourceCallbacks): Promise<SoftwareSource> {
-    const demuxer = await WasmDemuxer.open(bytes);
-    if (!demuxer) throw new AlphaVideoError('UNSUPPORTED_FILE', 'Not a WebM with a VP9 or AV1 track');
-    if (!demuxer.info.alpha) {
-      demuxer.close();
-      throw new AlphaVideoError('UNSUPPORTED_FILE', 'The file has no alpha stream');
-    }
+  static async create(demuxer: WasmDemuxer, loop: boolean, callbacks: SourceCallbacks): Promise<SoftwareSource> {
+    if (!demuxer.info.alpha) throw new AlphaVideoError('UNSUPPORTED_FILE', 'The file has no alpha stream');
     let threads = threadCounts();
+    let opened: OpenedWorker[];
     try {
-      let opened: OpenedWorker[];
-      try {
-        opened = await startWorkers(demuxer.info, threads);
-      } catch (e) {
-        if (!threads) throw e;
-        console.warn(`alpha-video-web: the threaded decoders failed (${(e as Error)?.message ?? e}); decoding single-threaded`);
-        threads = null;
-        opened = await startWorkers(demuxer.info, null);
-      }
-      return new SoftwareSource(demuxer, opened, threads, loop, callbacks);
+      opened = await startWorkers(demuxer.info, threads);
     } catch (e) {
-      demuxer.close();
-      throw e;
+      if (!threads) throw e;
+      console.warn(`alpha-video-web: the threaded decoders failed (${(e as Error)?.message ?? e}); decoding single-threaded`);
+      threads = null;
+      opened = await startWorkers(demuxer.info, null);
     }
+    demuxer.seekToStart();
+    return new SoftwareSource(demuxer, opened, threads, loop, callbacks);
   }
 
   yuvToRgb(colorRange: number, colorSpace: number): Float32Array {
@@ -177,9 +173,16 @@ export class SoftwareSource implements PairSource {
   }
 
   pump(): void {
-    while (!this.closed && !this.inputDone && this.queued[0] < MAX_QUEUED && this.queued[1] < MAX_QUEUED && this.ahead() < MAX_AHEAD) {
-      this.step();
+    if (this.closed) return;
+    if (this.pumping) {
+      this.pumpAgain = true;
+      return;
     }
+    this.pumping = true;
+    void this.feedLoop().finally(() => {
+      this.pumping = false;
+      if (this.pumpAgain) this.pump();
+    });
   }
 
   nextTimestampUs(): number | null {
@@ -204,7 +207,8 @@ export class SoftwareSource implements PairSource {
     this.discardDecoded();
     this.generation++;
     for (const worker of this.workers) this.post(worker, { t: 'flush', generation: this.generation });
-    this.demuxer.seekToTimeUs(fileTimeUs);
+    this.seekTo = fileTimeUs;
+    this.demuxer.interrupt();
     this.dropBeforeUs = this.epochUs + fileTimeUs - 1000;
     this.pump();
     return this.epochUs + fileTimeUs;
@@ -230,12 +234,36 @@ export class SoftwareSource implements PairSource {
     return this.ready.length + this.outputs[0].length + this.queued[0];
   }
 
-  private step(): void {
-    const packet = this.demuxer.read();
-    if (!packet) {
-      this.endOfFile();
-      return;
+  /** The only caller of the demuxer while playing, so its reads and seeks never overlap. */
+  private async feedLoop(): Promise<void> {
+    try {
+      for (;;) {
+        this.pumpAgain = false;
+        if (this.closed) return;
+        if (this.seekTo !== null) {
+          const timeUs = this.seekTo;
+          this.seekTo = null;
+          await this.demuxer.seekToTimeUs(timeUs);
+          continue;
+        }
+        if (this.inputDone || this.queued[0] >= MAX_QUEUED || this.queued[1] >= MAX_QUEUED || this.ahead() >= MAX_AHEAD) return;
+        const packet = await this.demuxer.read();
+        // Read before a seek that came while it was on its way
+        if (this.closed || this.seekTo !== null) continue;
+        if (packet) this.send(packet);
+        else this.endOfFile();
+      }
+    } catch (e) {
+      if (this.closed) return;
+      if (isAbort(e) && this.seekTo !== null) {
+        this.pumpAgain = true;
+        return;
+      }
+      this.fail(e instanceof AlphaVideoError ? e : new AlphaVideoError('LOAD_FAILED', String((e as Error)?.message ?? e)));
     }
+  }
+
+  private send(packet: DemuxPacket): void {
     const stream = packet.stream;
     if (this.needKey[stream]) {
       if (!packet.key) return;

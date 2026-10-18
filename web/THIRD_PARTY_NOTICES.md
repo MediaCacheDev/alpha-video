@@ -4,14 +4,17 @@ The code of alpha-video-web is MIT-licensed (see `LICENSE`). Its WebAssembly mod
 
 | Component | Version | Licence | In |
 |---|---|---|---|
-| [FFmpeg](https://ffmpeg.org) | 6.1, unmodified | LGPL-2.1-or-later | the demuxer: libavformat, libavcodec, libavutil; the decoders: libavcodec, libavutil |
-| [dav1d](https://code.videolan.org/videolan/dav1d) | 1.5.1, source unmodified | BSD-2-Clause | the decoders |
+| [libwebm](https://chromium.googlesource.com/webm/libwebm)'s WebM parser | commit `6184f448`, unmodified | BSD-3-Clause, plus the WebM patent grant | the demuxer, with the repository's C++ core (`cpp/AlphaDemuxer`, `cpp/YuvToRgb`, MIT) |
+| [FFmpeg](https://ffmpeg.org) | 6.1, unmodified | LGPL-2.1-or-later | the decoders: libavcodec, libavutil |
+| [dav1d](https://code.videolan.org/videolan/dav1d) | 1.5.1, source unmodified | BSD-2-Clause | the decoders; the demuxer, for its AV1 sequence header parser |
 
-Licence texts: `licenses/LGPL-2.1.txt`, `licenses/FFmpeg-LICENSE.md`, `licenses/dav1d-COPYING.txt`.
+Licence texts: `licenses/libwebm-LICENSE.txt`, `licenses/libwebm-PATENTS.txt`, `licenses/LGPL-2.1.txt`, `licenses/FFmpeg-LICENSE.md`, `licenses/dav1d-COPYING.txt`.
+
+The JavaScript also bundles [alpha-video-source](https://github.com/MediaCacheDev/alpha-video-source) (MIT, by the same author), which reads files by range and keeps them in the browser's storage.
 
 ## What the build contains
 
-`scripts/build_wasm.sh` in the [repository](https://github.com/MediaCacheDev/alpha-video) builds the modules with Emscripten. FFmpeg is configured with only what the player uses, and with no GPL or LGPL-3.0 code (no `--enable-gpl`, no `--enable-version3`):
+`scripts/build_wasm.sh` in the [repository](https://github.com/MediaCacheDev/alpha-video) builds the modules with Emscripten. The demuxer is the C++ core and libwebm's parser, from the repository's `cpp/` and `third_party/libwebm`, linked with dav1d. FFmpeg, in the decoder modules only, is configured with only what the player uses, and with no GPL or LGPL-3.0 code (no `--enable-gpl`, no `--enable-version3`):
 
 ```
 --target-os=none --arch=x86_32 --enable-cross-compile --disable-asm --disable-inline-asm --disable-x86asm
@@ -20,11 +23,11 @@ Licence texts: `licenses/LGPL-2.1.txt`, `licenses/FFmpeg-LICENSE.md`, `licenses/
 --disable-swresample --disable-swscale --enable-demuxer=matroska,webm --enable-static --disable-shared
 ```
 
-The decoder modules add `--disable-avformat --enable-decoder=vp9,libdav1d --enable-libdav1d`, and the threaded one `--enable-pthreads --extra-cflags=-pthread --extra-ldflags=-pthread`. dav1d is built for 8-bit and 10/12-bit video without assembly, tools or tests (`-Denable_asm=false -Dbitdepths=8,16 -Denable_tools=false -Denable_tests=false`), and with `-pthread` for the threaded module. The script edits one line of dav1d's `meson.build` so that Meson doesn't add `-pthread` to the single-threaded build.
+plus `--disable-avformat --enable-decoder=vp9,libdav1d --enable-libdav1d`, and for the threaded module `--enable-pthreads --extra-cflags=-pthread --extra-ldflags=-pthread`. dav1d is built for 8-bit and 10/12-bit video without assembly, tools or tests (`-Denable_asm=false -Dbitdepths=8,16 -Denable_tools=false -Denable_tests=false`), and with `-pthread` for the threaded module. The script edits one line of dav1d's `meson.build` so that Meson doesn't add `-pthread` to the single-threaded build.
 
 ## Source code
 
-The corresponding source is the upstream release:
+libwebm's parser is in the repository's `third_party/libwebm`, whose README gives the upstream commit. The others are the upstream releases:
 
 | File | SHA-256 |
 |---|---|
@@ -33,4 +36,4 @@ The corresponding source is the upstream release:
 
 ## Replacing FFmpeg
 
-The modules are separate files in `dist/`, loaded at run time by dynamic `import()`. To use a modified FFmpeg, as LGPL-2.1 allows, rebuild them with `scripts/build_wasm.sh` against your FFmpeg, rebuild the package (`npm run build`, which bundles the decoder modules into the Worker files), and replace those files.
+The decoder modules are separate files in `dist/`, loaded at run time by dynamic `import()`. To use a modified FFmpeg, as LGPL-2.1 allows, rebuild them with `scripts/build_wasm.sh` against your FFmpeg, rebuild the package (`npm run build`, which bundles the decoder modules into the Worker files), and replace the `decode-worker` files.

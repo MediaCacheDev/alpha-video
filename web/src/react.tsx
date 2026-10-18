@@ -8,9 +8,9 @@
 import React, { forwardRef, useEffect, useImperativeHandle, useRef } from 'react';
 import type { AlphaVideoError } from './errors';
 import { createAlphaVideo } from './player';
-import type { AlphaVideoLoadEvent, AlphaVideoPlayer, AlphaVideoSource, Decoder, ObjectFit } from './types';
+import type { AlphaVideoLoadEvent, AlphaVideoPlayer, AlphaVideoSource, AlphaVideoStorage, Decoder, ObjectFit } from './types';
 
-export type { AlphaVideoLoadEvent, AlphaVideoSource, Decoder, ObjectFit };
+export type { AlphaVideoLoadEvent, AlphaVideoSource, AlphaVideoStorage, Decoder, ObjectFit };
 
 export interface AlphaVideoProps {
   src: AlphaVideoSource;
@@ -27,6 +27,14 @@ export interface AlphaVideoProps {
   /** default `'contain'` */
   objectFit?: ObjectFit;
   fetchInit?: RequestInit;
+  /** Sent with every request for a URL, e.g. Authorization */
+  headers?: Record<string, string>;
+  /** Names the stored copy, for URLs that change while the file doesn't; defaults to the URL */
+  cacheKey?: string;
+  /** default `'auto'` for URLs, `'none'` for the rest; see {@link AlphaVideoStorage} */
+  storage?: AlphaVideoStorage;
+  /** default 512 MB */
+  maxStorageBytes?: number;
   /** The container's class; the video fills it */
   className?: string;
   style?: React.CSSProperties;
@@ -47,9 +55,29 @@ export interface AlphaVideoRef {
 }
 
 export const AlphaVideo = forwardRef<AlphaVideoRef, AlphaVideoProps>(function AlphaVideo(
-  { src, autoPlay = true, loop = true, paused = false, playbackSpeed = 1, decoder = 'auto', objectFit = 'contain', fetchInit, className, style, onLoad, onError, onEnd },
+  {
+    src,
+    autoPlay = true,
+    loop = true,
+    paused = false,
+    playbackSpeed = 1,
+    decoder = 'auto',
+    objectFit = 'contain',
+    fetchInit,
+    headers,
+    cacheKey,
+    storage,
+    maxStorageBytes,
+    className,
+    style,
+    onLoad,
+    onError,
+    onEnd,
+  },
   ref,
 ) {
+  // Headers are usually a new object each render; a new player only when they change
+  const headersKey = headers ? JSON.stringify(headers) : '';
   const containerRef = useRef<HTMLDivElement>(null);
   const playerRef = useRef<AlphaVideoPlayer | null>(null);
   const callbacks = useRef({ onLoad, onError, onEnd });
@@ -80,6 +108,10 @@ export const AlphaVideo = forwardRef<AlphaVideoRef, AlphaVideoProps>(function Al
       decoder,
       objectFit,
       fetchInit,
+      headers,
+      cacheKey,
+      storage,
+      maxStorageBytes,
       onLoad: (e) => callbacks.current.onLoad?.(e),
       onError: (e) => callbacks.current.onError?.(e),
       onEnd: () => callbacks.current.onEnd?.(),
@@ -91,7 +123,7 @@ export const AlphaVideo = forwardRef<AlphaVideoRef, AlphaVideoProps>(function Al
     };
     // A new player for a new file or engine; the other props are applied to the running one
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [src, decoder, objectFit]);
+  }, [src, decoder, objectFit, headersKey, cacheKey, storage, maxStorageBytes]);
 
   const first = useRef(true);
   useEffect(() => {

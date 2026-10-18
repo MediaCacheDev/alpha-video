@@ -22,7 +22,12 @@ const MEDIA = resolve(dir);
 const files = readdirSync(MEDIA).filter((f) => f.endsWith('.webm')).sort();
 
 await build({
-  stdin: { contents: "export { SoftwareSource } from './src/software-source';", resolveDir: WEB, loader: 'ts' },
+  stdin: {
+    contents:
+      "export { SoftwareSource } from './src/software-source'; export { WasmDemuxer } from './src/demuxer'; export { memorySource, openReader } from 'alpha-video-source';",
+    resolveDir: WEB,
+    loader: 'ts',
+  },
   bundle: true,
   format: 'esm',
   splitting: true,
@@ -55,8 +60,9 @@ for (const name of only ? only.split(',') : Object.keys(types)) {
   console.log(`\n${name} ${browser.version()}, cross-origin isolated: ${await page.evaluate(() => crossOriginIsolated)}`);
   for (const file of files) {
     const r = await page.evaluate(async (src) => {
-      const { SoftwareSource } = await import('/test/browsers/build/throughput/stdin.js');
+      const { SoftwareSource, WasmDemuxer, memorySource, openReader } = await import('/test/browsers/build/throughput/stdin.js');
       const bytes = new Uint8Array(await (await fetch(src)).arrayBuffer());
+      const demuxer = await WasmDemuxer.open(await openReader(memorySource(bytes)));
       let source;
       let pairs = 0;
       let start = 0;
@@ -72,7 +78,7 @@ for (const name of only ? only.split(',') : Object.keys(types)) {
           },
           onError: (e) => resolve({ error: e.message }),
         };
-        SoftwareSource.create(bytes, false, callbacks).then(
+        SoftwareSource.create(demuxer, false, callbacks).then(
           (s) => {
             source = s;
             start = performance.now();

@@ -35,6 +35,10 @@ export interface AlphaVideoSource {
    * Image.resolveAssetSource(require(...)).uri
    */
   uri: string;
+  /** Names the cached copy, for URLs that change while the file doesn't (presigned URLs); same as the `cacheKey` prop */
+  cacheKey?: string;
+  /** Web: sent with every request for the URL, e.g. Authorization */
+  headers?: Record<string, string>;
 }
 
 /**
@@ -222,7 +226,7 @@ const NativePlayer = forwardRef<AlphaVideoViewRef, AlphaVideoViewProps>(
         loop={props.loop}
         paused={props.paused}
         playbackSpeed={props.playbackSpeed}
-        cacheKey={props.cacheKey}
+        cacheKey={props.source?.cacheKey || props.cacheKey}
         mode={resolveMode(props.mode, props.stream)}
         decoder={props.decoder}
         streamCacheSize={props.streamCacheSize}

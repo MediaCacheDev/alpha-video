@@ -32,7 +32,7 @@ constexpr size_t kFrameRateSamples = 32;
 constexpr uint64_t kProbeBytes = 5000000;
 
 // webm_parser's Reader over a ByteSource. Buffered: the parser reads element headers a few bytes
-// at a time.
+// at a time. A source's kPending is the parser's kWouldBlock, from which it resumes.
 class SourceReader : public Reader {
 public:
     explicit SourceReader(ByteSource* source) : source_(source), buffer_(new uint8_t[kReadBufferSize]) {}
@@ -71,11 +71,19 @@ public:
     void seek(uint64_t pos) {
         pos_ = pos;
         failed_ = false;
+        pending_ = false;
     }
     bool failed() const { return failed_; }
+    // Whether the last read found the source without the bytes yet
+    bool pending() const { return pending_; }
+    void clearPending() { pending_ = false; }
 
 private:
     Status advance(int64_t n, std::size_t wanted, std::uint64_t* numActuallyRead) {
+        if (n == ByteSource::kPending) {
+            pending_ = true;
+            return Status(Status::kWouldBlock);
+        }
         if (n < 0) failed_ = true;
         if (n <= 0) return Status(Status::kEndOfFile);
         pos_ += static_cast<uint64_t>(n);
@@ -89,6 +97,7 @@ private:
     uint64_t bufferSize_ = 0;
     uint64_t pos_ = 0;
     bool failed_ = false;
+    bool pending_ = false;
 };
 
 // a / d rounded to nearest, halves away from zero (FFmpeg's AV_ROUND_NEAR_INF), for d > 0.
@@ -250,10 +259,11 @@ public:
     explicit Impl(std::unique_ptr<ByteSource> source)
         : source_(std::move(source)), reader_(source_.get()) {}
 
-    bool open();
+    AlphaDemuxer::Progress tryOpen();
     const AlphaDemuxer::Info& info() const { return info_; }
     bool readPacket(AlphaDemuxer::Packet* out);
     bool failed() const { return reader_.failed(); }
+    bool pending() const { return pending_; }
     void seekToStart();
     void seekToTimeUs(int64_t timeUs);
 
@@ -307,7 +317,13 @@ private:
         bool key;
     };
 
-    bool feed();
+    enum class Fed {
+        kPaused,   // A callback paused the parser
+        kPending,  // The source doesn't have the next bytes yet
+        kEnded,    // The end of the file, or an error
+    };
+
+    Fed feed();
     void restartAt(int64_t position);
     bool probeComplete() const;
     void buildInfo();
@@ -315,8 +331,8 @@ private:
                                           Vp9Header* vp9) const;
     bool findKeyframe(int64_t ticks, std::map<int64_t, uint64_t>::const_iterator* out);
     std::map<int64_t, uint64_t>::const_iterator keyframeAtOrBefore(int64_t ticks) const;
-    void scan(uint64_t from, int64_t untilTicks);
-    void loadCues();
+    bool scan(uint64_t from, int64_t untilTicks);
+    bool loadCues();
     void addCuePoint(const CuePoint& cuePoint);
 
     void beginBlock(uint64_t trackNumber, int16_t timecode);
@@ -331,6 +347,8 @@ private:
     SourceReader reader_;
     WebmParser parser_;
     bool ended_ = false;
+    bool opened_ = false;
+    bool pending_ = false;  // The last call stopped at a kPending read
     Mode mode_ = Mode::kProbe;
     AlphaDemuxer::Info info_;
 
@@ -394,15 +412,17 @@ int64_t AlphaDemuxer::Impl::usToTicks(int64_t us) const {
     return std::llround(static_cast<double>(us) * 1000.0 / static_cast<double>(timecodeScale_));
 }
 
-// Feeds the parser until a callback pauses it (true), or the file ends or can't be read (false).
-bool AlphaDemuxer::Impl::feed() {
-    if (ended_) return false;
+// Feeds the parser until a callback pauses it, the source has no more bytes yet, or the file
+// ends or can't be read.
+AlphaDemuxer::Impl::Fed AlphaDemuxer::Impl::feed() {
+    if (ended_) return Fed::kEnded;
+    reader_.clearPending();
     const Status status = parser_.Feed(this, &reader_);
-    if (status.code == Status::kWouldBlock) return true;
+    if (status.code == Status::kWouldBlock) return reader_.pending() ? Fed::kPending : Fed::kPaused;
     ended_ = true;
     // Read through from the start: every keyframe is indexed
     if (status.completed_ok() && readingFromStart_) indexedUpTo_ = std::numeric_limits<int64_t>::max();
-    return false;
+    return Fed::kEnded;
 }
 
 void AlphaDemuxer::Impl::restartAt(int64_t position) {
@@ -424,8 +444,12 @@ void AlphaDemuxer::Impl::restartAt(int64_t position) {
 }
 
 bool AlphaDemuxer::Impl::readPacket(AlphaDemuxer::Packet* out) {
+    pending_ = false;
     while (queue_.empty()) {
-        if (!feed()) return false;
+        const Fed fed = feed();
+        if (fed == Fed::kPaused) continue;
+        pending_ = fed == Fed::kPending;
+        return false;
     }
     current_ = std::move(queue_.front());
     queue_.pop_front();
@@ -449,20 +473,23 @@ bool AlphaDemuxer::Impl::probeComplete() const {
            (!needFrameRate || colourPtsSamples_.size() >= kFrameRateSamples);
 }
 
-bool AlphaDemuxer::Impl::open() {
-    mode_ = Mode::kProbe;
+AlphaDemuxer::Progress AlphaDemuxer::Impl::tryOpen() {
+    if (opened_) return AlphaDemuxer::Progress::kDone;
     // The parser pauses once the first packets are kept, or at the first cluster if there's no track
     while (!probeComplete()) {
-        if (!feed() || !colour_.number) break;
+        const Fed fed = feed();
+        if (fed == Fed::kPending) return AlphaDemuxer::Progress::kPending;
+        if (fed == Fed::kEnded || !colour_.number) break;
     }
-    if (!colour_.number) return false;
+    if (!colour_.number) return AlphaDemuxer::Progress::kFailed;
     buildInfo();
     firstColourPacket_ = {};
     firstAlphaPacket_ = {};
     colourPtsSamples_ = {};
     mode_ = Mode::kPackets;
     seekToStart();
-    return true;
+    opened_ = true;
+    return AlphaDemuxer::Progress::kDone;
 }
 
 AlphaDemuxer::StreamInfo AlphaDemuxer::Impl::streamInfoOf(const Track& track, const std::vector<uint8_t>& firstPacket,
@@ -550,8 +577,11 @@ void AlphaDemuxer::Impl::seekToStart() {
 }
 
 void AlphaDemuxer::Impl::seekToTimeUs(int64_t timeUs) {
+    pending_ = false;
     std::map<int64_t, uint64_t>::const_iterator keyframe;
-    if (!findKeyframe(usToTicks(timeUs), &keyframe)) {
+    const bool found = findKeyframe(usToTicks(timeUs), &keyframe);
+    if (pending_) return;
+    if (!found) {
         restartAt(firstClusterPosition_);
         readingFromStart_ = true;
         return;
@@ -568,15 +598,16 @@ std::map<int64_t, uint64_t>::const_iterator AlphaDemuxer::Impl::keyframeAtOrBefo
     return --it;
 }
 
+// False if no keyframe is known, or if reading stopped at a kPending read (pending_).
 bool AlphaDemuxer::Impl::findKeyframe(int64_t ticks, std::map<int64_t, uint64_t>::const_iterator* out) {
     const bool pastIndexed = indexedUpTo_ == kNone || ticks > indexedUpTo_;
-    if (pastIndexed && !cuesLoaded_) loadCues();
+    if (pastIndexed && !cuesLoaded_ && !loadCues()) return false;
     // Past the last keyframe known, there may be later ones that aren't
     if (pastIndexed &&
         (keyframes_.empty() || std::next(keyframeAtOrBefore(ticks)) == keyframes_.end())) {
         const uint64_t from = keyframes_.empty() ? static_cast<uint64_t>(firstClusterPosition_)
                                                  : keyframeAtOrBefore(ticks)->second;
-        scan(from, ticks);
+        if (!scan(from, ticks)) return false;
     }
     if (keyframes_.empty()) return false;
     *out = keyframeAtOrBefore(ticks);
@@ -584,25 +615,34 @@ bool AlphaDemuxer::Impl::findKeyframe(int64_t ticks, std::map<int64_t, uint64_t>
 }
 
 // Reads on from the cluster at `from` until a colour block after `untilTicks`, indexing keyframes.
-void AlphaDemuxer::Impl::scan(uint64_t from, int64_t untilTicks) {
-    if (firstClusterPosition_ < 0) return;
+// False if it stopped at a kPending read; the keyframes found up to there are kept.
+bool AlphaDemuxer::Impl::scan(uint64_t from, int64_t untilTicks) {
+    if (firstClusterPosition_ < 0) return true;
     restartAt(static_cast<int64_t>(from));
     mode_ = Mode::kScan;
     scanUntil_ = untilTicks;
     scanStopped_ = false;
-    while (!scanStopped_ && feed()) {}
+    Fed fed = Fed::kPaused;
+    while (!scanStopped_ && (fed = feed()) == Fed::kPaused) {}
     mode_ = Mode::kPackets;
+    pending_ = fed == Fed::kPending;
+    return !pending_;
 }
 
-void AlphaDemuxer::Impl::loadCues() {
+// False if it stopped at a kPending read; the Cues are then read again next time.
+bool AlphaDemuxer::Impl::loadCues() {
     cuesLoaded_ = true;
-    if (cuesPosition_ < 0) return;
+    if (cuesPosition_ < 0) return true;
     SourceReader reader(source_.get());
     reader.seek(static_cast<uint64_t>(cuesPosition_));
     WebmParser parser;
     parser.DidSeek();
     CuesCallback callback(this);
     parser.Feed(&callback, &reader);
+    if (!reader.pending()) return true;
+    cuesLoaded_ = false;
+    pending_ = true;
+    return false;
 }
 
 Status AlphaDemuxer::Impl::CuesCallback::OnElementBegin(const ElementMetadata& metadata, Action* action) {
@@ -838,10 +878,14 @@ AlphaDemuxer::AlphaDemuxer(std::unique_ptr<Impl> impl) : impl_(std::move(impl)) 
 AlphaDemuxer::~AlphaDemuxer() = default;
 
 std::unique_ptr<AlphaDemuxer> AlphaDemuxer::open(std::unique_ptr<ByteSource> source) {
+    std::unique_ptr<AlphaDemuxer> demuxer = create(std::move(source));
+    if (!demuxer || demuxer->tryOpen() != Progress::kDone) return nullptr;
+    return demuxer;
+}
+
+std::unique_ptr<AlphaDemuxer> AlphaDemuxer::create(std::unique_ptr<ByteSource> source) {
     if (!source) return nullptr;
-    auto impl = std::make_unique<Impl>(std::move(source));
-    if (!impl->open()) return nullptr;
-    return std::unique_ptr<AlphaDemuxer>(new AlphaDemuxer(std::move(impl)));
+    return std::unique_ptr<AlphaDemuxer>(new AlphaDemuxer(std::make_unique<Impl>(std::move(source))));
 }
 
 std::vector<int> AlphaDemuxer::colorAlphaTracks(std::unique_ptr<ByteSource> source) {
@@ -857,9 +901,11 @@ std::vector<int> AlphaDemuxer::colorAlphaTracks(std::unique_ptr<ByteSource> sour
     return tracks;
 }
 
+AlphaDemuxer::Progress AlphaDemuxer::tryOpen() { return impl_->tryOpen(); }
 const AlphaDemuxer::Info& AlphaDemuxer::info() const { return impl_->info(); }
 bool AlphaDemuxer::readPacket(Packet* out) { return impl_->readPacket(out); }
 bool AlphaDemuxer::failed() const { return impl_->failed(); }
+bool AlphaDemuxer::pending() const { return impl_->pending(); }
 void AlphaDemuxer::seekToStart() { impl_->seekToStart(); }
 void AlphaDemuxer::seekToTimeUs(int64_t timeUs) { impl_->seekToTimeUs(timeUs); }
 

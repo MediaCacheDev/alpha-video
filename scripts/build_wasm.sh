@@ -3,10 +3,10 @@
 # build_wasm.sh
 # The WebAssembly modules of alpha-video-web (web/), each with its .wasm inlined so the npm
 # package has no files to host:
-#   web/src/wasm/demuxer.mjs      FFmpeg's Matroska demuxer with the web's C++ demuxer over it
-#                                 (web/wasm/AlphaDemuxer, the FFmpeg version of the native one)
-#                                 and the shared colour conversion (cpp/YuvToRgb), for the
-#                                 WebCodecs and software engines
+#   web/src/wasm/demuxer.mjs      the core's demuxer (cpp/AlphaDemuxer, on libwebm's parser), reading
+#                                 through JavaScript so files stream in by range, and the shared
+#                                 colour conversion (cpp/YuvToRgb), for the WebCodecs and software
+#                                 engines
 #   web/src/wasm/software.mjs     FFmpeg's VP9 decoder and dav1d for AV1, single-threaded, run in
 #                                 a Web Worker per stream by the software engine
 #   web/src/wasm/software-mt.mjs  the same with threads (FFmpeg's frame threads, dav1d's own),
@@ -181,7 +181,6 @@ fi
 
 build_dav1d dav1d
 build_dav1d dav1d-mt -pthread
-build_ffmpeg demuxer
 # emconfigure points pkg-config at Emscripten's sysroot, adding EM_PKG_CONFIG_PATH
 EM_PKG_CONFIG_PATH="$BUILD_DIR/stage-dav1d/lib/pkgconfig" \
     build_ffmpeg software --disable-avformat --enable-decoder=vp9,libdav1d --enable-libdav1d
@@ -189,11 +188,12 @@ EM_PKG_CONFIG_PATH="$BUILD_DIR/stage-dav1d-mt/lib/pkgconfig" \
     build_ffmpeg software-mt --disable-avformat --enable-decoder=vp9,libdav1d --enable-libdav1d \
     --enable-pthreads --extra-cflags=-pthread --extra-ldflags=-pthread
 
-DEMUXER="$BUILD_DIR/stage-demuxer"
+# dav1d for its AV1 sequence header parser only
+WEBM_PARSER="$PROJECT_DIR/third_party/libwebm/webm_parser"
 link_module demuxer.mjs \
-    -I"$PROJECT_DIR/web/wasm" -I"$PROJECT_DIR/cpp" -I"$DEMUXER/include" \
-    "$PROJECT_DIR/web/wasm/demuxer_bindings.cpp" "$PROJECT_DIR/web/wasm/AlphaDemuxer.cpp" "$PROJECT_DIR/cpp/YuvToRgb.cpp" \
-    "$DEMUXER/lib/libavformat.a" "$DEMUXER/lib/libavcodec.a" "$DEMUXER/lib/libavutil.a" \
+    -I"$PROJECT_DIR/cpp" -I"$WEBM_PARSER" -I"$WEBM_PARSER/include" -I"$BUILD_DIR/stage-dav1d/include" \
+    "$PROJECT_DIR/web/wasm/demuxer_bindings.cpp" "$PROJECT_DIR/cpp/AlphaDemuxer.cpp" "$PROJECT_DIR/cpp/YuvToRgb.cpp" \
+    "$WEBM_PARSER"/src/*.cc "$BUILD_DIR/stage-dav1d/lib/libdav1d.a" \
     -sMALLOC=emmalloc -sINITIAL_MEMORY=16777216
 
 # software_module <output> <FFmpeg variant> <dav1d variant> <flags...>

@@ -33,6 +33,7 @@
     "typecheck": "tsc --noEmit",
     "test": "vitest run",
     "test:browsers": "node test/browsers/run.mjs",
+    "test:streaming": "node test/browsers/streaming.mjs",
     "prepack": "npm run build"
   },
   "keywords": [
@@ -68,6 +69,7 @@
   },
   "devDependencies": {
     "@types/react": "^18.3.31",
+    "alpha-video-source": "file:../../../alpha-video-source/web",
     "playwright": "1.62.1",
     "react": "^18.3.1",
     "tsup": "^8.5.1",

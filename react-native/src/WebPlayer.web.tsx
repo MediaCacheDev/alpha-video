@@ -15,9 +15,11 @@ function toWebUrl(uri: string): string {
 }
 
 export const WebPlayer = forwardRef<AlphaVideoViewRef, AlphaVideoViewProps>((props, ref) => {
-  const { source, autoPlay = true, loop = true, paused = false, playbackSpeed = 1, webDecoder = 'auto' } = props;
+  const { source, autoPlay = true, loop = true, paused = false, playbackSpeed = 1, webDecoder = 'auto', cacheKey } = props;
   const { style, onLoad, onError, onEnd } = props;
   const uri = source?.uri;
+  // Streamed by range from http(s) URLs and kept in the browser's storage (OPFS, else IndexedDB)
+  // by the canvas engines; <video> uses the HTTP cache
 
   return (
     <View style={[styles.container, style]}>
@@ -30,6 +32,8 @@ export const WebPlayer = forwardRef<AlphaVideoViewRef, AlphaVideoViewProps>((pro
           paused={paused}
           playbackSpeed={playbackSpeed}
           decoder={webDecoder}
+          headers={source.headers}
+          cacheKey={source.cacheKey || cacheKey}
           style={fill}
           onLoad={({ totalFrames, width, height, decoder }) => onLoad?.({ totalFrames, width, height, decoder })}
           onError={(error) => onError?.({ error: error.message, code: error.code })}

@@ -42,14 +42,14 @@ target_compile_options(core_tests PRIVATE -Wall)
 target_link_libraries(core_tests PRIVATE alpha_video_core)
 
 if(FFMPEG_FOUND)
-  # The web's demuxer, renamed so that it links beside the core's
-  add_library(web_demuxer STATIC ${ROOT}/web/wasm/AlphaDemuxer.cpp)
-  target_compile_definitions(web_demuxer PRIVATE webm=ffwebm)
-  target_link_libraries(web_demuxer PUBLIC PkgConfig::FFMPEG)
+  # The FFmpeg demuxer the web used before the core's, renamed so that it links beside the core's
+  add_library(ffmpeg_demuxer STATIC ffmpeg/AlphaDemuxer.cpp)
+  target_compile_definitions(ffmpeg_demuxer PRIVATE webm=ffwebm)
+  target_link_libraries(ffmpeg_demuxer PUBLIC PkgConfig::FFMPEG)
 
   add_executable(demuxer_compare demuxer_compare.cpp
     ${CORE}/AlphaDemuxer.cpp ${CORE}/YuvToRgb.cpp ${CORE}/ByteSource.cpp ${CORE}/GrowingFile.cpp)
   target_include_directories(demuxer_compare PRIVATE ${CORE})
   target_compile_options(demuxer_compare PRIVATE -Wall)
-  target_link_libraries(demuxer_compare PRIVATE web_demuxer webm_parser PkgConfig::CODECS Threads::Threads)
+  target_link_libraries(demuxer_compare PRIVATE ffmpeg_demuxer webm_parser PkgConfig::CODECS Threads::Threads)
 endif()

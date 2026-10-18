@@ -1,15 +1,16 @@
-// Checks the core's demuxer (cpp/AlphaDemuxer, on libwebm) against the web's (web/wasm/AlphaDemuxer,
-// on FFmpeg): the same info, every packet the same, and the same packets after seeks.
+// Checks the core's demuxer (cpp/AlphaDemuxer, on libwebm) against one on FFmpeg's Matroska
+// demuxer (ffmpeg/AlphaDemuxer, which the web used before): the same info, every packet the same,
+// and the same packets after seeks.
 //
 //   demuxer_compare file.webm...
 //
-// The web's demuxer is compiled in namespace ffwebm, so that both fit in one program.
+// The FFmpeg demuxer is compiled in namespace ffwebm, so that both fit in one program.
 
 #include "AlphaDemuxer.h"
 #include "ByteSource.h"
 
 #define webm ffwebm
-#include "../../web/wasm/AlphaDemuxer.h"
+#include "ffmpeg/AlphaDemuxer.h"
 #undef webm
 
 extern "C" {

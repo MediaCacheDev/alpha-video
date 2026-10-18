@@ -9,7 +9,12 @@ import { fileURLToPath } from 'node:url';
 
 const WEB = fileURLToPath(new URL('../..', import.meta.url));
 await build({
-  stdin: { contents: "export { WasmDemuxer } from './src/demuxer'; export { codecString } from './src/codec';", resolveDir: WEB, loader: 'ts' },
+  stdin: {
+    contents:
+      "export { WasmDemuxer } from './src/demuxer'; export { codecString } from './src/codec'; export { memorySource, openReader } from 'alpha-video-source';",
+    resolveDir: WEB,
+    loader: 'ts',
+  },
   bundle: true,
   format: 'esm',
   outfile: join(WEB, 'test/browsers/build/internals.mjs'),
@@ -37,14 +42,14 @@ for (const type of [chromium, firefox, webkit]) {
   await page.goto(`${origin}/test/browsers/page.html`);
   await page.waitForFunction(() => window.ready);
   const out = await page.evaluate(async () => {
-    const { WasmDemuxer, codecString } = await import('/test/browsers/build/internals.mjs');
+    const { WasmDemuxer, codecString, memorySource, openReader } = await import('/test/browsers/build/internals.mjs');
     const results = {};
     for (const file of ['yuva.webm', 'dual_vp9.webm', 'dual_av1_10bit.webm']) {
       const bytes = new Uint8Array(await (await fetch(`/fixtures/card_256x256/${file}`)).arrayBuffer());
-      const d = await WasmDemuxer.open(bytes);
+      const d = await WasmDemuxer.open(await openReader(memorySource(bytes)));
       results[file] = { alphaInfo: { range: d.info.alpha.colorRange, space: d.info.alpha.colorSpace } };
       const first = [null, null];
-      for (let p = d.read(); p && (!first[0] || !first[1]); p = d.read()) if (p.key && !first[p.stream]) first[p.stream] = p;
+      for (let p = await d.read(); p && (!first[0] || !first[1]); p = await d.read()) if (p.key && !first[p.stream]) first[p.stream] = p;
       for (const hw of ['no-preference', 'prefer-hardware', 'prefer-software']) {
         const formats = [];
         for (const s of [0, 1]) {

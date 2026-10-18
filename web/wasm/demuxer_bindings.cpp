@@ -1,80 +1,43 @@
-// The WebAssembly API of alpha-video-web's demuxer: AlphaDemuxer (FFmpeg's Matroska demuxer, next
-// to this file) and cpp/YuvToRgb over a file held in WebAssembly memory. Plain C exports;
-// src/wasm/demuxer.ts wraps them.
+// The WebAssembly API of alpha-video-web's demuxer: the core's AlphaDemuxer (cpp/, on libwebm's
+// webm_parser) reading through JavaScript, and cpp/YuvToRgb. Plain C exports; src/demuxer.ts
+// wraps them.
 
 #include "AlphaDemuxer.h"
+#include "ByteSource.h"
 #include "YuvToRgb.h"
 
 #include <emscripten/emscripten.h>
 
-#include <algorithm>
 #include <cstring>
 #include <memory>
 
-extern "C" {
-#include <libavformat/avio.h>
-#include <libavutil/error.h>
-#include <libavutil/mem.h>
-}
+// Module.readSource(source, pos, out, size), set by src/demuxer.ts: copies up to `size` bytes at
+// `pos` of source `source` to `out` and returns how many, 0 at the end, -1 on an error, or -2
+// (ByteSource::kPending) when they aren't in memory yet. It may not wait: JavaScript fetches
+// them, then calls the demuxer again.
+EM_JS(double, avw_source_read, (int source, double pos, uint8_t* out, double size), {
+    return Module.readSource(source, pos, out, size);
+});
 
 namespace {
 
-constexpr int kBufferSize = 32768;
+class JsSource : public webm::ByteSource {
+public:
+    JsSource(int id, int64_t size) : id_(id), size_(size) {}
+    int64_t read(int64_t pos, uint8_t* out, int64_t size) override {
+        return static_cast<int64_t>(avw_source_read(id_, static_cast<double>(pos), out, static_cast<double>(size)));
+    }
+    int64_t size() const override { return size_; }
 
-struct Memory {
-    const uint8_t* data;
-    int64_t size;
-    int64_t pos = 0;
+private:
+    int id_;
+    int64_t size_;
 };
 
-int readMemory(void* opaque, uint8_t* buf, int bufSize) {
-    auto* m = static_cast<Memory*>(opaque);
-    const int64_t remaining = m->size - m->pos;
-    if (remaining <= 0) return AVERROR_EOF;
-    const int n = static_cast<int>(std::min<int64_t>(bufSize, remaining));
-    std::memcpy(buf, m->data + m->pos, n);
-    m->pos += n;
-    return n;
-}
-
-int64_t seekMemory(void* opaque, int64_t offset, int whence) {
-    auto* m = static_cast<Memory*>(opaque);
-    if (whence & AVSEEK_SIZE) return m->size;
-    int64_t target;
-    switch (whence & ~AVSEEK_FORCE) {
-        case SEEK_SET: target = offset; break;
-        case SEEK_CUR: target = m->pos + offset; break;
-        case SEEK_END: target = m->size + offset; break;
-        default: return AVERROR(EINVAL);
-    }
-    if (target < 0 || target > m->size) return AVERROR(EINVAL);
-    m->pos = target;
-    return target;
-}
-
-// The file's bytes, the I/O reading them and the demuxer, freed in reverse order.
 struct Handle {
-    Memory memory;
-    AVIOContext* io = nullptr;
     std::unique_ptr<webm::AlphaDemuxer> demuxer;
     webm::AlphaDemuxer::Packet packet;
-
-    ~Handle() {
-        demuxer.reset();
-        if (io) {
-            av_freep(&io->buffer);
-            avio_context_free(&io);
-        }
-    }
 };
-
-AVIOContext* openMemoryIO(Memory* memory) {
-    auto* buffer = static_cast<uint8_t*>(av_malloc(kBufferSize));
-    if (!buffer) return nullptr;
-    AVIOContext* io = avio_alloc_context(buffer, kBufferSize, 0, memory, readMemory, nullptr, seekMemory);
-    if (!io) av_free(buffer);
-    return io;
-}
 
 void writeStream(const webm::AlphaDemuxer::StreamInfo& s, double* out) {
     out[0] = s.codec;
@@ -91,26 +54,32 @@ void writeStream(const webm::AlphaDemuxer::StreamInfo& s, double* out) {
 
 extern "C" {
 
-/** Opens `size` bytes at `data`, which must stay allocated until avw_close. Returns a handle, or 0. */
-EMSCRIPTEN_KEEPALIVE Handle* avw_open(const uint8_t* data, int size) {
-    auto handle = std::make_unique<Handle>();
-    handle->memory = {data, size};
-    handle->io = openMemoryIO(&handle->memory);
-    if (!handle->io) return nullptr;
-    handle->demuxer = webm::AlphaDemuxer::open(handle->io);
-    if (!handle->demuxer) return nullptr;
-    return handle.release();
+/** A demuxer reading JavaScript source `source`, of `size` bytes (-1 if unknown), not yet open: call avw_try_open. */
+EMSCRIPTEN_KEEPALIVE Handle* avw_create(int source, double size) {
+    auto handle = new Handle;
+    handle->demuxer = webm::AlphaDemuxer::create(std::make_unique<JsSource>(source, static_cast<int64_t>(size)));
+    return handle;
 }
 
 EMSCRIPTEN_KEEPALIVE void avw_close(Handle* handle) {
     delete handle;
 }
 
+/** AlphaDemuxer::tryOpen: 0 open, 1 pending (call again once the bytes are in memory), 2 not a WebM with a VP9 or AV1 track. */
+EMSCRIPTEN_KEEPALIVE int avw_try_open(Handle* handle) {
+    switch (handle->demuxer->tryOpen()) {
+        case webm::AlphaDemuxer::Progress::kDone: return 0;
+        case webm::AlphaDemuxer::Progress::kPending: return 1;
+        case webm::AlphaDemuxer::Progress::kFailed: break;
+    }
+    return 2;
+}
+
 /**
  * Writes 24 numbers to `out`: width, height, totalFrames, frameRate, durationUs, hasAlpha,
- * alphaInBlockAdditional, (reserved), then the colour and the alpha stream, 8 each: codec (0 VP9,
- * 1 AV1), profile, bitDepth, AVColorRange, AVColorSpace, AVColorPrimaries, AVColorTransfer,
- * codecPrivate size.
+ * alphaInBlockAdditional, startUs, then the colour and the alpha stream, 8 each: codec (0 VP9,
+ * 1 AV1), profile, bitDepth, colour range, matrix, primaries and transfer (H.273), codecPrivate
+ * size.
  */
 EMSCRIPTEN_KEEPALIVE void avw_info(Handle* handle, double* out) {
     const webm::AlphaDemuxer::Info& info = handle->demuxer->info();
@@ -121,7 +90,7 @@ EMSCRIPTEN_KEEPALIVE void avw_info(Handle* handle, double* out) {
     out[4] = static_cast<double>(info.durationUs);
     out[5] = info.hasAlpha;
     out[6] = info.alphaInBlockAdditional;
-    out[7] = 0;
+    out[7] = static_cast<double>(info.startUs);
     writeStream(info.color, out + 8);
     writeStream(info.alpha, out + 16);
 }
@@ -136,11 +105,12 @@ EMSCRIPTEN_KEEPALIVE const uint8_t* avw_codec_private(Handle* handle, int stream
 /**
  * Reads the next packet into 6 numbers at `out`: stream (0 colour, 1 alpha), data pointer,
  * size, ptsUs, frameIndex, key. The data stays valid until the next read, seek or close.
- * Returns 0 at the end of the file.
+ * Returns 1 for a packet, 0 at the end of the file or when reading failed (avw_failed), 2 when
+ * pending: call again once the bytes are in memory.
  */
 EMSCRIPTEN_KEEPALIVE int avw_read(Handle* handle, double* out) {
     webm::AlphaDemuxer::Packet& p = handle->packet;
-    if (!handle->demuxer->readPacket(&p)) return 0;
+    if (!handle->demuxer->readPacket(&p)) return handle->demuxer->pending() ? 2 : 0;
     out[0] = p.stream;
     out[1] = static_cast<double>(reinterpret_cast<uintptr_t>(p.data));
     out[2] = p.size;
@@ -150,28 +120,18 @@ EMSCRIPTEN_KEEPALIVE int avw_read(Handle* handle, double* out) {
     return 1;
 }
 
+EMSCRIPTEN_KEEPALIVE int avw_failed(Handle* handle) {
+    return handle->demuxer->failed();
+}
+
 EMSCRIPTEN_KEEPALIVE void avw_seek_start(Handle* handle) {
     handle->demuxer->seekToStart();
 }
 
-EMSCRIPTEN_KEEPALIVE void avw_seek_us(Handle* handle, double timeUs) {
+/** AlphaDemuxer::seekToTimeUs. Returns 1 when pending: seek again once the bytes are in memory. */
+EMSCRIPTEN_KEEPALIVE int avw_seek_us(Handle* handle, double timeUs) {
     handle->demuxer->seekToTimeUs(static_cast<int64_t>(timeUs));
-}
-
-/**
- * AlphaDemuxer::colorAlphaTracks of `size` bytes at `data`: up to 8 ints at `out`, (codec,
- * profile) pairs. Returns how many ints were written.
- */
-EMSCRIPTEN_KEEPALIVE int avw_color_alpha_tracks(const uint8_t* data, int size, int* out) {
-    Memory memory{data, size};
-    AVIOContext* io = openMemoryIO(&memory);
-    if (!io) return 0;
-    std::vector<int> tracks = webm::AlphaDemuxer::colorAlphaTracks(io);
-    av_freep(&io->buffer);
-    avio_context_free(&io);
-    const int n = static_cast<int>(std::min<size_t>(tracks.size(), 8));
-    std::copy(tracks.begin(), tracks.begin() + n, out);
-    return n;
+    return handle->demuxer->pending();
 }
 
 /** webm::yuvToRgbFor: 16 floats (column-major mat4) at `out`. */

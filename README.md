@@ -407,12 +407,12 @@ In `stream` and `streamAndPreload` mode (and on the Android hardware path in tho
 `alpha-video-web` (in [`web/`](web)) plays transparent WebM in every modern browser, whether or not the browser can show transparent video itself. It makes every effort to decode the video: it starts with the fastest way and moves to the next only when one can't show the alpha.
 
 1. **The browser's own `<video>`.** The fastest: no JavaScript runs per frame, and the browser streams and caches. `canPlayType` can't tell whether a browser keeps WebM's alpha; Safari answers `"probably"` and drops it. So the first time a page plays a file, a 599-byte clip is drawn into a canvas and two of its pixels are read. `<video>` is used when that probe shows alpha and the file is a single VP9 track with alpha (Chrome, Edge and Firefox). The first 64 KB of the file tell which kind it is.
-2. **WebCodecs.** The C++ core's demuxer, compiled to WebAssembly, splits the file into its colour and alpha bitstreams. It feeds them to two `VideoDecoder`s, one per stream, which can use the device's hardware decoders. WebGL2 draws the pair with the same colour maths as the Android and iOS players. This is what plays dual-stream files in every browser, and every alpha WebM in Safari.
+2. **WebCodecs.** The C++ core's demuxer, compiled to WebAssembly, splits the file into its colour and alpha bitstreams, reading it by HTTP range requests as it plays: playback starts with the first frames, and a seek fetches only from where it lands. Between plays the bytes are kept in the browser's storage (OPFS, else IndexedDB), so a clip played through plays again offline. It feeds them to two `VideoDecoder`s, one per stream, which can use the device's hardware decoders. WebGL2 draws the pair with the same colour maths as the Android and iOS players. This is what plays dual-stream files in every browser, and every alpha WebM in Safari.
 3. **Software decoding in WebAssembly.** The same demuxer feeds FFmpeg's VP9 decoder and dav1d (AV1), each stream in its own Web Worker. On cross-origin isolated pages each decoder also runs threads of its own. This covers what WebCodecs can't decode, such as VP9 profile 1 (RGB-coded) alpha in Safari and Firefox.
 
 Only a file that no engine can decode ends in an error (`NO_ALPHA_PATH`). Each WebAssembly module is loaded only when its engine runs, and nothing needs hosting: the modules and Workers are inside the package. Every test card passes through every engine that can decode it, in Playwright's Chromium, Firefox and WebKit; real Safari and phones are still to be tested. The API, the React component and speed figures are in [web/README.md](web/README.md).
 
-**On react-native-web, `AlphaVideoView` plays through `alpha-video-web`**, which is installed with this package. iOS and Android bundles don't include it: the component imports it from a `.web.tsx` file. It honours `source`, `autoPlay`, `loop`, `paused`, `playbackSpeed`, `webDecoder`, `onLoad`, `onError`, `onEnd` and the ref methods. `mode`, `decoder`, `cacheKey` and the stream and queue props have no effect. `asset://path` is served from the site root.
+**On react-native-web, `AlphaVideoView` plays through `alpha-video-web`**, which is installed with this package. iOS and Android bundles don't include it: the component imports it from a `.web.tsx` file. It honours `source` (with `source.headers`, sent with every request), `cacheKey` (naming the stored copy), `autoPlay`, `loop`, `paused`, `playbackSpeed`, `webDecoder`, `onLoad`, `onError`, `onEnd` and the ref methods. `mode`, `decoder` and the stream and queue props have no effect. `asset://path` is served from the site root.
 
 - **Bundling:** the WebAssembly engines are separate chunks, loaded by `import()` only when a file needs them. With webpack, Vite or esbuild that needs nothing extra.
 - **Content-Security-Policy:** the software engine's Workers start from `blob:` URLs, so a page with a CSP must allow `worker-src blob:`.
@@ -644,7 +644,7 @@ A release carries the prebuilt archive, `AlphaVideoCodecs.xcframework.zip` and t
 
 | Path | Contents |
 |---|---|
-| `cpp/` | The C++ core (libwebm demux, libvpx and dav1d decode), shared by Android and iOS; the web has its own demuxer in `web/wasm` |
+| `cpp/` | The C++ core (libwebm demux, libvpx and dav1d decode), shared by Android and iOS; the web runs its demuxer in WebAssembly (`web/wasm`) |
 | `android/` | The Android library: `AlphaVideoView`, the MediaCodec dual-stream path and the JNI build |
 | `ios/Sources/AlphaVideo/` | The iOS library: `AlphaVideoView` and the Metal renderer |
 | `react-native/` | The React Native component (`src/`) and its thin native view managers |
@@ -665,7 +665,7 @@ A release carries the prebuilt archive, `AlphaVideoCodecs.xcframework.zip` and t
 
 Ideas, not plans:
 
-- **Drop FFmpeg on the web too.** Android and iOS use libwebm, libvpx and dav1d directly. In WebAssembly libvpx is 1.2-1.9x slower than FFmpeg's own VP9 decoder, even with row multithreading, so the web keeps FFmpeg for now.
+- **Drop FFmpeg on the web too.** Android and iOS decode with libvpx and dav1d directly, and the web already demuxes with libwebm. In WebAssembly libvpx is 1.2-1.9x slower than FFmpeg's own VP9 decoder, even with row multithreading, so the web's software engine keeps FFmpeg's VP9 decoder for now.
 - **Hardware decoding of dual-stream files on iOS.** Two VideoToolbox sessions, one per track, composited in the Metal shader, as Android does with MediaCodec, with the C++ core as the fallback. AV1 decodes in hardware on recent Apple chips (A17 Pro, M3 and later). VP9 likely can't, since VideoToolbox's VP9 decoder isn't available to iOS apps.
 - **Audio.** Decode a WebM's Opus or Vorbis track, keep video in sync with it, and drop frames when decoding falls behind.
 - **More codecs.** VP8 (libvpx already has it; alpha VP8 WebM is common from older encoders) and AV2 once it's final, in software and through platform decoders where they exist.
@@ -675,13 +675,13 @@ Ideas, not plans:
 
 The code in this repository is MIT (see [LICENSE](LICENSE)).
 
-On Android and iOS the player also contains libwebm's parser and libvpx (BSD-3-Clause, with the WebM patent grant) and dav1d (BSD-2-Clause). Apps built with it must include their notices. The web player, `alpha-video-web`, is built with FFmpeg, which is LGPL-2.1-or-later; its notices are in [web/THIRD_PARTY_NOTICES.md](web/THIRD_PARTY_NOTICES.md). [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md) has the versions, build options and source links; the licence texts are in [`licenses/`](licenses).
+On Android and iOS the player also contains libwebm's parser and libvpx (BSD-3-Clause, with the WebM patent grant) and dav1d (BSD-2-Clause). Apps built with it must include their notices. The web player, `alpha-video-web`, contains libwebm's parser and dav1d too, and FFmpeg's VP9 decoder, which is LGPL-2.1-or-later; its notices are in [web/THIRD_PARTY_NOTICES.md](web/THIRD_PARTY_NOTICES.md). [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md) has the versions, build options and source links; the licence texts are in [`licenses/`](licenses).
 
 ## Credits
 
 Built with:
-- [libwebm](https://chromium.googlesource.com/webm/libwebm) - WebM demuxing on Android and iOS
+- [libwebm](https://chromium.googlesource.com/webm/libwebm) - WebM demuxing
 - [libvpx](https://www.webmproject.org/code/) - VP9 codec
-- [FFmpeg](https://ffmpeg.org/) - WebM demuxing and VP9 decoding on the web
+- [FFmpeg](https://ffmpeg.org/) - VP9 decoding on the web
 - [dav1d](https://code.videolan.org/videolan/dav1d) - AV1 decoder
 - [React Native](https://reactnative.dev/) - Cross-platform framework

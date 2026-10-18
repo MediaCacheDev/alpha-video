@@ -3,7 +3,7 @@
  * timestamp: the web counterpart of the Android MediaCodec path.
  */
 import { codecString } from './codec';
-import type { DemuxInfo, DemuxPacket, WasmDemuxer } from './demuxer';
+import { isAbort, type DemuxInfo, type DemuxPacket, type WasmDemuxer } from './demuxer';
 import { AlphaVideoError } from './errors';
 import { BufferPool, insertByTimestamp, type FramePair, type PairSource, type Picture, type SourceCallbacks } from './source';
 
@@ -62,6 +62,10 @@ export class WebCodecsSource implements PairSource {
   private flushes = 0;
   private closed = false;
   private readonly pool = new BufferPool();
+  private pumping = false;
+  private pumpAgain = false;
+  /** A seek for the feed loop to make before reading on */
+  private seekTo: number | null = null;
 
   private constructor(
     demuxer: WasmDemuxer,
@@ -80,8 +84,8 @@ export class WebCodecsSource implements PairSource {
   }
 
   /**
-   * Configures a decoder for each stream of `demuxer`, which must have alpha. Throws
-   * DECODER_UNSUPPORTED if this browser can't decode either one.
+   * Configures a decoder for each stream of `demuxer`, which must have alpha, and owns it once
+   * this resolves. Throws DECODER_UNSUPPORTED if this browser can't decode either one.
    */
   static async create(
     demuxer: WasmDemuxer,
@@ -97,7 +101,7 @@ export class WebCodecsSource implements PairSource {
     // The VP9 profile and bit depth are in the first keyframe, not the container
     const firstKey: (Uint8Array | null)[] = [null, null];
     while (!firstKey[0] || !firstKey[1]) {
-      const p = demuxer.read();
+      const p = await demuxer.read();
       if (!p) break;
       if (p.key && !firstKey[p.stream]) firstKey[p.stream] = p.data;
     }
@@ -138,15 +142,15 @@ export class WebCodecsSource implements PairSource {
   /** Feeds the decoders until enough is decoded or queued. Safe to call any time. */
   pump(): void {
     if (this.closed) return;
-    const [color, alpha] = this.decoders;
-    while (!this.inputDone) {
-      const buffered = this.ready.length + this.converting;
-      if (buffered > 0 && buffered + this.inDecoder[0] >= MAX_AHEAD) break;
-      if (color.decodeQueueSize >= MAX_DECODE_QUEUE || alpha.decodeQueueSize >= MAX_DECODE_QUEUE) break;
-      const packet = this.demuxer.read();
-      if (packet) this.feed(packet);
-      else this.endOfFile();
+    if (this.pumping) {
+      this.pumpAgain = true;
+      return;
     }
+    this.pumping = true;
+    void this.feedLoop().finally(() => {
+      this.pumping = false;
+      if (this.pumpAgain) this.pump();
+    });
   }
 
   /** The earliest ready pair's timestamp, or null if none is decoded yet. */
@@ -179,7 +183,8 @@ export class WebCodecsSource implements PairSource {
    */
   seek(fileTimeUs: number): number {
     this.discardDecoding();
-    this.demuxer.seekToTimeUs(fileTimeUs);
+    this.seekTo = fileTimeUs;
+    this.demuxer.interrupt();
     this.dropBeforeUs = this.epochUs + fileTimeUs - 1000;
     this.pump();
     return this.epochUs + fileTimeUs;
@@ -209,6 +214,42 @@ export class WebCodecsSource implements PairSource {
     decoder.configure(this.configs[stream]);
     decoder.addEventListener('dequeue', () => this.pump());
     return decoder;
+  }
+
+  /** The only caller of the demuxer while playing, so its reads and seeks never overlap. */
+  private async feedLoop(): Promise<void> {
+    try {
+      for (;;) {
+        this.pumpAgain = false;
+        if (this.closed) return;
+        if (this.seekTo !== null) {
+          const timeUs = this.seekTo;
+          this.seekTo = null;
+          await this.demuxer.seekToTimeUs(timeUs);
+          continue;
+        }
+        if (this.inputDone || !this.wantsInput()) return;
+        const packet = await this.demuxer.read();
+        // Read before a seek that came while it was on its way
+        if (this.closed || this.seekTo !== null) continue;
+        if (packet) this.feed(packet);
+        else this.endOfFile();
+      }
+    } catch (e) {
+      if (this.closed) return;
+      if (isAbort(e) && this.seekTo !== null) {
+        this.pumpAgain = true;
+        return;
+      }
+      this.callbacks.onError(e instanceof AlphaVideoError ? e : new AlphaVideoError('LOAD_FAILED', String((e as Error)?.message ?? e)));
+    }
+  }
+
+  private wantsInput(): boolean {
+    const [color, alpha] = this.decoders;
+    const buffered = this.ready.length + this.converting;
+    if (buffered > 0 && buffered + this.inDecoder[0] >= MAX_AHEAD) return false;
+    return color.decodeQueueSize < MAX_DECODE_QUEUE && alpha.decodeQueueSize < MAX_DECODE_QUEUE;
   }
 
   private feed(packet: DemuxPacket): void {

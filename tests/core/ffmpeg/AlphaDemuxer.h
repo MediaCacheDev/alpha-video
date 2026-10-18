@@ -12,10 +12,10 @@ namespace webm {
 
 /**
  * Reads an alpha WebM's colour and alpha bitstreams as packets, without decoding them, for
- * decoders that take one bitstream each: WebCodecs, and the web's FFmpeg decoders in Workers.
+ * decoders that take one bitstream each.
  *
- * The web's version of cpp/AlphaDemuxer, over FFmpeg's Matroska demuxer; Android and iOS use the
- * libwebm one there. Both read a file the same way.
+ * cpp/AlphaDemuxer over FFmpeg's Matroska demuxer, which the web used before it moved to the
+ * core's; kept as a second reading of each file for tests/core/demuxer_compare.
  *
  * The colour stream is the first VP9 or AV1 track. The alpha stream is the second, or, for a
  * single VP9 track, the VP9 stream in each block's BlockAdditional (ID 1), which is how libvpx

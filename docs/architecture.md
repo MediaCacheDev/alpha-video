@@ -63,7 +63,7 @@ React (JS) AlphaVideoView props
 
 ### C++ Core (cross-platform, software path)
 
-- **`AlphaDemuxer`** — Reads the colour and alpha bitstreams as packets with libwebm's `webm_parser` (`third_party/libwebm`): the first two VP9/AV1 tracks, or one VP9 track and its BlockAdditional alpha. Takes profile, bit depth and colour from the bitstream headers, and seeks by the Cues (loaded when a seek needs them) or by scanning. Shared with the MediaCodec path through JNI. The web's demuxer (`web/wasm/AlphaDemuxer`) is an FFmpeg version with the same info, packets and seeks; `tests/core/demuxer_compare` checks the two against each other.
+- **`AlphaDemuxer`** — Reads the colour and alpha bitstreams as packets with libwebm's `webm_parser` (`third_party/libwebm`): the first two VP9/AV1 tracks, or one VP9 track and its BlockAdditional alpha. Takes profile, bit depth and colour from the bitstream headers, and seeks by the Cues (loaded when a seek needs them) or by scanning. Shared with the MediaCodec path through JNI, and compiled to WebAssembly for the web, where it reads through JavaScript and stops when bytes haven't arrived yet (`ByteSource::kPending`), carrying on once they have. `tests/core/demuxer_compare` checks it against FFmpeg's Matroska demuxer (`tests/core/ffmpeg/AlphaDemuxer`, which the web used before).
 - **`VideoDecoder`** — libvpx (VP9, with row multithreading) and dav1d (AV1) behind one interface: send a packet, receive pictures, drain at the end, flush on a seek.
 - **`ByteSource`** — Where the demuxer reads: a file, a range of a file descriptor (an APK asset or `content://` URI), a download in progress, or memory.
 - **`WebMAlphaPlayer`** — The player on top of them:

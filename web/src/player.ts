@@ -7,10 +7,11 @@ import { CanvasEngine } from './canvas-engine';
 import { WasmDemuxer } from './demuxer';
 import type { Engine, EngineEvents, EngineOptions } from './engine';
 import { AlphaVideoError } from './errors';
+import { Input } from './input';
 import { videoElementKeepsWebMAlpha } from './probe';
-import { fetchHead, sniffWebM } from './sniff';
+import { sniffWebM } from './sniff';
 import { SoftwareSource } from './software-source';
-import type { AlphaVideoLoadEvent, AlphaVideoOptions, AlphaVideoPlayer, AlphaVideoSource, Decoder } from './types';
+import type { AlphaVideoLoadEvent, AlphaVideoOptions, AlphaVideoPlayer, Decoder } from './types';
 import { VideoEngine } from './video-engine';
 import { WebCodecsSource } from './webcodecs-source';
 
@@ -58,7 +59,8 @@ export function createAlphaVideo(container: HTMLElement, options: AlphaVideoOpti
     else if (!destroyed) pending.push(call);
   };
 
-  startEngine(options.src, options.decoder ?? 'auto', engineOptions, events, options.fetchInit, abort.signal)
+  Promise.resolve()
+    .then(() => startEngine(new Input(options), options.decoder ?? 'auto', engineOptions, events, abort.signal))
     .then((e) => {
       if (destroyed) {
         e.destroy();
@@ -104,102 +106,92 @@ export function createAlphaVideo(container: HTMLElement, options: AlphaVideoOpti
 }
 
 async function startEngine(
-  src: AlphaVideoSource,
+  input: Input,
   decoder: Decoder,
   options: EngineOptions,
   events: EngineEvents,
-  fetchInit: RequestInit | undefined,
   signal: AbortSignal,
 ): Promise<Engine> {
-  if (decoder === 'browser') return videoEngine(src, options, events);
-  if (decoder === 'software') return softwareEngine(await loadBytes(src, fetchInit, signal), options, events);
+  if (decoder === 'browser') return videoEngine(input, options, events, signal);
   if (decoder !== 'auto') {
-    const demuxer = await demux(await loadBytes(src, fetchInit, signal));
+    const demuxer = await demux(input, signal);
     if (!demuxer.info.hasAlpha) {
       demuxer.close();
       throw new AlphaVideoError('UNSUPPORTED_FILE', 'The file has no alpha; play it with decoder "browser"');
     }
-    return webCodecsEngine(demuxer, HARDWARE[decoder], options, events);
+    return withDemuxer(demuxer, () =>
+      decoder === 'software' ? softwareEngine(demuxer, options, events) : webCodecsEngine(demuxer, HARDWARE[decoder], options, events),
+    );
   }
 
   const keepsAlpha = await videoElementKeepsWebMAlpha();
-  let bytes: Uint8Array | null = typeof src === 'string' ? null : await loadBytes(src, fetchInit, signal);
   if (keepsAlpha) {
     // Only a dual-stream file needs more than <video>; the first bytes tell
-    let head: Uint8Array;
+    let head: Uint8Array | null;
     try {
-      head = bytes ?? (await fetchHead(src as string, 65536, signal));
-    } catch {
+      head = await input.head(signal);
+    } catch (e) {
+      if (signal.aborted) throw e;
       // Unreadable from script (CORS), so <video> is all that can play it
-      return videoEngine(src, options, events);
+      if (input.videoLoadable) return videoEngine(input, options, events, signal);
+      throw new AlphaVideoError('LOAD_FAILED', `Fetching ${String(input.src)} failed: ${(e as Error)?.message ?? e}`);
     }
-    if (sniffWebM(head)?.layout !== 'dual') return videoEngine(src, options, events);
+    if (head && sniffWebM(head)?.layout !== 'dual') return videoEngine(input, options, events, signal);
   }
-  bytes ??= await loadBytes(src, fetchInit, signal);
-  const demuxer = await demux(bytes);
+  const demuxer = await demux(input, signal);
   if (!demuxer.info.hasAlpha || (keepsAlpha && demuxer.info.alphaInBlockAdditional)) {
     demuxer.close();
-    return videoEngine(typeof src === 'string' ? src : bytes, options, events);
+    return videoEngine(input, options, events, signal);
   }
-  try {
-    return await webCodecsEngine(demuxer, 'no-preference', options, events);
-  } catch (e) {
-    if (!(e instanceof AlphaVideoError && e.code === 'DECODER_UNSUPPORTED')) throw e;
+  return withDemuxer(demuxer, async () => {
     try {
-      return await softwareEngine(bytes, options, events);
-    } catch (software) {
-      if (!(software instanceof AlphaVideoError && software.code === 'DECODER_UNSUPPORTED')) throw software;
-      throw new AlphaVideoError('NO_ALPHA_PATH', `No engine in this browser shows this file's alpha (${e.message}; ${software.message})`);
+      return await webCodecsEngine(demuxer, 'no-preference', options, events);
+    } catch (e) {
+      if (!(e instanceof AlphaVideoError && e.code === 'DECODER_UNSUPPORTED')) throw e;
+      try {
+        return await softwareEngine(demuxer, options, events);
+      } catch (software) {
+        if (!(software instanceof AlphaVideoError && software.code === 'DECODER_UNSUPPORTED')) throw software;
+        throw new AlphaVideoError('NO_ALPHA_PATH', `No engine in this browser shows this file's alpha (${e.message}; ${software.message})`);
+      }
     }
-  }
+  });
 }
 
-function videoEngine(src: AlphaVideoSource, options: EngineOptions, events: EngineEvents): Engine {
-  if (typeof src === 'string') return new VideoEngine(src, options, events);
-  const url = URL.createObjectURL(src instanceof Blob ? src : new Blob([src as BlobPart], { type: 'video/webm' }));
-  return new VideoEngine(url, options, events, url);
+async function videoEngine(input: Input, options: EngineOptions, events: EngineEvents, signal: AbortSignal): Promise<Engine> {
+  const { url, owned } = await input.videoUrl(signal);
+  return new VideoEngine(url, options, events, owned ? url : undefined);
 }
 
-/** Takes ownership of `demuxer`. */
-async function webCodecsEngine(
-  demuxer: WasmDemuxer,
-  hardwareAcceleration: HardwareAcceleration,
-  options: EngineOptions,
-  events: EngineEvents,
-): Promise<Engine> {
+/** Closes `demuxer` if `start` fails; once it succeeds, the engine's source owns it. */
+async function withDemuxer(demuxer: WasmDemuxer, start: () => Promise<Engine>): Promise<Engine> {
   try {
-    return await CanvasEngine.create(
-      (callbacks) => WebCodecsSource.create(demuxer, hardwareAcceleration, options.loop, callbacks),
-      options,
-      events,
-    );
+    return await start();
   } catch (e) {
     demuxer.close();
     throw e;
   }
 }
 
-function softwareEngine(bytes: Uint8Array, options: EngineOptions, events: EngineEvents): Promise<Engine> {
-  return CanvasEngine.create((callbacks) => SoftwareSource.create(bytes, options.loop, callbacks), options, events);
+function webCodecsEngine(
+  demuxer: WasmDemuxer,
+  hardwareAcceleration: HardwareAcceleration,
+  options: EngineOptions,
+  events: EngineEvents,
+): Promise<Engine> {
+  return CanvasEngine.create(
+    (callbacks) => WebCodecsSource.create(demuxer, hardwareAcceleration, options.loop, callbacks),
+    options,
+    events,
+  );
 }
 
-async function demux(bytes: Uint8Array): Promise<WasmDemuxer> {
-  const demuxer = await WasmDemuxer.open(bytes);
+function softwareEngine(demuxer: WasmDemuxer, options: EngineOptions, events: EngineEvents): Promise<Engine> {
+  return CanvasEngine.create((callbacks) => SoftwareSource.create(demuxer, options.loop, callbacks), options, events);
+}
+
+async function demux(input: Input, signal: AbortSignal): Promise<WasmDemuxer> {
+  const demuxer = await WasmDemuxer.open(await input.open(signal));
   if (!demuxer) throw new AlphaVideoError('UNSUPPORTED_FILE', 'Not a WebM with a VP9 or AV1 track');
   return demuxer;
-}
-
-async function loadBytes(src: AlphaVideoSource, init: RequestInit | undefined, signal: AbortSignal): Promise<Uint8Array> {
-  if (src instanceof Uint8Array) return src;
-  if (src instanceof ArrayBuffer) return new Uint8Array(src);
-  if (src instanceof Blob) return new Uint8Array(await src.arrayBuffer());
-  let response: Response;
-  try {
-    response = await fetch(src, { ...init, signal });
-  } catch (e) {
-    if (signal.aborted) throw e;
-    throw new AlphaVideoError('LOAD_FAILED', `Fetching ${src} failed; a file on another origin needs CORS headers (${(e as Error).message})`);
-  }
-  if (!response.ok) throw new AlphaVideoError('LOAD_FAILED', `HTTP ${response.status} for ${src}`);
-  return new Uint8Array(await response.arrayBuffer());
 }

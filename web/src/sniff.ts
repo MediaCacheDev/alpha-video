@@ -157,10 +157,13 @@ export function sniffWebM(bytes: Uint8Array): WebMSniff | null {
 
 /**
  * The first `limit` bytes of `url`: a Range request, or the start of a full response, cancelled
- * once enough has arrived. Throws if the file can't be fetched (including CORS).
+ * once enough has arrived. Throws if the file can't be fetched (including CORS). `init` adds
+ * fetch options and headers.
  */
-export async function fetchHead(url: string, limit = 65536, signal?: AbortSignal): Promise<Uint8Array> {
-  const response = await fetch(url, { headers: { Range: `bytes=0-${limit - 1}` }, signal });
+export async function fetchHead(url: string, limit = 65536, signal?: AbortSignal, init?: RequestInit): Promise<Uint8Array> {
+  const headers = new Headers(init?.headers);
+  headers.set('Range', `bytes=0-${limit - 1}`);
+  const response = await fetch(url, { ...init, headers, signal });
   if (!response.ok) throw new Error(`HTTP ${response.status} for ${url}`);
   if (!response.body) return new Uint8Array(await response.arrayBuffer()).subarray(0, limit);
   const reader = response.body.getReader();
