@@ -7,21 +7,10 @@
 #include "RangeReader.h"
 #include "VideoDecoder.h"
 #include "WebMAlphaPlayer.h"
-#include "Dav1dDecoderPlugin.h"
-#include "VpxDecoderPlugin.h"
 #include <memory>
 
 // Lifecycle and per-frame logging inside AlphaVideoMetalView, only with its verbose flag
 #define WEBM_VLOG(...) do { if (self.verbose) NSLog(__VA_ARGS__); } while (0)
-
-// Both codec modules are built into this framework until each is its own
-[[maybe_unused]] static const bool codecsRegistered = [] {
-    std::string error;
-    const bool registered = webm::registerDecoderPlugins(alpha_video_vpx_plugins, &error) &&
-                            webm::registerDecoderPlugins(alpha_video_av1_plugins, &error);
-    if (!registered) NSLog(@"AlphaVideo: %s", error.c_str());
-    return registered;
-}();
 
 //==============================================================================
 // AlphaVideoFrame Implementation
@@ -171,6 +160,7 @@
 - (instancetype)initWithConfig:(AlphaVideoConfig *)config {
     self = [super init];
     if (self) {
+        [AlphaVideoCodecs discover];
         _player = std::make_unique<webm::WebMAlphaPlayer>();
         _player->setConfig([config toCppConfig]);
         _callbackQueue = dispatch_get_main_queue();
@@ -203,22 +193,26 @@
         CFRunLoopWakeUp(CFRunLoopGetMain());
     });
     
-    // Event callback - also use CFRunLoopPerformBlock with kCFRunLoopCommonModes
-    _player->setEventCallback([weakSelf](const std::string& event, const std::string& data) {
+    // Event callback - also use CFRunLoopPerformBlock with kCFRunLoopCommonModes.
+    // The core calls it from its own methods and threads, which it stops before it's freed.
+    webm::WebMAlphaPlayer *core = _player.get();
+    _player->setEventCallback([weakSelf, core](const std::string& event, const std::string& data) {
         AlphaVideoPlayer *strongSelf = weakSelf;
         if (!strongSelf) return;
         
         NSString *eventStr = [NSString stringWithUTF8String:event.c_str()];
         NSString *dataStr = [NSString stringWithUTF8String:data.c_str()];
+        const std::string code = event == "error" ? core->getLastErrorCode() : std::string();
+        NSString *codeStr = code.empty() ? nil : @(code.c_str());
         
         CFRunLoopPerformBlock(CFRunLoopGetMain(), kCFRunLoopCommonModes, ^{
-            [strongSelf handleEvent:eventStr data:dataStr];
+            [strongSelf handleEvent:eventStr data:dataStr code:codeStr];
         });
         CFRunLoopWakeUp(CFRunLoopGetMain());
     });
 }
 
-- (void)handleEvent:(NSString *)event data:(NSString *)data {
+- (void)handleEvent:(NSString *)event data:(NSString *)data code:(nullable NSString *)code {
     id<AlphaVideoPlayerDelegate> delegate = self.delegate;
     
     if ([event isEqualToString:@"loaded"]) {
@@ -246,8 +240,8 @@
             [delegate playerDidEnd];
         }
     } else if ([event isEqualToString:@"error"]) {
-        if ([delegate respondsToSelector:@selector(playerDidEncounterError:)]) {
-            [delegate playerDidEncounterError:data];
+        if ([delegate respondsToSelector:@selector(playerDidEncounterError:code:)]) {
+            [delegate playerDidEncounterError:data code:code];
         }
     } else if ([event isEqualToString:@"preload_complete"]) {
         // Parse "X frames in Yms"
@@ -943,10 +937,10 @@
     }
 }
 
-- (void)playerDidEncounterError:(NSString *)error {
+- (void)playerDidEncounterError:(NSString *)error code:(nullable NSString *)code {
     NSLog(@"AlphaVideoMetalView error: %@", error);
-    if ([_playerDelegate respondsToSelector:@selector(playerDidEncounterError:)]) {
-        [_playerDelegate playerDidEncounterError:error];
+    if ([_playerDelegate respondsToSelector:@selector(playerDidEncounterError:code:)]) {
+        [_playerDelegate playerDidEncounterError:error code:code];
     }
 }
 

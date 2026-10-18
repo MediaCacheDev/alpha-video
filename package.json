@@ -38,8 +38,8 @@
     "!android/gradle",
     "!android/gradlew",
     "!android/gradlew.bat",
-    "!prebuilt/AlphaVideoCodecs.xcframework",
-    "!prebuilt/AlphaVideoCodecs.xcframework.zip",
+    "!prebuilt/*.xcframework",
+    "!prebuilt/*.xcframework.zip",
     "!ios/build",
     "!.DS_Store"
   ],

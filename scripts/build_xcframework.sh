@@ -1,45 +1,49 @@
 #!/bin/bash
-# Builds prebuilt/AlphaVideoCodecs.xcframework, the libvpx + dav1d binary target in Package.swift,
+# Builds the codec modules' binary targets in Package.swift, one xcframework per codec library:
+#   prebuilt/AlphaVideoLibvpx.xcframework   libvpx, for AlphaVideoVPX
+#   prebuilt/AlphaVideoDav1d.xcframework    dav1d, for AlphaVideoAV1
 # from the static libraries that build_codecs_ios.sh leaves in prebuilt/ios and
-# prebuilt/ios-simulator. Each slice is one static library: vpx and dav1d merged with libtool.
+# prebuilt/ios-simulator.
 #
-# Also writes prebuilt/AlphaVideoCodecs.xcframework.zip and prints its SwiftPM checksum. That zip
-# is the file to attach to the GitHub Release; Package.swift's checksum must match it byte for byte.
+# Also writes a .zip of each and prints its SwiftPM checksum. Those zips are the files to attach
+# to the GitHub Release; Package.swift's checksums must match them byte for byte.
 
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 PREBUILT="$ROOT/prebuilt"
-OUT="$PREBUILT/AlphaVideoCodecs.xcframework"
 WORK="$(mktemp -d)"
 trap 'rm -rf "$WORK"' EXIT
 
-for slice in ios ios-simulator; do
-    lib="$PREBUILT/$slice/lib"
-    for name in vpx dav1d; do
-        if [ ! -f "$lib/lib$name.a" ]; then
-            echo "Missing $lib/lib$name.a: run scripts/build_codecs_ios.sh first" >&2
+# build_xcframework <name> <library> <header directory>
+build_xcframework() {
+    local name="$1" library="$2" headers="$3"
+    local out="$PREBUILT/$name.xcframework"
+    local args=()
+    mkdir -p "$WORK/$name/include"
+    cp -R "$PREBUILT/include/$headers" "$WORK/$name/include/"
+    for slice in ios ios-simulator; do
+        local lib="$PREBUILT/$slice/lib/lib$library.a"
+        if [ ! -f "$lib" ]; then
+            echo "Missing $lib: run scripts/build_codecs_ios.sh first" >&2
             exit 1
         fi
+        args+=(-library "$lib" -headers "$WORK/$name/include")
     done
-    mkdir -p "$WORK/$slice"
-    ZERO_AR_DATE=1 libtool -static -no_warning_for_no_symbols -o "$WORK/$slice/libAlphaVideoCodecs.a" \
-        "$lib/libvpx.a" "$lib/libdav1d.a"
-done
 
-mkdir -p "$WORK/include"
-cp -R "$PREBUILT/include/vpx" "$PREBUILT/include/dav1d" "$WORK/include/"
+    rm -rf "$out"
+    xcodebuild -create-xcframework "${args[@]}" -output "$out" >/dev/null
 
-rm -rf "$OUT"
-xcodebuild -create-xcframework \
-    -library "$WORK/ios/libAlphaVideoCodecs.a" -headers "$WORK/include" \
-    -library "$WORK/ios-simulator/libAlphaVideoCodecs.a" -headers "$WORK/include" \
-    -output "$OUT"
+    (
+        cd "$PREBUILT"
+        # Fixed times, so rebuilding from the same libraries gives the same zip and checksum.
+        find "$name.xcframework" -exec touch -h -t 202601010000 {} +
+        rm -f "$name.xcframework.zip"
+        find "$name.xcframework" | LC_ALL=C sort | zip -q -X -D -9 "$name.xcframework.zip" -@
+        echo "Wrote $out and $out.zip"
+        echo "  checksum: $(swift package compute-checksum "$name.xcframework.zip")"
+    )
+}
 
-cd "$PREBUILT"
-# Fixed times, so rebuilding from the same libraries gives the same zip and checksum.
-find AlphaVideoCodecs.xcframework -exec touch -h -t 202601010000 {} +
-rm -f AlphaVideoCodecs.xcframework.zip
-find AlphaVideoCodecs.xcframework | LC_ALL=C sort | zip -q -X -D -9 AlphaVideoCodecs.xcframework.zip -@
-echo "Wrote $OUT and $PREBUILT/AlphaVideoCodecs.xcframework.zip"
-echo "checksum: $(swift package compute-checksum AlphaVideoCodecs.xcframework.zip)"
+build_xcframework AlphaVideoLibvpx vpx vpx
+build_xcframework AlphaVideoDav1d dav1d dav1d

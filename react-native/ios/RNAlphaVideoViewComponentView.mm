@@ -117,10 +117,10 @@ static const std::shared_ptr<const RNAlphaVideoViewProps> &RNAlphaVideoViewDefau
   }
 }
 
-- (void)alphaVideoView:(AlphaVideoView *)view didFailWithError:(NSString *)error
+- (void)alphaVideoView:(AlphaVideoView *)view didFailWithError:(NSString *)error code:(NSString *)code
 {
   if (auto emitter = [self playerEventEmitter]) {
-    emitter->onError({.error = RCTStringFromNSString(error)});
+    emitter->onError({.error = RCTStringFromNSString(error), .code = RCTStringFromNSString(code ?: @"")});
   }
 }
 

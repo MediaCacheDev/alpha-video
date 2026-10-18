@@ -2,19 +2,24 @@
 import Foundation
 import PackageDescription
 
-// libvpx + dav1d as one static library per platform (scripts/build_xcframework.sh). A local
-// build in prebuilt/ wins, so the package can be developed without a release.
-let localCodecs = "prebuilt/AlphaVideoCodecs.xcframework"
+// Apps add AlphaVideoVPX (VP9), AlphaVideoAV1 (AV1) or both, and `import AlphaVideo` either way.
+// The core alone isn't a product: iOS has no platform decoder for these files.
+//
+// Each codec library is a binary target (scripts/build_xcframework.sh). A local build in
+// prebuilt/ wins, so the package can be developed without a release.
 let packageDir = URL(fileURLWithPath: #filePath).deletingLastPathComponent()
-let codecs: Target = FileManager.default.fileExists(atPath: packageDir.appendingPathComponent(localCodecs).path)
-    ? .binaryTarget(name: "AlphaVideoCodecs", path: localCodecs)
-    : .binaryTarget(
-        name: "AlphaVideoCodecs",
-        url: "https://github.com/MediaCacheDev/alpha-video/releases/download/v1.0.0/AlphaVideoCodecs.xcframework.zip",
-        checksum: "8ea2461df7991d70ea62728b8141dfb6c89daff6f27b8007f51b1ed854effc11"
-    )
+func codecLibrary(_ name: String, checksum: String) -> Target {
+    let local = "prebuilt/\(name).xcframework"
+    return FileManager.default.fileExists(atPath: packageDir.appendingPathComponent(local).path)
+        ? .binaryTarget(name: name, path: local)
+        : .binaryTarget(
+            name: name,
+            url: "https://github.com/MediaCacheDev/alpha-video/releases/download/v1.0.0/\(name).xcframework.zip",
+            checksum: checksum
+        )
+}
 
-// The target lives at the repo root, and SwiftPM takes resource-like files anywhere under a
+// The targets live at the repo root, and SwiftPM takes resource-like files anywhere under a
 // target as its resources (the codec sources in scripts/build, node_modules), so everything
 // except cpp, codecs, ios/Sources, libwebm's parser and alpha-video-source's reader is excluded. Listed from disk: excluding a missing
 // path warns.
@@ -35,11 +40,26 @@ let excluded = entries("", except: ["cpp", "codecs", "ios", "third_party", "Pack
     + entries("third_party/alpha-video-source", except: ["src"])
     + ["cpp/WebMAlphaPlayer_jni.cpp"]
 
+// A codec module: its plugin adapter (codecs/<codec>) and the class AlphaVideoCodecs finds by name
+// (ios/Sources/<target>), over the codec library. Rooted at the repo too, for cpp/'s plugin header.
+func codecModule(_ name: String, codec: String, library: String) -> Target {
+    .target(
+        name: name,
+        dependencies: ["AlphaVideo", .target(name: library)],
+        path: ".",
+        exclude: excluded,
+        sources: ["codecs/\(codec)", "ios/Sources/\(name)"],
+        publicHeadersPath: "ios/Sources/\(name)/include",
+        cxxSettings: [.headerSearchPath("cpp"), .headerSearchPath("codecs/\(codec)")]
+    )
+}
+
 let package = Package(
     name: "AlphaVideo",
     platforms: [.iOS(.v13)],
     products: [
-        .library(name: "AlphaVideo", targets: ["AlphaVideo"]),
+        .library(name: "AlphaVideoVPX", targets: ["AlphaVideoVPX"]),
+        .library(name: "AlphaVideoAV1", targets: ["AlphaVideoAV1"]),
     ],
     targets: [
         // One target for the C++ core and the Objective-C++ API: a separate core target would
@@ -47,16 +67,13 @@ let package = Package(
         // headers unless they turn on C++ interop.
         .target(
             name: "AlphaVideo",
-            dependencies: ["AlphaVideoCodecs"],
             path: ".",
             exclude: excluded,
-            sources: ["cpp", "codecs", "ios/Sources/AlphaVideo", webmParser, sourceReader],
+            sources: ["cpp", "ios/Sources/AlphaVideo", webmParser, sourceReader],
             publicHeadersPath: "ios/Sources/AlphaVideo/include",
             cSettings: [.headerSearchPath("cpp")],
             cxxSettings: [
                 .headerSearchPath("cpp"),
-                .headerSearchPath("codecs/vpx"),
-                .headerSearchPath("codecs/av1"),
                 .headerSearchPath(sourceReader),
                 .headerSearchPath(webmParser),
                 .headerSearchPath("\(webmParser)/include"),
@@ -66,7 +83,14 @@ let package = Package(
                 .linkedFramework("MetalKit"),
             ]
         ),
-        codecs,
+        codecModule("AlphaVideoVPX", codec: "vpx", library: "AlphaVideoLibvpx"),
+        codecModule("AlphaVideoAV1", codec: "av1", library: "AlphaVideoDav1d"),
+        codecLibrary("AlphaVideoLibvpx", checksum: "0984d2040918cd2d518eb028f4f119e38dec1536fe00266c4b37b612cbcbeb37"),
+        codecLibrary("AlphaVideoDav1d", checksum: "c3dac0b822a7da604ed8bdb4a89b3b99720731c7420e3c245c71781ac3e05c62"),
+        // Each links one codec module, as an app would, and checks the core finds it alone
+        .target(name: "AlphaVideoTestSupport", dependencies: ["AlphaVideo"], path: "tests/ios/Support"),
+        .testTarget(name: "VPXOnlyTests", dependencies: ["AlphaVideoVPX", "AlphaVideoTestSupport"], path: "tests/ios/VPXOnlyTests"),
+        .testTarget(name: "AV1OnlyTests", dependencies: ["AlphaVideoAV1", "AlphaVideoTestSupport"], path: "tests/ios/AV1OnlyTests"),
     ],
     cxxLanguageStandard: .cxx17
 )

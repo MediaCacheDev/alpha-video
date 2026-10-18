@@ -51,6 +51,11 @@ NS_ASSUME_NONNULL_BEGIN
 - (BOOL)loadFromReader:(AlphaVideoSourceReader *)reader;
 @end
 
+@interface AlphaVideoCodecs ()
+/** Registers the linked codec modules, once. Before a player opens a file. */
++ (void)discover;
+@end
+
 /** The file an asset://, file:// or absolute-path source names; nil for anything else. */
 NSString *_Nullable AlphaVideoLocalPathForSource(NSString *uri);
 

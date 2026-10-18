@@ -226,9 +226,9 @@ static const int64_t AlphaVideoDefaultMaxStorageBytes = 512LL * 1024 * 1024;
         NSString *path = AlphaVideoLocalPathForSource(sourceUri);
         if (!path) {
             [self playerDidEncounterError:[NSString stringWithFormat:
-                @"Unsupported source '%@'. Use https://, file://, an absolute path or asset://", sourceUri]];
+                @"Unsupported source '%@'. Use https://, file://, an absolute path or asset://", sourceUri] code:nil];
         } else if (![[NSFileManager defaultManager] fileExistsAtPath:path]) {
-            [self playerDidEncounterError:[NSString stringWithFormat:@"File not found: %@", sourceUri]];
+            [self playerDidEncounterError:[NSString stringWithFormat:@"File not found: %@", sourceUri] code:nil];
         } else {
             [self loadWithQueue:^(AlphaVideoView *view) { [view.metalView loadFromPath:path]; } offMain:NO];
         }
@@ -240,13 +240,13 @@ static const int64_t AlphaVideoDefaultMaxStorageBytes = 512LL * 1024 * 1024;
         dataSource = [AlphaVideoDataSources dataSourceNamed:self.dataSource];
         if (!dataSource) {
             [self playerDidEncounterError:[NSString stringWithFormat:
-                @"No data source is registered as \"%@\" (AlphaVideoDataSources)", self.dataSource]];
+                @"No data source is registered as \"%@\" (AlphaVideoDataSources)", self.dataSource] code:nil];
             return;
         }
     }
     NSURL *url = [NSURL URLWithString:sourceUri];
     if (!url) {
-        [self playerDidEncounterError:[NSString stringWithFormat:@"Invalid URL: %@", sourceUri]];
+        [self playerDidEncounterError:[NSString stringWithFormat:@"Invalid URL: %@", sourceUri] code:nil];
         return;
     }
     NSString *storage = [_storage isEqualToString:@"auto"] ? (appSource ? @"none" : @"disk") : _storage;
@@ -272,7 +272,7 @@ static const int64_t AlphaVideoDefaultMaxStorageBytes = 512LL * 1024 * 1024;
             AlphaVideoView *strongSelf = weakSelf;
             if (!strongSelf || generation != strongSelf->_sourceGeneration) return;
             if (!reader) {
-                [strongSelf playerDidEncounterError:[NSString stringWithFormat:@"Loading %@ failed: %@", sourceUri, error]];
+                [strongSelf playerDidEncounterError:[NSString stringWithFormat:@"Loading %@ failed: %@", sourceUri, error] code:nil];
                 return;
             }
             strongSelf->_reader = reader;
@@ -345,11 +345,11 @@ static const int64_t AlphaVideoDefaultMaxStorageBytes = 512LL * 1024 * 1024;
     // The Metal view draws the frame
 }
 
-- (void)playerDidEncounterError:(NSString *)error {
+- (void)playerDidEncounterError:(NSString *)error code:(nullable NSString *)code {
     NSLog(@"AlphaVideoView error: %@", error);
     id<AlphaVideoViewDelegate> delegate = self.delegate;
-    if ([delegate respondsToSelector:@selector(alphaVideoView:didFailWithError:)]) {
-        [delegate alphaVideoView:self didFailWithError:error ?: @"Unknown error"];
+    if ([delegate respondsToSelector:@selector(alphaVideoView:didFailWithError:code:)]) {
+        [delegate alphaVideoView:self didFailWithError:error ?: @"Unknown error" code:code];
     }
 }
 

@@ -4,6 +4,29 @@ require 'pathname'
 package = JSON.parse(File.read(File.join(__dir__, 'package.json')))
 pod_dir = Pathname.new(__dir__).relative_path_from(Pathname.new(Pod::Config.instance.installation_root)).to_s
 
+# The codec modules to build in, from the app's package.json as android/build.gradle reads them:
+# "react-native-alpha-video": { "codecs": ["vpx"] }. Both without the setting.
+codec_targets = { 'vpx' => 'AlphaVideoVPX', 'av1' => 'AlphaVideoAV1' }
+app_package_json = File.join(Pod::Config.instance.installation_root, '..', 'package.json')
+codecs_setting = File.exist?(app_package_json) &&
+                 JSON.parse(File.read(app_package_json)).dig('react-native-alpha-video', 'codecs')
+codecs = codec_targets.keys
+if codecs_setting
+  unless codecs_setting.is_a?(Array) && (codecs_setting - codec_targets.keys).empty?
+    raise "react-native-alpha-video: \"codecs\" in #{app_package_json} must list some of #{codec_targets.keys}, not #{codecs_setting}"
+  end
+  codecs = codec_targets.keys & codecs_setting
+end
+# Once: CocoaPods evaluates a podspec several times per install
+unless $react_native_alpha_video_codecs_reported
+  $react_native_alpha_video_codecs_reported = true
+  if codecs.empty?
+    Pod::UI.warn 'react-native-alpha-video: no codecs, and iOS has no platform decoder for these files: every video reports NO_DECODER'
+  else
+    Pod::UI.puts "react-native-alpha-video: codecs #{codecs.join(', ')}"
+  end
+end
+
 Pod::Spec.new do |s|
   s.name         = 'react-native-alpha-video'
   s.version      = package['version']
@@ -15,15 +38,15 @@ Pod::Spec.new do |s|
   s.platforms    = { :ios => '13.0' }
   s.source       = { :git => package['repository']['url'], :tag => "v#{s.version}" }
 
-  # The iOS library (ios/Sources/AlphaVideo, also the Swift package) and the React Native view
+  # The iOS library (ios/Sources/AlphaVideo, also the Swift package), the React Native view, and
+  # each codec module's plugin adapter and the class the core finds it by
   s.source_files = [
     'ios/Sources/AlphaVideo/**/*.{h,mm}',
     'react-native/ios/**/*.{h,mm}',
     'cpp/**/*.{h,cpp}',
-    'codecs/**/*.{h,cpp}',
     'third_party/libwebm/webm_parser/**/*.{h,cc}',
     'third_party/alpha-video-source/src/*.{h,cpp}'
-  ]
+  ] + codecs.flat_map { |codec| ["codecs/#{codec}/*.{h,cpp}", "ios/Sources/#{codec_targets[codec]}/**/*.{h,mm}"] }
   s.exclude_files = [
     'cpp/*_jni.cpp'
   ]
@@ -36,10 +59,13 @@ Pod::Spec.new do |s|
     'prebuilt/include/**/*'
   ]
   
+  header_paths = ['prebuilt/include', 'ios/Sources/AlphaVideo/include', 'cpp'] +
+                 codecs.map { |codec| "codecs/#{codec}" } +
+                 ['third_party/alpha-video-source/src', 'third_party/libwebm/webm_parser', 'third_party/libwebm/webm_parser/include']
   s.pod_target_xcconfig = {
     'CLANG_CXX_LANGUAGE_STANDARD' => 'c++17',
     'CLANG_CXX_LIBRARY' => 'libc++',
-    'HEADER_SEARCH_PATHS' => '"$(PODS_TARGET_SRCROOT)/prebuilt/include" "$(PODS_TARGET_SRCROOT)/ios/Sources/AlphaVideo/include" "$(PODS_TARGET_SRCROOT)/cpp" "$(PODS_TARGET_SRCROOT)/codecs/vpx" "$(PODS_TARGET_SRCROOT)/codecs/av1" "$(PODS_TARGET_SRCROOT)/third_party/alpha-video-source/src" "$(PODS_TARGET_SRCROOT)/third_party/libwebm/webm_parser" "$(PODS_TARGET_SRCROOT)/third_party/libwebm/webm_parser/include"',
+    'HEADER_SEARCH_PATHS' => header_paths.map { |path| "\"$(PODS_TARGET_SRCROOT)/#{path}\"" }.join(' '),
     'LIBRARY_SEARCH_PATHS[sdk=iphoneos*]' => '"$(PODS_TARGET_SRCROOT)/prebuilt/ios/lib"',
     'LIBRARY_SEARCH_PATHS[sdk=iphonesimulator*]' => '"$(PODS_TARGET_SRCROOT)/prebuilt/ios-simulator/lib"'
   }
@@ -51,9 +77,12 @@ Pod::Spec.new do |s|
   user_target_xcconfig = {}
   { 'iphoneos' => 'ios', 'iphonesimulator' => 'ios-simulator' }.each do |sdk, dir|
     lib_dir = "$(PODS_ROOT)/../#{pod_dir}/prebuilt/#{dir}/lib"
-    force_load = "-force_load \"#{lib_dir}/libdav1d.a\""
+    flags = []
+    flags << "-force_load \"#{lib_dir}/libdav1d.a\"" if codecs.include?('av1')
+    flags << '-lvpx' if codecs.include?('vpx')
+    next if flags.empty?
     user_target_xcconfig["LIBRARY_SEARCH_PATHS[sdk=#{sdk}*]"] = "$(inherited) \"#{lib_dir}\""
-    user_target_xcconfig["OTHER_LDFLAGS[sdk=#{sdk}*]"] = "$(inherited) #{force_load} -lvpx"
+    user_target_xcconfig["OTHER_LDFLAGS[sdk=#{sdk}*]"] = "$(inherited) #{flags.join(' ')}"
   end
   s.user_target_xcconfig = user_target_xcconfig
   

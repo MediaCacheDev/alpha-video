@@ -5,14 +5,15 @@
 # Collects the GitHub Release assets for v<version> (package.json) in dist/release-v<version>/:
 #
 #   prebuilt-libvpx<V>-dav1d<D>.tar.gz    prebuilt/ for Android and iOS, what fetch-prebuilt.sh unpacks
-#   AlphaVideoCodecs.xcframework.zip      the Package.swift binary target, as built by build_xcframework.sh
+#   AlphaVideoLibvpx.xcframework.zip      Package.swift's binary targets, as built by
+#   AlphaVideoDav1d.xcframework.zip       build_xcframework.sh
 #   alpha-video-<version>-ios.zip         the CocoaPods source (alpha-video.podspec): the iOS sources,
-#                                         libwebm's parser, alpha-video-source's reader and
-#                                         AlphaVideoCodecs.xcframework
+#                                         the codec modules, libwebm's parser, alpha-video-source's
+#                                         reader and both xcframeworks
 #   SHA256SUMS
 #
 # Uploads nothing. Afterwards, fetch-prebuilt.sh's SHA256 must be the prebuilt archive's,
-# alpha-video.podspec's sha256 the pod zip's, and Package.swift's checksum the xcframework zip's;
+# alpha-video.podspec's sha256 the pod zip's, and Package.swift's checksums the xcframework zips';
 # the script stops or warns when they differ.
 #
 
@@ -36,15 +37,18 @@ for dir in android ios/lib ios-simulator/lib include; do
         exit 1
     fi
 done
-ZIP="$ROOT/prebuilt/AlphaVideoCodecs.xcframework.zip"
-if [ ! -f "$ZIP" ]; then
-    echo "❌ $ZIP is missing: run scripts/build_xcframework.sh" >&2
-    exit 1
-fi
-if ! grep -q "checksum: \"$(sha256 "$ZIP")\"" "$ROOT/Package.swift"; then
-    echo "❌ Package.swift's checksum is not AlphaVideoCodecs.xcframework.zip's ($(sha256 "$ZIP"))" >&2
-    exit 1
-fi
+XCFRAMEWORKS="AlphaVideoLibvpx AlphaVideoDav1d"
+for name in $XCFRAMEWORKS; do
+    ZIP="$ROOT/prebuilt/$name.xcframework.zip"
+    if [ ! -f "$ZIP" ]; then
+        echo "❌ $ZIP is missing: run scripts/build_xcframework.sh" >&2
+        exit 1
+    fi
+    if ! grep -q "codecLibrary(\"$name\", checksum: \"$(sha256 "$ZIP")\")" "$ROOT/Package.swift"; then
+        echo "❌ Package.swift's checksum for $name is not $name.xcframework.zip's ($(sha256 "$ZIP"))" >&2
+        exit 1
+    fi
+done
 
 rm -rf "$OUT"
 mkdir -p "$OUT"
@@ -73,17 +77,21 @@ POD="$STAGE/pod"
 mkdir -p "$POD/cpp" "$POD/ios/Sources" "$POD/third_party"
 cp "$ROOT"/cpp/*.h "$ROOT"/cpp/*.cpp "$POD/cpp/"
 rm "$POD/cpp/WebMAlphaPlayer_jni.cpp"
-cp -R "$ROOT/ios/Sources/AlphaVideo" "$POD/ios/Sources/"
+cp -R "$ROOT/ios/Sources/AlphaVideo" "$ROOT/ios/Sources/AlphaVideoVPX" "$ROOT/ios/Sources/AlphaVideoAV1" "$POD/ios/Sources/"
 cp -R "$ROOT/codecs" "$POD/"
 cp -R "$ROOT/third_party/libwebm" "$ROOT/third_party/alpha-video-source" "$POD/third_party/"
-cp -R "$ROOT/prebuilt/AlphaVideoCodecs.xcframework" "$POD/"
+for name in $XCFRAMEWORKS; do
+    cp -R "$ROOT/prebuilt/$name.xcframework" "$POD/"
+done
 cp -R "$ROOT/LICENSE" "$ROOT/THIRD_PARTY_NOTICES.md" "$ROOT/licenses" "$POD/"
 find "$POD" -name .DS_Store -delete
 find "$POD" -exec touch -h -t 202601010000 {} +
 POD_ZIP="alpha-video-$VERSION-ios.zip"
 (cd "$POD" && find . -mindepth 1 | sed 's#^\./##' | LC_ALL=C sort | zip -q -X -D -9 "$OUT/$POD_ZIP" -@)
 
-cp "$ZIP" "$OUT/"
+for name in $XCFRAMEWORKS; do
+    cp "$ROOT/prebuilt/$name.xcframework.zip" "$OUT/"
+done
 
 (cd "$OUT" && shasum -a 256 -- * > SHA256SUMS)
 echo "📦 $OUT"

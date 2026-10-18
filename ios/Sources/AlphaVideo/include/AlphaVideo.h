@@ -1,7 +1,8 @@
 /**
  * AlphaVideo.h
- * Transparent video for iOS: VP9 WebM with alpha, decoded by the C++ core (libvpx, dav1d for AV1)
- * and drawn with Metal. AlphaVideoView is the view to use; the rest is the lower-level API.
+ * Transparent video for iOS: VP9 or AV1 WebM with alpha, decoded by the C++ core's codec modules
+ * (libvpx, dav1d) and drawn with Metal. AlphaVideoView is the view to use; the rest is the
+ * lower-level API.
  */
 
 #import <Foundation/Foundation.h>
@@ -10,6 +11,31 @@
 #import <UIKit/UIKit.h>
 
 NS_ASSUME_NONNULL_BEGIN
+
+/**
+ * The error code when no linked codec module decodes the file: the message names the module to
+ * add (AlphaVideoVPX for VP9, AlphaVideoAV1 for AV1).
+ */
+extern NSString *const AlphaVideoErrorNoDecoder;
+
+/**
+ * The software decoders the player plays with. The codec modules register themselves when the
+ * app links them, nothing to call: SwiftPM products AlphaVideoVPX (libvpx, VP9) and AlphaVideoAV1
+ * (dav1d, AV1), or pods alpha-video/VPX and alpha-video/AV1.
+ */
+@interface AlphaVideoCodecs : NSObject
+
+/**
+ * Registers another software decoder: `pluginList` is a native AlphaVideoDecoderPluginList
+ * (cpp/AlphaVideoDecoderPlugin.h). Registered decoders come after the modules', which a stream
+ * tries first. NO, with `error`, for a decoder built for another plugin ABI.
+ */
++ (BOOL)registerPluginList:(const void *)pluginList error:(NSError **)error;
+
+/** The registered software decoders, e.g. @[@"libvpx v1.15.2", @"dav1d 1.5.1"]; empty with none. */
+@property (class, nonatomic, readonly) NSArray<NSString *> *softwareDecoders;
+
+@end
 
 /**
  * Frame data structure for Metal rendering
@@ -64,7 +90,8 @@ NS_ASSUME_NONNULL_BEGIN
 - (void)playerDidStop;
 - (void)playerDidLoop;
 - (void)playerDidEnd;
-- (void)playerDidEncounterError:(NSString *)error;
+// `code`: AlphaVideoErrorNoDecoder, or nil
+- (void)playerDidEncounterError:(NSString *)error code:(nullable NSString *)code;
 - (void)playerPreloadProgress:(int)loaded total:(int)total;
 - (void)playerPreloadComplete:(int)totalFrames timeMs:(double)timeMs;
 
@@ -270,7 +297,8 @@ NS_ASSUME_NONNULL_BEGIN
 @protocol AlphaVideoViewDelegate <NSObject>
 @optional
 - (void)alphaVideoView:(AlphaVideoView *)view didLoadFrames:(int)totalFrames width:(int)width height:(int)height;
-- (void)alphaVideoView:(AlphaVideoView *)view didFailWithError:(NSString *)error;
+// `code`: AlphaVideoErrorNoDecoder, or nil
+- (void)alphaVideoView:(AlphaVideoView *)view didFailWithError:(NSString *)error code:(nullable NSString *)code;
 - (void)alphaVideoViewDidEnd:(AlphaVideoView *)view;
 @end
 

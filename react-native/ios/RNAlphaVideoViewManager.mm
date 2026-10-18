@@ -64,9 +64,9 @@
     }
 }
 
-- (void)alphaVideoView:(AlphaVideoView *)view didFailWithError:(NSString *)error {
+- (void)alphaVideoView:(AlphaVideoView *)view didFailWithError:(NSString *)error code:(NSString *)code {
     if (self.onError) {
-        self.onError(@{@"error": error});
+        self.onError(code ? @{@"error": error, @"code": code} : @{@"error": error});
     }
 }
 
