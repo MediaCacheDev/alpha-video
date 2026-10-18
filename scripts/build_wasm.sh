@@ -188,12 +188,11 @@ EM_PKG_CONFIG_PATH="$BUILD_DIR/stage-dav1d-mt/lib/pkgconfig" \
     build_ffmpeg software-mt --disable-avformat --enable-decoder=vp9,libdav1d --enable-libdav1d \
     --enable-pthreads --extra-cflags=-pthread --extra-ldflags=-pthread
 
-# dav1d for its AV1 sequence header parser only
 WEBM_PARSER="$PROJECT_DIR/third_party/libwebm/webm_parser"
 link_module demuxer.mjs \
-    -I"$PROJECT_DIR/cpp" -I"$WEBM_PARSER" -I"$WEBM_PARSER/include" -I"$BUILD_DIR/stage-dav1d/include" \
-    "$PROJECT_DIR/web/wasm/demuxer_bindings.cpp" "$PROJECT_DIR/cpp/AlphaDemuxer.cpp" "$PROJECT_DIR/cpp/YuvToRgb.cpp" \
-    "$WEBM_PARSER"/src/*.cc "$BUILD_DIR/stage-dav1d/lib/libdav1d.a" \
+    -I"$PROJECT_DIR/cpp" -I"$WEBM_PARSER" -I"$WEBM_PARSER/include" \
+    "$PROJECT_DIR/web/wasm/demuxer_bindings.cpp" "$PROJECT_DIR/cpp/AlphaDemuxer.cpp" \
+    "$PROJECT_DIR/cpp/Av1SequenceHeader.cpp" "$PROJECT_DIR/cpp/YuvToRgb.cpp" "$WEBM_PARSER"/src/*.cc \
     -sMALLOC=emmalloc -sINITIAL_MEMORY=16777216
 
 # software_module <output> <FFmpeg variant> <dav1d variant> <flags...>

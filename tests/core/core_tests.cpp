@@ -7,8 +7,12 @@
 
 #include "WebMAlphaPlayer.h"
 #include "AlphaDemuxer.h"
+#include "Av1SequenceHeader.h"
 #include "ByteSource.h"
 #include "RangeReader.h"
+
+#include <dav1d/dav1d.h>
+#include <dirent.h>
 
 #include <algorithm>
 #include <chrono>
@@ -23,6 +27,7 @@
 #include <iterator>
 #include <mutex>
 #include <random>
+#include <set>
 #include <sstream>
 #include <stdexcept>
 #include <string>
@@ -759,6 +764,93 @@ static void registerTests() {
         while (demuxer->readPacket(&p)) count++;
         CHECK(count == 3, count << " packets");
         CHECK(!demuxer->failed(), "the end of the file reads as a failure");
+    }});
+
+    tests().push_back({"AV1 sequence headers match dav1d's", [] {
+        std::vector<std::string> files;
+        for (const Fixture& f : fixtures()) {
+            if (f.name.find("av1") != std::string::npos) files.push_back(f.path);
+        }
+        const std::string headersDir = std::string(FIXTURES_DIR) + "/av1_headers";
+        if (DIR* dir = opendir(headersDir.c_str())) {
+            while (dirent* entry = readdir(dir)) {
+                const std::string name = entry->d_name;
+                if (name.size() > 5 && name.compare(name.size() - 5, 5, ".webm") == 0) files.push_back(headersDir + "/" + name);
+            }
+            closedir(dir);
+        }
+        CHECK(files.size() >= 16, files.size() << " AV1 files; run tests/fixtures/av1_headers/make.sh");
+
+        std::set<std::string> seen;
+        int headers = 0;
+        // `data` holds OBUs; ours must agree with dav1d's on whether there is a valid header, and on its fields
+        auto compare = [&](const std::string& what, const uint8_t* data, size_t size) {
+            Dav1dSequenceHeader d;
+            const bool dav1dOk = dav1d_parse_sequence_header(&d, data, size) == 0;
+            Av1SequenceHeader ours;
+            const bool oursOk = parseAv1SequenceHeader(data, size, &ours);
+            CHECK(oursOk == dav1dOk, what << ": parsed " << oursOk << ", dav1d " << dav1dOk);
+            if (!dav1dOk) return;
+            headers++;
+            CHECK(ours.profile == d.profile, what << ": profile " << ours.profile << " vs " << int(d.profile));
+            CHECK(ours.bitDepth == 8 + 2 * d.hbd, what << ": bit depth " << ours.bitDepth << " vs hbd " << int(d.hbd));
+            CHECK(ours.monochrome == (d.monochrome != 0), what << ": monochrome");
+            CHECK(ours.subsamplingX == d.ss_hor && ours.subsamplingY == d.ss_ver,
+                  what << ": subsampling " << ours.subsamplingX << "," << ours.subsamplingY << " vs " << int(d.ss_hor) << "," << int(d.ss_ver));
+            CHECK(ours.colorPrimaries == d.pri && ours.transferCharacteristics == d.trc && ours.matrixCoefficients == d.mtrx,
+                  what << ": colour " << ours.colorPrimaries << "/" << ours.transferCharacteristics << "/" << ours.matrixCoefficients
+                       << " vs " << d.pri << "/" << d.trc << "/" << d.mtrx);
+            CHECK(ours.fullRange == (d.color_range != 0), what << ": range");
+            CHECK(ours.maxWidth == d.max_width && ours.maxHeight == d.max_height, what << ": size");
+            seen.insert("profile " + std::to_string(d.profile));
+            seen.insert("bit depth " + std::to_string(ours.bitDepth));
+            seen.insert("subsampling " + std::to_string(d.ss_hor) + std::to_string(d.ss_ver));
+            if (d.monochrome) seen.insert("monochrome");
+            if (d.mtrx == DAV1D_MC_IDENTITY) seen.insert("identity matrix");
+            if (d.color_description_present) seen.insert("colour description");
+            if (d.timing_info_present) seen.insert("timing info");
+            if (d.decoder_model_info_present) seen.insert("decoder model info");
+            if (d.reduced_still_picture_header) seen.insert("reduced still picture header");
+        };
+
+        for (const std::string& path : files) {
+            int fd = ::open(path.c_str(), O_RDONLY);
+            CHECK(fd >= 0, path);
+            std::unique_ptr<AlphaDemuxer> demuxer = AlphaDemuxer::open(openFileRange(fd, 0, -1));
+            ::close(fd);
+            CHECK(demuxer != nullptr, path);
+            const AlphaDemuxer::Info info = demuxer->info();
+            std::vector<const AlphaDemuxer::StreamInfo*> streams = {&info.color};
+            if (info.hasAlpha) streams.push_back(&info.alpha);
+            std::vector<std::vector<uint8_t>> firstPackets(streams.size());
+            AlphaDemuxer::Packet p;
+            while (demuxer->readPacket(&p)) {
+                if (p.stream < static_cast<int>(streams.size()) && firstPackets[p.stream].empty()) {
+                    firstPackets[p.stream].assign(p.data, p.data + p.size);
+                }
+            }
+            for (size_t i = 0; i < streams.size(); i++) {
+                CHECK(streams[i]->codec == AlphaDemuxer::AV1, path << " stream " << i << " isn't AV1");
+                const std::string what = path.substr(path.rfind('/', path.rfind('/') - 1) + 1) + " stream " + std::to_string(i);
+                compare(what + " first packet", firstPackets[i].data(), firstPackets[i].size());
+                // av1C's configOBUs are optional (rav1e leaves them out); the demuxer then reads the first packet
+                const std::vector<uint8_t>& av1C = streams[i]->codecPrivate;
+                if (av1C.size() <= 4) {
+                    seen.insert("av1C without OBUs");
+                    continue;
+                }
+                compare(what + " av1C", av1C.data() + 4, av1C.size() - 4);
+                // Cut short anywhere, a header parses only if dav1d's does too, and the same
+                for (size_t n = 0; n < av1C.size() - 4; n++) compare(what + " av1C cut to " + std::to_string(n), av1C.data() + 4, n);
+            }
+        }
+        for (const char* branch : {"profile 0", "profile 1", "profile 2", "bit depth 8", "bit depth 10", "bit depth 12",
+                                   "subsampling 11", "subsampling 10", "subsampling 00", "monochrome", "identity matrix",
+                                   "colour description", "timing info", "decoder model info", "reduced still picture header",
+                                   "av1C without OBUs"}) {
+            CHECK(seen.count(branch), "no file has " << branch);
+        }
+        CHECK(headers > 0, "no headers");
     }});
 
     tests().push_back({"the library versions name libvpx and dav1d", [] {

@@ -28,6 +28,7 @@ target_include_directories(webm_parser PUBLIC ${WEBM_PARSER} ${WEBM_PARSER}/incl
 add_library(alpha_video_core STATIC
   ${CORE}/WebMAlphaPlayer.cpp
   ${CORE}/AlphaDemuxer.cpp
+  ${CORE}/Av1SequenceHeader.cpp
   ${CORE}/VideoDecoder.cpp
   ${CORE}/YuvToRgb.cpp
   ${CORE}/ByteSource.cpp
@@ -50,7 +51,7 @@ if(FFMPEG_FOUND)
   target_link_libraries(ffmpeg_demuxer PUBLIC PkgConfig::FFMPEG)
 
   add_executable(demuxer_compare demuxer_compare.cpp
-    ${CORE}/AlphaDemuxer.cpp ${CORE}/YuvToRgb.cpp ${CORE}/ByteSource.cpp
+    ${CORE}/AlphaDemuxer.cpp ${CORE}/Av1SequenceHeader.cpp ${CORE}/YuvToRgb.cpp ${CORE}/ByteSource.cpp
     ${SOURCE_READER}/RangeReader.cpp ${SOURCE_READER}/Store.cpp)
   target_include_directories(demuxer_compare PRIVATE ${CORE} ${SOURCE_READER})
   target_compile_options(demuxer_compare PRIVATE -Wall)

@@ -1,9 +1,9 @@
 #include "AlphaDemuxer.h"
 
+#include "Av1SequenceHeader.h"
 #include "ByteSource.h"
 #include "YuvToRgb.h"
 
-#include <dav1d/dav1d.h>
 #include <webm/callback.h>
 #include <webm/reader.h>
 #include <webm/status.h>
@@ -209,13 +209,12 @@ bool parseVp9KeyframeHeader(const uint8_t* data, size_t size, Vp9Header* out) {
 
 // The sequence header from av1C's configOBUs, as FFmpeg's libdav1d reads it, or else from the
 // first packet.
-bool parseAv1SequenceHeader(const std::vector<uint8_t>& av1C, const std::vector<uint8_t>& firstPacket,
-                            Dav1dSequenceHeader* out) {
-    if (av1C.size() > 4 && (av1C[0] & 0x80) &&
-        dav1d_parse_sequence_header(out, av1C.data() + 4, av1C.size() - 4) == 0) {
+bool parseAv1TrackHeader(const std::vector<uint8_t>& av1C, const std::vector<uint8_t>& firstPacket,
+                         Av1SequenceHeader* out) {
+    if (av1C.size() > 4 && (av1C[0] & 0x80) && parseAv1SequenceHeader(av1C.data() + 4, av1C.size() - 4, out)) {
         return true;
     }
-    return !firstPacket.empty() && dav1d_parse_sequence_header(out, firstPacket.data(), firstPacket.size()) == 0;
+    return !firstPacket.empty() && parseAv1SequenceHeader(firstPacket.data(), firstPacket.size(), out);
 }
 
 // The track's Colour element, as FFmpeg's Matroska demuxer takes it.
@@ -509,14 +508,14 @@ AlphaDemuxer::StreamInfo AlphaDemuxer::Impl::streamInfoOf(const Track& track, co
     }
 
     s.codecPrivate = track.entry.codec_private.value();
-    Dav1dSequenceHeader seq;
-    if (parseAv1SequenceHeader(s.codecPrivate, firstPacket, &seq)) {
-        s.profile = static_cast<int>(seq.profile);
-        s.bitDepth = 8 + 2 * seq.hbd;
-        s.colorRange = seq.color_range ? kRangeFull : kRangeLimited;
-        s.colorSpace = seq.mtrx;
-        s.colorPrimaries = seq.pri;
-        s.colorTrc = seq.trc;
+    Av1SequenceHeader seq;
+    if (parseAv1TrackHeader(s.codecPrivate, firstPacket, &seq)) {
+        s.profile = seq.profile;
+        s.bitDepth = seq.bitDepth;
+        s.colorRange = seq.fullRange ? kRangeFull : kRangeLimited;
+        s.colorSpace = seq.matrixCoefficients;
+        s.colorPrimaries = seq.colorPrimaries;
+        s.colorTrc = seq.transferCharacteristics;
     } else if (s.codecPrivate.size() >= 3) {
         const uint8_t flags = s.codecPrivate[2];
         s.bitDepth = (flags & 0x40) ? ((flags & 0x20) ? 12 : 10) : 8;

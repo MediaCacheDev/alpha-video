@@ -17,6 +17,7 @@ set(SOURCE_READER "${MODULE_ROOT}/third_party/alpha-video-source/src")
 # Source files
 set(NATIVE_SOURCES
     ${MODULE_ROOT}/cpp/AlphaDemuxer.cpp
+    ${MODULE_ROOT}/cpp/Av1SequenceHeader.cpp
     ${MODULE_ROOT}/cpp/ByteSource.cpp
     ${SOURCE_READER}/RangeReader.cpp
     ${SOURCE_READER}/Store.cpp
