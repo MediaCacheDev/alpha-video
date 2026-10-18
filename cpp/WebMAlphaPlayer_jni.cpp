@@ -12,6 +12,9 @@
 #include "AlphaDemuxer.h"
 #include "ByteSource.h"
 #include "RangeReader.h"
+#include "VideoDecoder.h"
+#include "../codecs/av1/Dav1dDecoderPlugin.h"
+#include "../codecs/vpx/VpxDecoderPlugin.h"
 #include <pthread.h>
 #include <algorithm>
 #include <atomic>
@@ -32,6 +35,15 @@
 #define LOGE(...) __android_log_print(ANDROID_LOG_ERROR, LOG_TAG, __VA_ARGS__)
 
 namespace {
+
+// Both codec modules are built into this library until each is its own
+[[maybe_unused]] const bool codecsRegistered = [] {
+    std::string error;
+    const bool registered = webm::registerDecoderPlugins(alpha_video_vpx_plugins, &error) &&
+                            webm::registerDecoderPlugins(alpha_video_av1_plugins, &error);
+    if (!registered) LOGE("%s", error.c_str());
+    return registered;
+}();
 
 // Store player instances by ID
 // Using shared_ptr to allow safe reference during async operations

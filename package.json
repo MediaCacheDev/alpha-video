@@ -11,6 +11,7 @@
     "react-native",
     "lib",
     "cpp",
+    "codecs",
     "ios",
     "android",
     "scripts",

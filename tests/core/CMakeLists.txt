@@ -1,6 +1,7 @@
 # Host build of the C++ core (cpp/) against the system libvpx and dav1d, with its tests.
 #
 #   cmake -S tests/core -B tests/core/build -G Ninja && cmake --build tests/core/build && tests/core/build/core_tests
+#   tests/core/build/codec_registry_tests
 #
 # Needs libvpx and dav1d (macOS: brew install libvpx dav1d pkg-config). With FFmpeg 6.1 or later
 # too (brew install ffmpeg), it also builds demuxer_compare, which checks the core's demuxer
@@ -12,7 +13,8 @@ set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 
 find_package(PkgConfig REQUIRED)
-pkg_check_modules(CODECS REQUIRED IMPORTED_TARGET vpx dav1d)
+pkg_check_modules(VPX REQUIRED IMPORTED_TARGET vpx)
+pkg_check_modules(DAV1D REQUIRED IMPORTED_TARGET dav1d)
 pkg_check_modules(FFMPEG IMPORTED_TARGET libavformat libavcodec libavutil)
 find_package(Threads REQUIRED)
 
@@ -37,12 +39,27 @@ add_library(alpha_video_core STATIC
 )
 target_include_directories(alpha_video_core PUBLIC ${CORE} ${SOURCE_READER})
 target_compile_options(alpha_video_core PRIVATE -Wall)
-target_link_libraries(alpha_video_core PUBLIC webm_parser PkgConfig::CODECS Threads::Threads)
+target_link_libraries(alpha_video_core PUBLIC webm_parser Threads::Threads)
+
+# The codec modules: decoder plugins the player's core finds only once they're registered
+add_library(alpha_video_vpx STATIC ${ROOT}/codecs/vpx/VpxDecoderPlugin.cpp)
+target_include_directories(alpha_video_vpx PUBLIC ${CORE})
+target_compile_options(alpha_video_vpx PRIVATE -Wall)
+target_link_libraries(alpha_video_vpx PUBLIC PkgConfig::VPX)
+add_library(alpha_video_av1 STATIC ${ROOT}/codecs/av1/Dav1dDecoderPlugin.cpp)
+target_include_directories(alpha_video_av1 PUBLIC ${CORE})
+target_compile_options(alpha_video_av1 PRIVATE -Wall)
+target_link_libraries(alpha_video_av1 PUBLIC PkgConfig::DAV1D)
 
 add_executable(core_tests core_tests.cpp)
 target_compile_definitions(core_tests PRIVATE FIXTURES_DIR="${CMAKE_CURRENT_SOURCE_DIR}/../fixtures")
 target_compile_options(core_tests PRIVATE -Wall)
-target_link_libraries(core_tests PRIVATE alpha_video_core)
+target_link_libraries(core_tests PRIVATE alpha_video_core alpha_video_vpx alpha_video_av1)
+
+add_executable(codec_registry_tests codec_registry_tests.cpp)
+target_compile_definitions(codec_registry_tests PRIVATE FIXTURES_DIR="${CMAKE_CURRENT_SOURCE_DIR}/../fixtures")
+target_compile_options(codec_registry_tests PRIVATE -Wall)
+target_link_libraries(codec_registry_tests PRIVATE alpha_video_core alpha_video_vpx alpha_video_av1)
 
 if(FFMPEG_FOUND)
   # The FFmpeg demuxer the web used before the core's, renamed so that it links beside the core's
@@ -55,5 +72,5 @@ if(FFMPEG_FOUND)
     ${SOURCE_READER}/RangeReader.cpp ${SOURCE_READER}/Store.cpp)
   target_include_directories(demuxer_compare PRIVATE ${CORE} ${SOURCE_READER})
   target_compile_options(demuxer_compare PRIVATE -Wall)
-  target_link_libraries(demuxer_compare PRIVATE ffmpeg_demuxer webm_parser PkgConfig::CODECS Threads::Threads)
+  target_link_libraries(demuxer_compare PRIVATE ffmpeg_demuxer webm_parser Threads::Threads)
 endif()

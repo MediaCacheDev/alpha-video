@@ -18,7 +18,7 @@ Pod::Spec.new do |s|
   s.source       = { :http => "https://github.com/MediaCacheDev/alpha-video/releases/download/v#{s.version}/alpha-video-#{s.version}-ios.zip",
                      :sha256 => '42cfc0297a74da447102fd1620f64a398b904661991467a675deb01adb83cd1c' }
 
-  s.source_files        = 'cpp/*.{h,cpp}', 'ios/Sources/AlphaVideo/**/*.{h,mm}',
+  s.source_files        = 'cpp/*.{h,cpp}', 'codecs/**/*.{h,cpp}', 'ios/Sources/AlphaVideo/**/*.{h,mm}',
                           'third_party/libwebm/webm_parser/**/*.{h,cc}',
                           'third_party/alpha-video-source/src/*.{h,cpp}'
   s.public_header_files = 'ios/Sources/AlphaVideo/include/AlphaVideo.h'
@@ -27,6 +27,6 @@ Pod::Spec.new do |s|
   s.libraries           = 'c++'
   s.pod_target_xcconfig = {
     'CLANG_CXX_LANGUAGE_STANDARD' => 'c++17',
-    'HEADER_SEARCH_PATHS' => '"$(PODS_TARGET_SRCROOT)/cpp" "$(PODS_TARGET_SRCROOT)/third_party/alpha-video-source/src" "$(PODS_TARGET_SRCROOT)/third_party/libwebm/webm_parser" "$(PODS_TARGET_SRCROOT)/third_party/libwebm/webm_parser/include"'
+    'HEADER_SEARCH_PATHS' => '"$(PODS_TARGET_SRCROOT)/cpp" "$(PODS_TARGET_SRCROOT)/codecs/vpx" "$(PODS_TARGET_SRCROOT)/codecs/av1" "$(PODS_TARGET_SRCROOT)/third_party/alpha-video-source/src" "$(PODS_TARGET_SRCROOT)/third_party/libwebm/webm_parser" "$(PODS_TARGET_SRCROOT)/third_party/libwebm/webm_parser/include"'
   }
 end

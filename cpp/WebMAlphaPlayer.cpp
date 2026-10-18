@@ -673,17 +673,13 @@ void WebMAlphaPlayer::unload() {
 bool WebMAlphaPlayer::openStreams() {
     const AlphaDemuxer::Info& info = demuxer_->info();
     
-    // dav1d decodes 10- and 12-bit AV1; the libvpx build is 8-bit only
     const AlphaDemuxer::StreamInfo* tracks[] = {
         &info.color, info.hasAlpha && !info.alphaInBlockAdditional ? &info.alpha : nullptr};
     for (int track = 0; track < 2; track++) {
         if (!tracks[track]) continue;
-        const char* codec = tracks[track]->codec == AlphaDemuxer::AV1 ? "av1" : "vp9";
-        const int depth = tracks[track]->bitDepth;
-        const int maxDepth = tracks[track]->codec == AlphaDemuxer::AV1 ? 12 : 8;
-        if (depth > maxDepth) {
-            emitEvent("error", std::string(codec) + " track " + std::to_string(track) + " is " +
-                      std::to_string(depth) + "-bit; " + codec + " plays up to " + std::to_string(maxDepth) + "-bit");
+        std::string whyNot;
+        if (!findDecoderPlugin(*tracks[track], info.width, info.height, &whyNot)) {
+            emitEvent("error", std::string(track ? "The alpha" : "The colour") + " track can't play: " + whyNot);
             return false;
         }
     }
@@ -711,14 +707,14 @@ bool WebMAlphaPlayer::openStreams() {
 bool WebMAlphaPlayer::initCodecs() {
     const AlphaDemuxer::Info& info = demuxer_->info();
     std::string error;
-    colorDecoder_ = VideoDecoder::create(info.color.codec, config_.decodeThreads, &error);
+    colorDecoder_ = VideoDecoder::create(info.color, info.width, info.height, config_.decodeThreads, &error);
     if (!colorDecoder_) {
         emitEvent("error", "Failed to open the colour decoder (" + error + ")");
         return false;
     }
     std::string name = colorDecoder_->name();
     if (info.hasAlpha) {
-        alphaDecoder_ = VideoDecoder::create(info.alpha.codec, config_.decodeThreads, &error);
+        alphaDecoder_ = VideoDecoder::create(info.alpha, info.width, info.height, config_.decodeThreads, &error);
         if (!alphaDecoder_) {
             emitEvent("error", "Failed to open the alpha decoder (" + error + ")");
             return false;

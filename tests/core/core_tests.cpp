@@ -10,6 +10,10 @@
 #include "Av1SequenceHeader.h"
 #include "ByteSource.h"
 #include "RangeReader.h"
+#include "VideoDecoder.h"
+
+#include "../../codecs/av1/Dav1dDecoderPlugin.h"
+#include "../../codecs/vpx/VpxDecoderPlugin.h"
 
 #include <dav1d/dav1d.h>
 #include <dirent.h>
@@ -883,6 +887,12 @@ static void registerTests() {
 }
 
 int main(int argc, char** argv) {
+    std::string error;
+    if (!registerDecoderPlugins(alpha_video_vpx_plugins, &error) ||
+        !registerDecoderPlugins(alpha_video_av1_plugins, &error)) {
+        std::fprintf(stderr, "%s\n", error.c_str());
+        return 1;
+    }
     registerTests();
     const char* filter = argc > 1 ? argv[1] : nullptr;
     int passed = 0, failed = 0, known = 0, fixed = 0;

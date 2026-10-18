@@ -25,6 +25,8 @@ set(NATIVE_SOURCES
     ${MODULE_ROOT}/cpp/WebMAlphaPlayer.cpp
     ${MODULE_ROOT}/cpp/WebMAlphaPlayer_jni.cpp
     ${MODULE_ROOT}/cpp/YuvToRgb.cpp
+    ${MODULE_ROOT}/codecs/vpx/VpxDecoderPlugin.cpp
+    ${MODULE_ROOT}/codecs/av1/Dav1dDecoderPlugin.cpp
     ${WEBM_PARSER_SOURCES}
 )
 

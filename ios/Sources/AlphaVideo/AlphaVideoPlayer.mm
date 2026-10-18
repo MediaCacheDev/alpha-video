@@ -5,11 +5,23 @@
 
 #import "AlphaVideoInternal.h"
 #include "RangeReader.h"
+#include "VideoDecoder.h"
 #include "WebMAlphaPlayer.h"
+#include "Dav1dDecoderPlugin.h"
+#include "VpxDecoderPlugin.h"
 #include <memory>
 
 // Lifecycle and per-frame logging inside AlphaVideoMetalView, only with its verbose flag
 #define WEBM_VLOG(...) do { if (self.verbose) NSLog(__VA_ARGS__); } while (0)
+
+// Both codec modules are built into this framework until each is its own
+[[maybe_unused]] static const bool codecsRegistered = [] {
+    std::string error;
+    const bool registered = webm::registerDecoderPlugins(alpha_video_vpx_plugins, &error) &&
+                            webm::registerDecoderPlugins(alpha_video_av1_plugins, &error);
+    if (!registered) NSLog(@"AlphaVideo: %s", error.c_str());
+    return registered;
+}();
 
 //==============================================================================
 // AlphaVideoFrame Implementation

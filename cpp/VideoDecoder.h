@@ -1,6 +1,7 @@
 #pragma once
 
 #include "AlphaDemuxer.h"
+#include "AlphaVideoDecoderPlugin.h"
 
 #include <cstdint>
 #include <memory>
@@ -24,7 +25,25 @@ struct Picture {
 };
 
 /**
- * Decodes one VP9 or AV1 bitstream: libvpx for VP9, dav1d for AV1. Not thread-safe.
+ * Registers a codec module's decoders with every player in the process. False, with `error` set,
+ * for a plugin built for another ABI; the others in the list are still registered. Registering a
+ * plugin again does nothing.
+ */
+bool registerDecoderPlugins(AlphaVideoDecoderPluginList list, std::string* error);
+bool registerDecoderPlugin(const AlphaVideoDecoderPlugin* plugin, std::string* error);
+
+/**
+ * The first registered plugin that decodes `stream`, or null with `whyNot` set: "no VP9 decoder
+ * is installed (the vpx codec module)", or "libvpx doesn't decode VP9 profile 2, 10-bit".
+ */
+const AlphaVideoDecoderPlugin* findDecoderPlugin(const AlphaDemuxer::StreamInfo& stream, int width, int height,
+                                                 std::string* whyNot);
+
+/** The registered decoders' versions, e.g. "libvpx v1.14.0, dav1d 1.5.1"; empty with none. */
+std::string decoderLibraryVersions();
+
+/**
+ * Decodes one VP9 or AV1 bitstream with a registered plugin. Not thread-safe.
  *
  * send() a packet, then receive() until it returns false. Frames come out in order, perhaps
  * some packets late (dav1d's frame threads); drain() at the end of the stream lets receive()
@@ -32,23 +51,29 @@ struct Picture {
  */
 class VideoDecoder {
 public:
-    /** Null with `error` set if the decoder can't be opened. */
-    static std::unique_ptr<VideoDecoder> create(AlphaDemuxer::Codec codec, int threads, std::string* error);
+    /** Null with `error` set if no plugin decodes the stream, or the plugin's decoder can't open. */
+    static std::unique_ptr<VideoDecoder> create(const AlphaDemuxer::StreamInfo& stream, int width, int height,
+                                                int threads, std::string* error);
 
-    virtual ~VideoDecoder() = default;
+    ~VideoDecoder();
+    VideoDecoder(const VideoDecoder&) = delete;
+    VideoDecoder& operator=(const VideoDecoder&) = delete;
 
     /** False if the packet can't be decoded. */
-    virtual bool send(const uint8_t* data, int size, int64_t ptsUs) = 0;
-    virtual bool receive(Picture* out) = 0;
-    virtual void drain() = 0;
+    bool send(const uint8_t* data, int size, int64_t ptsUs);
+    bool receive(Picture* out);
+    void drain();
     /** Drops the frames held and in progress, for a seek. */
-    virtual void flush() = 0;
+    void flush();
 
-    /** "libvpx" or "dav1d" */
-    virtual const char* name() const = 0;
+    /** The plugin's name: "libvpx" or "dav1d" */
+    const char* name() const;
+
+private:
+    VideoDecoder(const AlphaVideoDecoderPlugin* plugin, void* decoder) : plugin_(plugin), decoder_(decoder) {}
+
+    const AlphaVideoDecoderPlugin* plugin_;
+    void* decoder_;
 };
-
-/** The decoder libraries' versions, e.g. "libvpx v1.14.0, dav1d 1.5.1". */
-std::string decoderLibraryVersions();
 
 } // namespace webm
