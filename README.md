@@ -8,13 +8,13 @@ It plays **VP9 WebM with alpha** (standard YUVA WebM, what FFmpeg and libvpx wri
 - **iOS:** the C++ core, which demuxes with libwebm, decodes with libvpx (VP9) and dav1d (AV1), and draws with Metal.
 - **Web:** the browser's own `<video>` where it keeps the alpha, then WebCodecs, then the same decoders compiled to WebAssembly ([how it works](#web)).
 
-One repository, four packages:
+One repository, four packages. The software decoders are [codec modules](#codecs), so an app ships only the ones it uses:
 
 | Package | For | Install |
 |---|---|---|
 | `react-native-alpha-video` (npm) | React Native, and react-native-web | [React Native](#react-native) |
-| `dev.mediacache:alpha-video` (Maven Central) | Android | [Android](#android) |
-| `AlphaVideo` (Swift Package Manager), `alpha-video` (CocoaPods) | iOS | [iOS](#ios) |
+| `dev.mediacache:alpha-video` (Maven Central), with `alpha-video-vpx` and `alpha-video-av1` | Android | [Android](#android) |
+| `alpha-video` (Swift Package Manager: products `AlphaVideoVPX`, `AlphaVideoAV1`; CocoaPods: `alpha-video`) | iOS | [iOS](#ios) |
 | `alpha-video-web` (npm) | Browsers: plain JS/TS, or React | [Web](#web), [web/README.md](web/README.md) |
 
 See it next to the other formats in the [demo app](#demo-and-related-packages).
@@ -71,6 +71,24 @@ The player picks the decode path itself. On Android it uses MediaCodec when deco
 
 One package per platform, all built from this repository.
 
+### Codecs
+
+The player is a core plus codec modules. The core demuxes, reads files by range, keeps the stored copy, runs the frame pipeline and draws; on Android it also drives MediaCodec. Each codec module adds one software decoder for the C++ core: **vpx** (libvpx, for VP9; named for the VPx family, as libvpx decodes VP8 too) and **av1** (dav1d).
+
+| | Core | vpx | av1 |
+|---|---|---|---|
+| React Native | `react-native-alpha-video` | both built in by default; [`codecs`](#react-native) in the app's `package.json` picks | |
+| Android | `dev.mediacache:alpha-video` | `dev.mediacache:alpha-video-vpx` | `dev.mediacache:alpha-video-av1` |
+| iOS, Swift Package Manager | (no product of its own) | product `AlphaVideoVPX` | product `AlphaVideoAV1` |
+| iOS, CocoaPods | `alpha-video/Core` | `alpha-video/VPX` | `alpha-video/AV1` |
+| Web | `alpha-video-web` | loaded on its own, only for a VP9 stream decoded in software | the same, for AV1 |
+
+Which to take:
+- **iOS needs at least one.** It has no platform decoder for these files, so the core alone plays nothing. Take vpx for VP9 (standard alpha WebM is VP9) and av1 for AV1. `pod 'alpha-video'` and React Native without a setting give both.
+- **Android plays through MediaCodec without any:** VP9 on every device (Android's own software VP9 decoder), AV1 on Android 10 and later. A codec module is needed for the cases MediaCodec can't take: VP9 profile 1 (4:4:4, what a `gbrp` alpha track encodes to), AV1 on Android 7 to 9, more players at once than MediaCodec has instances for, and `decoder="software"`. `mode="preload"` and `"streamAndPreload"` take effect on the C++ core only; MediaCodec streams. **Apps with many players at once, or that rely on preload, should add vpx.**
+
+A file whose codec has no module reports `onError` with the code `NO_DECODER`, and a message naming the module, e.g. `The colour track can't play: no AV1 decoder is installed (the av1 codec module)`. The modules register themselves: nothing to call. They're released with the core, at the same version; a module from another release is refused with a message. The registered decoders are listed by `AlphaVideoCodecs.softwareDecoders()` on Android (and `getDecoderStatus()`'s `softwareDecoders` in React Native) and `AlphaVideoCodecs.softwareDecoders` on iOS, e.g. `libvpx v1.14.0`. Another decoder can be added through the C interface in `cpp/AlphaVideoDecoderPlugin.h` and `AlphaVideoCodecs.register(...)` (Android) or `registerPluginList:error:` (iOS).
+
 ### React Native
 
 **npm**, package `react-native-alpha-video`:
@@ -124,7 +142,15 @@ import { AlphaVideoView } from 'react-native-alpha-video';
 
 The example sets every option; [Options](#options) says when each one takes effect.
 
-The npm package carries the prebuilt libvpx and dav1d libraries, so nothing else is downloaded.
+The npm package carries the prebuilt libvpx and dav1d libraries, so nothing else is downloaded. Both [codecs](#codecs) are built in unless the app's `package.json` lists the ones to keep:
+
+```json
+{
+  "react-native-alpha-video": { "codecs": ["vpx"] }
+}
+```
+
+The Android build and `pod install` both read it (Expo prebuild too), and print the codecs they build in. Run `pod install` again after changing it. `"codecs": []` builds in neither: Android then plays through MediaCodec alone, and on iOS `pod install` warns, as every video would report `NO_DECODER`. A name other than `vpx` or `av1` stops the build. Only the codecs built in add to the app's size.
 
 The package works on both React Native architectures: the new one (a Fabric view, and a TurboModule for the [decoder status API](#decoder-status-api-android); the default since 0.76) and the old one (`newArchEnabled=false`, up to 0.81). It is tested on 0.83, and on 0.81 with the new architecture turned off.
 
@@ -139,10 +165,12 @@ The package works on both React Native architectures: the new one (a Fabric view
 ```gradle
 dependencies {
     implementation 'dev.mediacache:alpha-video:1.0.0'
+    implementation 'dev.mediacache:alpha-video-vpx:1.0.0'  // libvpx: VP9 in software
+    implementation 'dev.mediacache:alpha-video-av1:1.0.0'  // dav1d: AV1 in software
 }
 ```
 
-The AAR includes libvpx and dav1d, built for `arm64-v8a`, `armeabi-v7a` and `x86_64`. Android 7.0 (API 24) or later. To read videos through a Media3 `DataSource.Factory`, add `dev.mediacache:alpha-video-media3` too ([Data sources](#data-sources)).
+The core alone plays through MediaCodec; each codec module adds a software decoder ([Codecs](#codecs) says when it's needed). Each is its own AAR with its own native library, and registers itself when it's on the classpath, R8 keep rules included. Keep the three at one version. Native code is built for `arm64-v8a`, `armeabi-v7a` and `x86_64`. Android 7.0 (API 24) or later. To read videos through a Media3 `DataSource.Factory`, add `dev.mediacache:alpha-video-media3` too ([Data sources](#data-sources)).
 
 `dev.mediacache.alphavideo.AlphaVideoView` is a `TextureView`. It takes the same sources and options as the React Native component, through setters:
 
@@ -163,7 +191,7 @@ view.setUseDecodeQueue(true)           // "preload" and "streamAndPreload": one 
 view.setVerbose(false)                 // true logs lifecycle and per-frame events to Logcat
 view.setCallback(object : AlphaVideoView.PlayerCallback {
     override fun onLoad(totalFrames: Int, width: Int, height: Int, decoder: String) {}
-    override fun onError(error: String) {}
+    override fun onError(error: String, code: String?) {}  // code: AlphaVideoView.ERROR_NO_DECODER, or null
     override fun onEnd() {}
     override fun onPreloadComplete(frames: Int, timeMs: Double) {}  // every frame decoded
 })
@@ -178,21 +206,24 @@ Control playback with `play()`, `pause()`, `stop()`, `seekToFrame(frame)` and `s
 
 ### iOS
 
-**CocoaPods**, pod `alpha-video`:
+**CocoaPods**, pod `alpha-video`, with both [codecs](#codecs):
 
 ```ruby
 pod 'alpha-video', '1.0.0'
+# or one codec:
+pod 'alpha-video/VPX', '1.0.0'
 ```
 
-**Swift Package Manager**, package `alpha-video`, product `AlphaVideo`:
+**Swift Package Manager**, package `alpha-video`, a product per codec, each with the core:
 
 ```swift
 .package(url: "https://github.com/MediaCacheDev/alpha-video", from: "1.0.0")
-// in the target's dependencies:
-.product(name: "AlphaVideo", package: "alpha-video")
+// in the target's dependencies, one or both:
+.product(name: "AlphaVideoVPX", package: "alpha-video"),
+.product(name: "AlphaVideoAV1", package: "alpha-video"),
 ```
 
-The module is `AlphaVideo` either way. libvpx and dav1d come with it, prebuilt. `AlphaVideoView` is a `UIView`:
+The module is `AlphaVideo` either way. libvpx and dav1d come prebuilt, each with its codec. `AlphaVideoView` is a `UIView`:
 
 ```swift
 import AlphaVideo
@@ -217,7 +248,7 @@ addSubview(view)
 
 extension MyViewController: AlphaVideoViewDelegate {
     func alphaVideoView(_ view: AlphaVideoView, didLoadFrames totalFrames: Int32, width: Int32, height: Int32) {}
-    func alphaVideoView(_ view: AlphaVideoView, didFailWithError error: String) {}
+    func alphaVideoView(_ view: AlphaVideoView, didFailWithError error: String, code: String?) {}  // code: AlphaVideoErrorNoDecoder, or nil
     func alphaVideoViewDidEnd(_ view: AlphaVideoView) {}
 }
 ```
@@ -284,7 +315,7 @@ iOS has no `decoder`: it always decodes in software. The cache, prefetch and que
 | `playbackSpeed` | `number` | `1.0` | Playback speed multiplier. Changeable while playing, and does **not** move the playhead — see below |
 | `style` | `ViewStyle` | - | Container style. On Android `backgroundColor` is ignored (the view is a `TextureView`); put a background on a parent view |
 | `onLoad` | `function` | - | Callback when video loads (`{ totalFrames, width, height, decoder }`); `decoder` names the engine and decoders, e.g. `'mediacodec-hw (c2.qti.vp9.decoder)'`, `'software (libvpx)'`, `'software (dav1d)'`; on the web `'browser'`, `'webcodecs (vp09.00.41.08)'` or `'software (vp9)'` |
-| `onError` | `function` | - | Callback when error occurs (`{ error }`; on the web also `code`, such as `'NO_ALPHA_PATH'`) |
+| `onError` | `function` | - | Callback when error occurs (`{ error, code }`). `code` is `'NO_DECODER'` when no [codec](#codecs) decodes the file, on the web e.g. `'NO_ALPHA_PATH'`, else undefined |
 | `onEnd` | `function` | - | Callback when playback reaches the end with `loop` off |
 | `mode` | `'preload' \| 'stream' \| 'streamAndPreload'` | `'stream'` | Playback mode (software path only, see below) |
 | `decoder` | `'auto' \| 'mediacodec' \| 'mediacodec-hw' \| 'mediacodec-sw' \| 'software'` | `'auto'` | Android: the decoding engine (see [Choosing the Decoder](#choosing-the-decoder-android)). iOS accepts it and uses the C++ core; the web has `webDecoder` |
@@ -351,9 +382,9 @@ keyframe interval. A seek before `onLoad` is ignored.
 | `'mediacodec'` | MediaCodec, chosen per track: hardware if one is free, else software, so the two tracks can get one of each |
 | `'mediacodec-hw'` | Hardware MediaCodec for both tracks |
 | `'mediacodec-sw'` | Software MediaCodec for both tracks (Google's `c2.android.*` decoders) |
-| `'software'` | The C++ core's software decoders: libvpx for 8-bit VP9, dav1d for 8- to 12-bit AV1 (drawn at 8 bits) |
+| `'software'` | The C++ core's software decoders, from the [codec modules](#codecs): libvpx for 8-bit VP9, dav1d for 8- to 12-bit AV1 (drawn at 8 bits) |
 
-`'software'` is the player's own decoding, the same as on iOS, so it doesn't depend on what the device has. `'mediacodec-sw'` is Android's software decoders, run through MediaCodec.
+`'software'` is the player's own decoding, the same as on iOS, so it doesn't depend on what the device has, only on the codec modules installed. Without the module for the file's codec, `'auto'`'s last step and `'software'` report `onError` with `NO_DECODER`. `'mediacodec-sw'` is Android's software decoders, run through MediaCodec.
 
 At each load the player decides in this order:
 
@@ -387,6 +418,7 @@ console.log(`VP9 HW: ${status.vp9HardwareAvailable}`);
 console.log(`AV1 HW: ${status.av1HardwareAvailable}`);
 console.log(`Max dual-stream players: ${status.maxDualStreamPlayers}`);
 console.log(`Can create more: ${status.canCreateMore}`);
+console.log(`Software decoders: ${status.softwareDecoders}`); // the codec modules, e.g. ['libvpx v1.14.0']
 
 // Detailed string dump of all codec capabilities
 const info = await getDecoderInfo();
@@ -475,7 +507,7 @@ AlphaVideoDataSources.register(MyDataSource(), name: "mine")
 
 1. **The browser's own `<video>`.** The fastest: no JavaScript runs per frame, and the browser streams and caches. `canPlayType` can't tell whether a browser keeps WebM's alpha; Safari answers `"probably"` and drops it. So the first time a page plays a file, a 599-byte clip is drawn into a canvas and two of its pixels are read. `<video>` is used when that probe shows alpha and the file is a single VP9 track with alpha (Chrome, Edge and Firefox). The first 64 KB of the file tell which kind it is.
 2. **WebCodecs.** The C++ core's demuxer, compiled to WebAssembly, splits the file into its colour and alpha bitstreams, reading it by HTTP range requests as it plays: playback starts with the first frames, and a seek fetches only from where it lands. Between plays the bytes are kept in the browser's storage (OPFS, else IndexedDB), so a clip played through plays again offline. It feeds them to two `VideoDecoder`s, one per stream, which can use the device's hardware decoders. WebGL2 draws the pair with the same colour maths as the Android and iOS players. This is what plays dual-stream files in every browser, and every alpha WebM in Safari.
-3. **Software decoding in WebAssembly.** The same demuxer feeds FFmpeg's VP9 decoder and dav1d (AV1), each stream in its own Web Worker. On cross-origin isolated pages each decoder also runs threads of its own. This covers what WebCodecs can't decode, such as VP9 profile 1 (RGB-coded) alpha in Safari and Firefox.
+3. **Software decoding in WebAssembly.** The same demuxer feeds FFmpeg's VP9 decoder or dav1d (AV1, through the same adapter as on Android and iOS), each stream in its own Web Worker. Each codec is a module of its own, loaded only for streams in that codec. On cross-origin isolated pages each decoder also runs threads of its own. This covers what WebCodecs can't decode, such as VP9 profile 1 (RGB-coded) alpha in Safari and Firefox.
 
 Only a file that no engine can decode ends in an error (`NO_ALPHA_PATH`). Each WebAssembly module is loaded only when its engine runs, and nothing needs hosting: the modules and Workers are inside the package. Every test card passes through every engine that can decode it, in Playwright's Chromium, Firefox and WebKit; real Safari and phones are still to be tested. The API, the React component and speed figures are in [web/README.md](web/README.md).
 
@@ -519,7 +551,8 @@ Only a file that no engine can decode ends in an error (`NO_ALPHA_PATH`). Each W
 ### Core Components
 
 **C++ Core (`WebMAlphaPlayer`)** — software decode path
-- libwebm's parser for demuxing, libvpx 1.14.0 for VP9 and dav1d 1.5.1 for AV1
+- libwebm's parser for demuxing, with the core's own VP9 and AV1 header parsing
+- Decoders from the codec modules, through a C plugin interface (`cpp/AlphaVideoDecoderPlugin.h`): libvpx 1.14.0 for VP9 (`codecs/vpx`), dav1d 1.5.1 for AV1 (`codecs/av1`)
 - Multithreaded: decode thread, playback thread, render thread
 - LRU `FrameCache` prevents re-decoding during loops
 - Zero-copy pipeline from decoder to GPU
@@ -672,7 +705,7 @@ ffprobe -v quiet -print_format json -show_streams output.webm
 
 ## Codec Build
 
-The library ships with prebuilt libvpx 1.14.0 (the VP9 decoder) and dav1d 1.5.1 (the AV1 decoder, 8- to 12-bit) static libraries. libwebm's WebM parser is in `third_party/libwebm` and compiles with the C++ core. To rebuild the libraries:
+The codec modules ship with prebuilt libvpx 1.14.0 (the VP9 decoder) and dav1d 1.5.1 (the AV1 decoder, 8- to 12-bit) static libraries. libwebm's WebM parser is in `third_party/libwebm` and compiles with the C++ core. To rebuild the libraries:
 
 ```bash
 npm run build:codecs:ios          # iOS (device + simulator)
@@ -697,23 +730,24 @@ scripts/fetch-prebuilt.sh             # prebuilt/ from the GitHub Release, check
 ### Native packages and releases
 
 ```bash
-scripts/build_xcframework.sh          # prebuilt/AlphaVideoCodecs.xcframework(.zip) for Package.swift
-scripts/publish-android.sh local      # dev.mediacache:alpha-video into ~/.m2
+scripts/build_xcframework.sh          # prebuilt/AlphaVideoLibvpx.xcframework and AlphaVideoDav1d.xcframework (.zip) for Package.swift
+scripts/publish-android.sh local      # dev.mediacache:alpha-video, -vpx, -av1 and -media3 into ~/.m2
 scripts/publish-android.sh central    # signed, to the Maven Central Portal
 scripts/package_release.sh            # the GitHub Release assets, in dist/release-v<version>/
 ```
 
-`Package.swift` uses `prebuilt/AlphaVideoCodecs.xcframework` when it exists, and the release zip otherwise. Its checksum must match the zip attached to the GitHub Release, so rebuilding the xcframework means updating the checksum. The same goes for the prebuilt archive and `fetch-prebuilt.sh`, although packaging the same libraries again gives the same archive. `package_release.sh` stops or warns when either checksum is out of date. `publish-android.sh` lists the environment variables it needs for Central.
+`Package.swift` uses the xcframeworks in `prebuilt/` when they exist, and the release zips otherwise. Their checksums must match the zips attached to the GitHub Release, so rebuilding an xcframework means updating its checksum. The same goes for the prebuilt archive and `fetch-prebuilt.sh`, although packaging the same libraries again gives the same archive. `package_release.sh` stops or warns when a checksum is out of date. `publish-android.sh` lists the environment variables it needs for Central.
 
-A release carries the prebuilt archive, `AlphaVideoCodecs.xcframework.zip` and the CocoaPods zip (`alpha-video-<version>-ios.zip`, the source of `alpha-video.podspec`, whose `:sha256` must match it). `pod trunk push alpha-video.podspec` once the release is public.
+A release carries the prebuilt archive, `AlphaVideoLibvpx.xcframework.zip`, `AlphaVideoDav1d.xcframework.zip` and the CocoaPods zip (`alpha-video-<version>-ios.zip`, the source of `alpha-video.podspec`, whose `:sha256` must match it). `pod trunk push alpha-video.podspec` once the release is public.
 
 ### Repository layout
 
 | Path | Contents |
 |---|---|
-| `cpp/` | The C++ core (libwebm demux, libvpx and dav1d decode), shared by Android and iOS; the web runs its demuxer in WebAssembly (`web/wasm`) |
-| `android/` | The Android library: `AlphaVideoView`, the MediaCodec dual-stream path and the JNI build |
-| `ios/Sources/AlphaVideo/` | The iOS library: `AlphaVideoView` and the Metal renderer |
+| `cpp/` | The C++ core (libwebm demux, the decoder plugin interface), shared by Android and iOS; the web runs its demuxer in WebAssembly (`web/wasm`) |
+| `codecs/vpx`, `codecs/av1` | The codec modules' adapters to libvpx and dav1d, shared by Android, iOS and (av1) the web |
+| `android/` | The Android library: `AlphaVideoView`, the MediaCodec dual-stream path and the JNI build; `android/vpx` and `android/av1` are the codec modules |
+| `ios/Sources/AlphaVideo/` | The iOS library: `AlphaVideoView` and the Metal renderer; `ios/Sources/AlphaVideoVPX` and `AlphaVideoAV1` register the codecs |
 | `react-native/` | The React Native component (`src/`) and its thin native view managers |
 | `web/` | `alpha-video-web`: the browser player, with the C++ demuxer and the decoders in WebAssembly |
 | `Package.swift`, `react-native-alpha-video.podspec`, `package.json` | The SwiftPM, CocoaPods and npm packages |
@@ -735,14 +769,14 @@ Ideas, not plans:
 - **Drop FFmpeg on the web too.** Android and iOS decode with libvpx and dav1d directly, and the web already demuxes with libwebm. In WebAssembly libvpx is 1.2-1.9x slower than FFmpeg's own VP9 decoder, even with row multithreading, so the web's software engine keeps FFmpeg's VP9 decoder for now.
 - **Hardware decoding of dual-stream files on iOS.** Two VideoToolbox sessions, one per track, composited in the Metal shader, as Android does with MediaCodec, with the C++ core as the fallback. AV1 decodes in hardware on recent Apple chips (A17 Pro, M3 and later). VP9 likely can't, since VideoToolbox's VP9 decoder isn't available to iOS apps.
 - **Audio.** Decode a WebM's Opus or Vorbis track, keep video in sync with it, and drop frames when decoding falls behind.
-- **More codecs.** VP8 (libvpx already has it; alpha VP8 WebM is common from older encoders) and AV2 once it's final, in software and through platform decoders where they exist.
+- **More codecs.** VP8 (libvpx already has it, so it would join the vpx module; alpha VP8 WebM is common from older encoders) and AV2 once it's final, in software and through platform decoders where they exist.
 - **DRM.** Unlikely: Widevine and FairPlay decode into protected surfaces, which the alpha shader can't read.
 
 ## License
 
 The code in this repository is MIT (see [LICENSE](LICENSE)).
 
-On Android and iOS the player also contains libwebm's parser and libvpx (BSD-3-Clause, with the WebM patent grant) and dav1d (BSD-2-Clause). Apps built with it must include their notices. The web player, `alpha-video-web`, contains libwebm's parser and dav1d too, and FFmpeg's VP9 decoder, which is LGPL-2.1-or-later; its notices are in [web/THIRD_PARTY_NOTICES.md](web/THIRD_PARTY_NOTICES.md). [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md) has the versions, build options and source links; the licence texts are in [`licenses/`](licenses).
+On Android and iOS the core also contains libwebm's parser (BSD-3-Clause, with the WebM patent grant), the vpx module libvpx (BSD-3-Clause, with the WebM patent grant) and the av1 module dav1d (BSD-2-Clause). Apps built with it must include the notices of what they ship. The web player, `alpha-video-web`, contains libwebm's parser too, dav1d in its AV1 Workers, and FFmpeg's VP9 decoder (LGPL-2.1-or-later) in its VP9 Workers; its notices are in [web/THIRD_PARTY_NOTICES.md](web/THIRD_PARTY_NOTICES.md). [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md) has the versions, build options and source links; the licence texts are in [`licenses/`](licenses).
 
 ## Credits
 

@@ -83,7 +83,7 @@ export interface AlphaVideoLoadEvent {
    * The engine and decoders playing the file: `'software (libvpx)'`, `'software (dav1d)'` (AV1),
    * `'mediacodec-hw (c2.qti.vp9.decoder)'`, `'mediacodec-sw (...)'`, `'mediacodec (hardware, software)'`
    * for one of each. On the web: `'browser'`, `'webcodecs (vp09.00.41.08)'` (with the alpha track's
-   * codec when it differs), `'software (vp9)'`, `'software (vp9, 4+2 threads)'` or `'software (libdav1d)'`.
+   * codec when it differs), `'software (vp9)'`, `'software (vp9, 4+2 threads)'` or `'software (dav1d)'`.
    */
   decoder: string;
 }

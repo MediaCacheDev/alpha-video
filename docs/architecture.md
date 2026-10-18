@@ -66,10 +66,10 @@ React (JS) AlphaVideoView props
 ### C++ Core (cross-platform, software path)
 
 - **`AlphaDemuxer`** — Reads the colour and alpha bitstreams as packets with libwebm's `webm_parser` (`third_party/libwebm`): the first two VP9/AV1 tracks, or one VP9 track and its BlockAdditional alpha. Takes profile, bit depth and colour from the bitstream headers, and seeks by the Cues (loaded when a seek needs them) or by scanning. Shared with the MediaCodec path through JNI, and compiled to WebAssembly for the web, where it reads through JavaScript and stops when bytes haven't arrived yet (`ByteSource::kPending`), carrying on once they have. `tests/core/demuxer_compare` checks it against FFmpeg's Matroska demuxer (`tests/core/ffmpeg/AlphaDemuxer`, which the web used before).
-- **`VideoDecoder`** — libvpx (VP9, with row multithreading) and dav1d (AV1) behind one interface: send a packet, receive pictures, drain at the end, flush on a seek.
+- **`VideoDecoder`** — A registered decoder plugin behind one interface: send a packet, receive pictures, drain at the end, flush on a seek. Plugins are tables of C functions (`cpp/AlphaVideoDecoderPlugin.h`, versioned by `ALPHA_VIDEO_DECODER_ABI`), one list per codec module: `codecs/vpx` (libvpx, VP9 with row multithreading) and `codecs/av1` (dav1d). Android's `AlphaVideoCodecs` and iOS's register the modules they find by class name (`VpxCodec`/`Av1Codec`, `AlphaVideoVPXCodec`/`AlphaVideoAV1Codec`); the first plugin whose `supports` takes a stream decodes it, and with none the player reports `NO_DECODER`.
 - **`ByteSource`** — Where the demuxer reads: a file, a range of a file descriptor (an APK asset or `content://` URI), a `RangeReader` (blocking until its bytes arrive, or until the player stops), or memory.
 - **`WebMAlphaPlayer`** — The player on top of them:
-  - `openStreams`, `initCodecs` (a decoder per track: libvpx for VP9, dav1d for AV1), `loadFromFile/loadFromMemory/loadFromFileRange/loadFromReader`
+  - `openStreams` (fails with `NO_DECODER` when no plugin takes a track), `initCodecs` (a decoder per track), `loadFromFile/loadFromMemory/loadFromFileRange/loadFromReader`
   - dav1d holds frames back with frame threading, so every decode loop drains the decoders (an empty packet) at the end of the file
   - `decodeAllFrames` (preload) and on-demand `decodeFrame`
   - YUVA frame extraction with alpha handling (embedded YUVA420P or separate alpha track)

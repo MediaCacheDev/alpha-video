@@ -1,18 +1,18 @@
 # Third-party notices
 
-The code in this repository is MIT-licensed (see `LICENSE`). The native player (Android and iOS) also contains the following, which are not:
+The code in this repository is MIT-licensed (see `LICENSE`). The native player (Android and iOS) also contains the following, which are not. Each artifact contains only its own row:
 
-| Component | Version | Licence | Where |
+| Component | Version | Licence | In |
 |---|---|---|---|
-| [libwebm](https://chromium.googlesource.com/webm/libwebm)'s WebM parser | commit `6184f448`, unmodified | BSD-3-Clause, plus the WebM patent grant | source in `third_party/libwebm`, compiled with the C++ core |
-| [libvpx](https://chromium.googlesource.com/webm/libvpx) | 1.14.0, unmodified | BSD-3-Clause, plus the WebM patent grant | `libvpx.a` in `prebuilt/` |
-| [dav1d](https://code.videolan.org/videolan/dav1d) | 1.5.1, unmodified | BSD-2-Clause | `libdav1d.a` in `prebuilt/` |
+| [libwebm](https://chromium.googlesource.com/webm/libwebm)'s WebM parser | commit `6184f448`, unmodified | BSD-3-Clause, plus the WebM patent grant | the core (`dev.mediacache:alpha-video`; on iOS every product and subspec): source in `third_party/libwebm`, compiled with the C++ core |
+| [libvpx](https://chromium.googlesource.com/webm/libvpx) | 1.14.0, unmodified | BSD-3-Clause, plus the WebM patent grant | the vpx codec module (`alpha-video-vpx`, `AlphaVideoVPX`, `alpha-video/VPX`): `libvpx.a` in `prebuilt/` |
+| [dav1d](https://code.videolan.org/videolan/dav1d) | 1.5.1, unmodified | BSD-2-Clause | the av1 codec module (`alpha-video-av1`, `AlphaVideoAV1`, `alpha-video/AV1`): `libdav1d.a` in `prebuilt/` |
 
-It also compiles in the C++ reader of [alpha-video-source](https://github.com/MediaCacheDev/alpha-video-source) (`third_party/alpha-video-source`), MIT-licensed by the same author, which reads files by range and keeps them between plays.
+The core also compiles in the C++ reader of [alpha-video-source](https://github.com/MediaCacheDev/alpha-video-source) (`third_party/alpha-video-source`), MIT-licensed by the same author, which reads files by range and keeps them between plays.
 
-On Android they are linked into the player's native library, on iOS into the app. Licence texts: `licenses/libwebm-LICENSE.txt`, `licenses/libwebm-PATENTS.txt`, `licenses/libvpx-LICENSE.txt`, `licenses/libvpx-PATENTS.txt`, `licenses/dav1d-COPYING.txt`. An app shipping the player must reproduce these notices, for example on an open-source licences screen.
+On Android the core and each codec module have their own native library; on iOS they're linked into the app. React Native builds in the codecs the app's `package.json` selects, both by default. Licence texts: `licenses/libwebm-LICENSE.txt`, `licenses/libwebm-PATENTS.txt`, `licenses/libvpx-LICENSE.txt`, `licenses/libvpx-PATENTS.txt`, `licenses/dav1d-COPYING.txt`. An app shipping the player must reproduce the notices of what it ships, for example on an open-source licences screen.
 
-The web player, `alpha-video-web` (in `web/`, and a dependency of the React Native package for react-native-web), is built with FFmpeg, which is LGPL-2.1-or-later. Its own [THIRD_PARTY_NOTICES.md](web/THIRD_PARTY_NOTICES.md) covers it.
+The web player, `alpha-video-web` (in `web/`, and a dependency of the React Native package for react-native-web), decodes VP9 with FFmpeg, which is LGPL-2.1-or-later. Its own [THIRD_PARTY_NOTICES.md](web/THIRD_PARTY_NOTICES.md) covers it.
 
 ## What the build contains
 
