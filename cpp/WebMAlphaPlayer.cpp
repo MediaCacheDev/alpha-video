@@ -679,7 +679,7 @@ bool WebMAlphaPlayer::openStreams() {
         if (!tracks[track]) continue;
         std::string whyNot;
         if (!findDecoderPlugin(*tracks[track], info.width, info.height, &whyNot)) {
-            emitEvent("error", std::string(track ? "The alpha" : "The colour") + " track can't play: " + whyNot);
+            emitError(kErrorNoDecoder, std::string(track ? "The alpha" : "The colour") + " track can't play: " + whyNot);
             return false;
         }
     }
@@ -1596,10 +1596,30 @@ void WebMAlphaPlayer::resetStats() {
 }
 
 void WebMAlphaPlayer::emitEvent(const std::string& event, const std::string& data) {
+    if (event == "error") {
+        std::lock_guard<std::mutex> lock(lastErrorCodeMutex_);
+        lastErrorCode_.clear();
+    }
     std::lock_guard<std::mutex> lock(callbackMutex_);
     if (eventCallback_) {
         eventCallback_(event, data);
     }
+}
+
+void WebMAlphaPlayer::emitError(const std::string& code, const std::string& message) {
+    std::lock_guard<std::mutex> lock(callbackMutex_);
+    {
+        std::lock_guard<std::mutex> codeLock(lastErrorCodeMutex_);
+        lastErrorCode_ = code;
+    }
+    if (eventCallback_) {
+        eventCallback_("error", message);
+    }
+}
+
+std::string WebMAlphaPlayer::getLastErrorCode() const {
+    std::lock_guard<std::mutex> lock(lastErrorCodeMutex_);
+    return lastErrorCode_;
 }
 
 void WebMAlphaPlayer::emitFrame(std::shared_ptr<YUVAFrame> frame) {

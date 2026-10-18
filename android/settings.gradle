@@ -2,3 +2,6 @@ rootProject.name = 'alpha-video'
 
 // dev.mediacache:alpha-video-media3
 include ':media3'
+// dev.mediacache:alpha-video-vpx and alpha-video-av1, the software decoders
+include ':vpx'
+include ':av1'

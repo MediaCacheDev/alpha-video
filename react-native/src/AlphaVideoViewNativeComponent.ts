@@ -34,9 +34,11 @@ export type PlaybackMode = 'preload' | 'stream' | 'streamAndPreload';
  * - `'mediacodec'`: per track, a hardware decoder if one lists the profile and has an instance
  *   free, else a software one.
  * - `'mediacodec-hw'` / `'mediacodec-sw'`: hardware / software decoders only, for both tracks.
- * - `'software'`: the C++ core (libvpx for 8-bit VP9, dav1d for 8- to 12-bit AV1).
+ * - `'software'`: the C++ core, with the codecs built in (libvpx for 8-bit VP9, dav1d for 8- to
+ *   12-bit AV1).
  *
- * A forced engine never falls back: a file it can't play calls `onError`.
+ * A forced engine never falls back: a file it can't play calls `onError`. One that needs a codec
+ * left out of the build reports the code `'NO_DECODER'`.
  */
 export type Decoder = 'auto' | 'mediacodec' | 'mediacodec-hw' | 'mediacodec-sw' | 'software';
 
@@ -50,6 +52,8 @@ type LoadEvent = Readonly<{
 
 type ErrorEvent = Readonly<{
   error: string;
+  /** `'NO_DECODER'` when the file needs a software decoder that isn't built in */
+  code?: string;
 }>;
 
 /** Android only: every frame is decoded (preload and streamAndPreload modes). */

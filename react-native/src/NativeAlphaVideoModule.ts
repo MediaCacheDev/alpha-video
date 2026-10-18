@@ -15,6 +15,7 @@ export interface Spec extends TurboModule {
     availableVp9Slots: number;
     maxDualStreamPlayers: number;
     canCreateMore: boolean;
+    softwareDecoders: string[];
   }>;
 }
 

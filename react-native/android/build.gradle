@@ -19,6 +19,23 @@ def safeExtGet(name, fallback) {
 def coreDir = file('../../android')
 def packageRoot = file('../..')
 
+// The codec modules built in, android/vpx (libvpx) and android/av1 (dav1d): the app's package.json
+// "react-native-alpha-video": { "codecs": [...] }, else both. The podspec reads the same setting.
+def readCodecs() {
+    def allCodecs = ['vpx', 'av1']
+    def appPackageJson = rootProject.file('../package.json')
+    if (!appPackageJson.exists()) return allCodecs
+    def config = new groovy.json.JsonSlurper().parse(appPackageJson)['react-native-alpha-video']
+    if (config?.codecs == null) return allCodecs
+    def unknown = config.codecs.findAll { !allCodecs.contains(it) }
+    if (!(config.codecs instanceof List) || unknown) {
+        throw new GradleException("react-native-alpha-video: \"codecs\" in ${appPackageJson} must list some of ${allCodecs}, not ${config.codecs}")
+    }
+    return allCodecs.findAll { config.codecs.contains(it) }
+}
+def codecs = readCodecs()
+logger.lifecycle("react-native-alpha-video: codecs ${codecs.isEmpty() ? 'none (MediaCodec only)' : codecs.join(', ')}")
+
 if (isNewArchitectureEnabled()) {
     // The codegen tasks look for package.json and the specs next to this folder; both are two
     // levels up, in the package root.
@@ -39,19 +56,20 @@ android {
     defaultConfig {
         minSdk safeExtGet('minSdkVersion', 24)
         buildConfigField 'boolean', 'IS_NEW_ARCHITECTURE_ENABLED', isNewArchitectureEnabled().toString()
+        consumerProguardFiles(*codecs.collect { "${coreDir}/${it}/consumer-rules.pro" })
 
         externalNativeBuild {
             cmake {
                 cppFlags '-std=c++17 -frtti -fexceptions -O3'
                 abiFilters 'armeabi-v7a', 'arm64-v8a', 'x86_64'
-                arguments '-DANDROID_STL=c++_shared'
+                arguments '-DANDROID_STL=c++_shared', "-DALPHA_VIDEO_CODECS=${codecs.isEmpty() ? 'none' : codecs.join(';')}"
             }
         }
     }
 
     externalNativeBuild {
         cmake {
-            path "${coreDir}/src/main/cpp/CMakeLists.txt"
+            path 'CMakeLists.txt'
             version '3.22.1'
         }
     }
@@ -71,7 +89,7 @@ android {
                 'src/main/java',
                 "${coreDir}/src/main/java",
                 isNewArchitectureEnabled() ? 'src/newarch/java' : 'src/oldarch/java',
-            ]
+            ] + codecs.collect { "${coreDir}/${it}/src/main/java" }
         }
     }
 }

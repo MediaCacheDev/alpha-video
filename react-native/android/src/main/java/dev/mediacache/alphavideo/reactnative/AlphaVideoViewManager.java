@@ -268,9 +268,10 @@ public class AlphaVideoViewManager extends AlphaVideoViewManagerSpec<AlphaVideoV
         }
         
         @Override
-        public void onError(String error) {
+        public void onError(String error, String code) {
             WritableMap event = Arguments.createMap();
             event.putString("error", error);
+            if (code != null) event.putString("code", code);
             send("onError", event);
         }
         

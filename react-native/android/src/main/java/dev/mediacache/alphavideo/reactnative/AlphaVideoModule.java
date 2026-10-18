@@ -1,5 +1,6 @@
 package dev.mediacache.alphavideo.reactnative;
 
+import dev.mediacache.alphavideo.AlphaVideoCodecs;
 import dev.mediacache.alphavideo.SurfaceTextureVideoDecoder;
 
 import android.util.Log;
@@ -7,7 +8,9 @@ import android.util.Log;
 import com.facebook.react.bridge.Promise;
 import com.facebook.react.bridge.ReactApplicationContext;
 import com.facebook.react.bridge.ReactMethod;
+import com.facebook.react.bridge.WritableArray;
 import com.facebook.react.bridge.WritableMap;
+import com.facebook.react.bridge.WritableNativeArray;
 import com.facebook.react.bridge.WritableNativeMap;
 
 /**
@@ -87,6 +90,9 @@ public class AlphaVideoModule extends AlphaVideoModuleSpec {
             result.putInt("availableVp9Slots", Math.max(0, maxVp9 - activeCount));
             result.putInt("maxDualStreamPlayers", Math.max(maxVp9, maxAv1) / 2);
             result.putBoolean("canCreateMore", activeCount < Math.max(maxVp9, maxAv1) - 1);
+            WritableArray softwareDecoders = new WritableNativeArray();
+            for (String decoder : AlphaVideoCodecs.softwareDecoders()) softwareDecoders.pushString(decoder);
+            result.putArray("softwareDecoders", softwareDecoders);
             
             promise.resolve(result);
         } catch (Exception e) {

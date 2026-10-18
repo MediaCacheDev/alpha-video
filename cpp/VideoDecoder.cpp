@@ -85,15 +85,19 @@ const AlphaVideoDecoderPlugin* findDecoderPlugin(const AlphaDemuxer::StreamInfo&
     return findPlugin(pluginStreamInfo(stream, width, height), whyNot);
 }
 
-std::string decoderLibraryVersions() {
+std::vector<std::string> registeredDecoders() {
     std::lock_guard<std::mutex> lock(registryMutex);
     std::vector<std::string> versions;
     for (const AlphaVideoDecoderPlugin* plugin : registry()) {
         std::string version = std::string(plugin->name) + " " + plugin->version;
         if (std::find(versions.begin(), versions.end(), version) == versions.end()) versions.push_back(version);
     }
+    return versions;
+}
+
+std::string decoderLibraryVersions() {
     std::string joined;
-    for (const std::string& version : versions) joined += (joined.empty() ? "" : ", ") + version;
+    for (const std::string& version : registeredDecoders()) joined += (joined.empty() ? "" : ", ") + version;
     return joined;
 }
 

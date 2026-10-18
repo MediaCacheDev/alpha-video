@@ -20,12 +20,17 @@ void check(bool ok, const std::string& what) {
     if (!ok) failures++;
 }
 
-// The load's error event, or "" if it loaded and decoded its first frame
+std::string lastErrorCode;
+
+// The load's error event, or "" if it loaded and decoded its first frame. The error's code in lastErrorCode.
 std::string play(const std::string& file) {
     WebMAlphaPlayer p;
     std::string error;
+    lastErrorCode.clear();
     p.setEventCallback([&](const std::string& event, const std::string& data) {
-        if (event == "error") error = data;
+        if (event != "error") return;
+        error = data;
+        lastErrorCode = p.getLastErrorCode();
     });
     if (!p.loadFromFile(std::string(FIXTURES_DIR) + "/" + file)) return error.empty() ? "failed" : error;
     return p.getFrame(0) ? "" : "no frame";
@@ -68,6 +73,9 @@ int main() {
 
     std::string result = play(vp9);
     check(contains(result, "no VP9 decoder is installed (the vpx codec module)"), "no modules, VP9: " + result);
+    check(lastErrorCode == WebMAlphaPlayer::kErrorNoDecoder, "its code: " + lastErrorCode);
+    result = play("missing.webm");
+    check(!result.empty() && lastErrorCode.empty(), "another error has no code: " + result + ", " + lastErrorCode);
     result = play(av1);
     check(contains(result, "no AV1 decoder is installed (the av1 codec module)"), "no modules, AV1: " + result);
     check(decoderLibraryVersions().empty(), "no modules, versions: " + decoderLibraryVersions());

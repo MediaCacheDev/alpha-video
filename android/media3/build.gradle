@@ -44,5 +44,5 @@ dependencies {
 
 ext.publishArtifactId = 'alpha-video-media3'
 ext.publishDescription = 'Media3 DataSource.Factory adapter for alpha-video: plays transparent video through an app\'s own Media3 data sources (OkHttp, Cronet, caches).'
-ext.publishBundlesCodecs = false
+ext.publishLicenses = []
 apply from: rootProject.file('publish.gradle')

@@ -10,6 +10,7 @@ public class WebMAlphaPlayerNative {
     
     static {
         System.loadLibrary("alphavideo");
+        AlphaVideoCodecs.discover();
     }
     
     /**
@@ -23,7 +24,8 @@ public class WebMAlphaPlayerNative {
         void onStop();
         void onLoop();
         void onEnd();
-        void onError(String error);
+        /** @param code {@link AlphaVideoView#ERROR_NO_DECODER}, or null */
+        void onError(String error, String code);
         void onPreloadComplete(int totalFrames, double timeMs);
     }
     
@@ -89,6 +91,6 @@ public class WebMAlphaPlayerNative {
     public static native long[] nativeGetStats(long playerId);
     public static native void nativeResetStats(long playerId);
     
-    /** The decoder libraries, e.g. "libvpx v1.14.0, dav1d 1.5.1". */
+    /** The registered software decoders, e.g. "libvpx v1.14.0, dav1d 1.5.1"; empty with none. */
     public static native String nativeGetLibraryVersions();
 }

@@ -33,6 +33,10 @@ ios/Pods/
 # Android
 android/build/
 android/media3/build/
+android/vpx/build/
+android/vpx/.cxx/
+android/av1/build/
+android/av1/.cxx/
 android/.gradle/
 android/.cxx/
 react-native/android/build/

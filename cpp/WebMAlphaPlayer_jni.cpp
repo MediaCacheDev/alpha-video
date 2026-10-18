@@ -13,8 +13,6 @@
 #include "ByteSource.h"
 #include "RangeReader.h"
 #include "VideoDecoder.h"
-#include "../codecs/av1/Dav1dDecoderPlugin.h"
-#include "../codecs/vpx/VpxDecoderPlugin.h"
 #include <pthread.h>
 #include <algorithm>
 #include <atomic>
@@ -35,15 +33,6 @@
 #define LOGE(...) __android_log_print(ANDROID_LOG_ERROR, LOG_TAG, __VA_ARGS__)
 
 namespace {
-
-// Both codec modules are built into this library until each is its own
-[[maybe_unused]] const bool codecsRegistered = [] {
-    std::string error;
-    const bool registered = webm::registerDecoderPlugins(alpha_video_vpx_plugins, &error) &&
-                            webm::registerDecoderPlugins(alpha_video_av1_plugins, &error);
-    if (!registered) LOGE("%s", error.c_str());
-    return registered;
-}();
 
 // Store player instances by ID
 // Using shared_ptr to allow safe reference during async operations
@@ -420,7 +409,7 @@ Java_dev_mediacache_alphavideo_WebMAlphaPlayerNative_nativeSetListener(
         refs.onStop = env->GetMethodID(listenerClass, "onStop", "()V");
         refs.onLoop = env->GetMethodID(listenerClass, "onLoop", "()V");
         refs.onEnd = env->GetMethodID(listenerClass, "onEnd", "()V");
-        refs.onError = env->GetMethodID(listenerClass, "onError", "(Ljava/lang/String;)V");
+        refs.onError = env->GetMethodID(listenerClass, "onError", "(Ljava/lang/String;Ljava/lang/String;)V");
         refs.onPreloadComplete = env->GetMethodID(listenerClass, "onPreloadComplete", "(ID)V");
     }
     
@@ -505,7 +494,8 @@ Java_dev_mediacache_alphavideo_WebMAlphaPlayerNative_nativeSetListener(
         env->DeleteLocalRef(aBuffer);
     });
     
-    player->setEventCallback([playerId](const std::string& event, const std::string& data) {
+    std::weak_ptr<webm::WebMAlphaPlayer> weakPlayer = player;
+    player->setEventCallback([playerId, weakPlayer](const std::string& event, const std::string& data) {
         // Check if player was destroyed
         {
             std::lock_guard<std::mutex> dlock(destroyedMutex);
@@ -554,9 +544,13 @@ Java_dev_mediacache_alphavideo_WebMAlphaPlayerNative_nativeSetListener(
         } else if (event == "ended") {
             env->CallVoidMethod(it->second.listener, it->second.onEnd);
         } else if (event == "error") {
+            auto erring = weakPlayer.lock();
+            const std::string code = erring ? erring->getLastErrorCode() : std::string();
             jstring errStr = env->NewStringUTF(data.c_str());
-            env->CallVoidMethod(it->second.listener, it->second.onError, errStr);
+            jstring codeStr = code.empty() ? nullptr : env->NewStringUTF(code.c_str());
+            env->CallVoidMethod(it->second.listener, it->second.onError, errStr, codeStr);
             env->DeleteLocalRef(errStr);
+            if (codeStr) env->DeleteLocalRef(codeStr);
         } else if (event == "preload_complete") {
             // "X frames in Yms". Parsed without std::stod, whose exception would abort the app.
             int frames = std::atoi(data.c_str());
@@ -1100,6 +1094,34 @@ JNIEXPORT jstring JNICALL
 Java_dev_mediacache_alphavideo_WebMAlphaPlayerNative_nativeGetLibraryVersions(JNIEnv* env, jclass clazz) {
     std::string versions = webm::WebMAlphaPlayer::getLibraryVersions();
     return env->NewStringUTF(versions.c_str());
+}
+
+//==============================================================================
+// Software decoders (codec modules)
+//==============================================================================
+
+// Null if registered, else why not
+JNIEXPORT jstring JNICALL
+Java_dev_mediacache_alphavideo_AlphaVideoCodecs_nativeRegister(JNIEnv* env, jclass clazz, jlong pluginList) {
+    if (!pluginList) return env->NewStringUTF("A codec module gave no plugin list");
+    std::string error;
+    if (webm::registerDecoderPlugins(reinterpret_cast<AlphaVideoDecoderPluginList>(pluginList), &error)) {
+        return nullptr;
+    }
+    return env->NewStringUTF(error.c_str());
+}
+
+JNIEXPORT jobjectArray JNICALL
+Java_dev_mediacache_alphavideo_AlphaVideoCodecs_nativeSoftwareDecoders(JNIEnv* env, jclass clazz) {
+    const std::vector<std::string> decoders = webm::registeredDecoders();
+    jobjectArray result = env->NewObjectArray(static_cast<jsize>(decoders.size()),
+                                              env->FindClass("java/lang/String"), nullptr);
+    for (size_t i = 0; i < decoders.size(); i++) {
+        jstring decoder = env->NewStringUTF(decoders[i].c_str());
+        env->SetObjectArrayElement(result, static_cast<jsize>(i), decoder);
+        env->DeleteLocalRef(decoder);
+    }
+    return result;
 }
 
 //==============================================================================

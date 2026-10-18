@@ -28,6 +28,11 @@ export interface DecoderStatus {
   maxDualStreamPlayers: number;
   /** Whether we can create more dual-stream players */
   canCreateMore: boolean;
+  /**
+   * The C++ core's software decoders, from the codecs built in (`"react-native-alpha-video":
+   * { "codecs": [...] }` in the app's package.json), e.g. `['libvpx v1.14.0', 'dav1d 1.5.1']`
+   */
+  softwareDecoders: string[];
 }
 
 /**
@@ -115,6 +120,7 @@ export async function getDecoderStatus(): Promise<DecoderStatus> {
       availableVp9Slots: -1,
       maxDualStreamPlayers: -1,
       canCreateMore: true,
+      softwareDecoders: [],
     };
   }
   if (!AlphaVideoModule) {

@@ -6,6 +6,7 @@
 #include <cstdint>
 #include <memory>
 #include <string>
+#include <vector>
 
 namespace webm {
 
@@ -39,7 +40,10 @@ bool registerDecoderPlugin(const AlphaVideoDecoderPlugin* plugin, std::string* e
 const AlphaVideoDecoderPlugin* findDecoderPlugin(const AlphaDemuxer::StreamInfo& stream, int width, int height,
                                                  std::string* whyNot);
 
-/** The registered decoders' versions, e.g. "libvpx v1.14.0, dav1d 1.5.1"; empty with none. */
+/** The registered decoders, each "<name> <version>" once: {"libvpx v1.14.0", "dav1d 1.5.1"}. */
+std::vector<std::string> registeredDecoders();
+
+/** registeredDecoders(), comma-separated: "libvpx v1.14.0, dav1d 1.5.1"; empty with none. */
 std::string decoderLibraryVersions();
 
 /**

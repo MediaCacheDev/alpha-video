@@ -133,6 +133,15 @@ public class AlphaVideoView extends TextureView implements
     public static final String DECODER_SOFTWARE = "software";
     
     private String decoder = DECODER_AUTO;
+    // Why "auto" left MediaCodec for the C++ core on this load, for a NO_DECODER error; else null
+    private String softwareFallbackReason;
+    
+    /**
+     * {@link PlayerCallback#onError}'s code when the file needs a software decoder that isn't
+     * installed: add {@code dev.mediacache:alpha-video-vpx} (VP9) or {@code alpha-video-av1} (AV1),
+     * as the message says. See {@link AlphaVideoCodecs}.
+     */
+    public static final String ERROR_NO_DECODER = "NO_DECODER";
     private int streamCacheSize = 30;      // Frames to keep in cache when streaming
     private int streamPrefetchAhead = 15;  // Frames to decode ahead of playback
     
@@ -194,7 +203,8 @@ public class AlphaVideoView extends TextureView implements
          *     "mediacodec-hw (c2.qti.vp9.decoder)"
          */
         void onLoad(int totalFrames, int width, int height, String decoder);
-        void onError(String error);
+        /** @param code {@link #ERROR_NO_DECODER}, or null */
+        void onError(String error, String code);
         void onEnd();
         void onPreloadComplete(int frames, double timeMs);
     }
@@ -272,9 +282,13 @@ public class AlphaVideoView extends TextureView implements
     
     /** Main thread only. */
     private void reportError(String error) {
+        reportError(error, null);
+    }
+    
+    private void reportError(String error, String code) {
         Log.e(TAG, error);
         if (callback != null && !isReleased) {
-            callback.onError(error);
+            callback.onError(error, code);
         }
     }
     
@@ -340,14 +354,16 @@ public class AlphaVideoView extends TextureView implements
     /**
      * Sets the decoder for the next load:
      * - "auto" (default): MediaCodec hardware decoders that list every track's profile, else
-     *   MediaCodec's software decoders, else the C++ core (libvpx, dav1d for AV1)
+     *   MediaCodec's software decoders, else the C++ core
      * - "mediacodec": per track, a hardware decoder if one lists the profile and has an instance
      *   free, else a software one
      * - "mediacodec-hw" / "mediacodec-sw": hardware / software decoders only, for both tracks
      * - "software": the C++ core
      * A forced engine never falls back: a file it can't play reports onError. MediaCodec plays
-     * only files with colour and alpha as separate VP9/AV1 bitstreams; the core plays 8-bit VP9 and
-     * 8- to 12-bit AV1.
+     * only files with colour and alpha as separate VP9/AV1 bitstreams. The core decodes with the
+     * codec modules installed ({@link AlphaVideoCodecs}): 8-bit VP9 with alpha-video-vpx, 8- to
+     * 12-bit AV1 with alpha-video-av1. A file needing one that's missing reports
+     * {@link #ERROR_NO_DECODER}.
      */
     public void setDecoder(String decoder) {
         switch (decoder == null ? DECODER_AUTO : decoder) {
@@ -611,6 +627,7 @@ public class AlphaVideoView extends TextureView implements
     private void loadProbedSource(WebMSource source, int[] colorAlphaTracks) {
         logV("Source " + source + " isDualStream=" + (colorAlphaTracks != null) + " decoder=" + decoder);
         boolean forcedMediaCodec = decoder.startsWith(DECODER_MEDIACODEC);
+        softwareFallbackReason = null;
         
         if (colorAlphaTracks == null) {
             if (forcedMediaCodec) {
@@ -649,6 +666,7 @@ public class AlphaVideoView extends TextureView implements
                 }
                 if (names == null) {
                     logV("No MediaCodec decoders free that list the profiles; decoding in software");
+                    softwareFallbackReason = "No MediaCodec decoders free that list the profiles of " + source;
                     loadSingleStream(source);
                     return;
                 }
@@ -1679,9 +1697,12 @@ public class AlphaVideoView extends TextureView implements
     }
     
     @Override
-    public void onError(String error) {
+    public void onError(String error, String code) {
         if (isReleased) return;
-        post(() -> reportError(error));
+        post(() -> {
+            String reason = softwareFallbackReason;
+            reportError(ERROR_NO_DECODER.equals(code) && reason != null ? reason + "; " + error : error, code);
+        });
     }
     
     @Override

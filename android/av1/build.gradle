@@ -1,0 +1,67 @@
+// dev.mediacache:alpha-video-av1: dav1d, AV1 in software for alpha-video's C++ core. alpha-video
+// finds it on the classpath (AlphaVideoCodecs), so adding the dependency is all an app does.
+
+apply plugin: 'com.android.library'
+
+def safeExtGet(name, fallback) {
+    return rootProject.ext.has(name) ? rootProject.ext.get(name) : fallback
+}
+
+group = 'dev.mediacache'
+version = rootProject.version
+
+android {
+    namespace 'dev.mediacache.alphavideo.av1'
+    compileSdk safeExtGet('compileSdkVersion', 36)
+    ndkVersion safeExtGet('ndkVersion', '27.1.12297006')
+
+    defaultConfig {
+        minSdk safeExtGet('minSdkVersion', 24)
+        consumerProguardFiles 'consumer-rules.pro'
+
+        externalNativeBuild {
+            cmake {
+                cppFlags '-std=c++17 -O3'
+                abiFilters 'armeabi-v7a', 'arm64-v8a', 'x86_64'
+                // Its own C++ runtime: the core talks to it through C, and a second
+                // libc++_shared.so beside the core's would clash in the app
+                arguments '-DANDROID_STL=c++_static'
+            }
+        }
+    }
+
+    externalNativeBuild {
+        cmake {
+            path 'src/main/cpp/CMakeLists.txt'
+            version '3.22.1'
+        }
+    }
+
+    compileOptions {
+        sourceCompatibility JavaVersion.VERSION_17
+        targetCompatibility JavaVersion.VERSION_17
+    }
+
+    publishing {
+        singleVariant('release') {
+            withSourcesJar()
+            withJavadocJar()
+        }
+    }
+}
+
+repositories {
+    google()
+    mavenCentral()
+}
+
+dependencies {
+    api rootProject
+}
+
+ext.publishArtifactId = 'alpha-video-av1'
+ext.publishDescription = 'dav1d for alpha-video: 8- to 12-bit AV1 transparent video in software, for Android 7 to 9, files and devices MediaCodec can\'t take, preload, and many players at once.'
+ext.publishLicenses = [
+    [name: 'BSD-2-Clause (bundled dav1d)', url: 'https://code.videolan.org/videolan/dav1d/-/blob/1.5.1/COPYING'],
+]
+apply from: rootProject.file('publish.gradle')

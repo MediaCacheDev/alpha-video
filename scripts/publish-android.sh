@@ -4,8 +4,9 @@
 #
 # Builds the standalone Android library in android/ and publishes it as
 # dev.mediacache:alpha-video:<version>, the version in android/build.gradle, with its Media3
-# adapter dev.mediacache:alpha-video-media3 (android/media3). Needs libvpx and dav1d in
-# prebuilt/android (build_codecs_android.sh, or fetch-prebuilt.sh).
+# adapter dev.mediacache:alpha-video-media3 (android/media3) and the codec modules
+# alpha-video-vpx (android/vpx, libvpx) and alpha-video-av1 (android/av1, dav1d). Needs libvpx
+# and dav1d in prebuilt/android (build_codecs_android.sh, or fetch-prebuilt.sh).
 #
 #   local    publishToMavenLocal (~/.m2), unsigned unless a key is set. The default.
 #   central  signs, bundles and uploads to the Maven Central Portal. Needs:
@@ -37,7 +38,7 @@ fi
 case "$MODE" in
     local)
         "${GRADLE[@]}" publishToMavenLocal
-        echo "✅ dev.mediacache:alpha-video:$VERSION and alpha-video-media3:$VERSION in ~/.m2/repository"
+        echo "✅ dev.mediacache:alpha-video, -media3, -vpx and -av1 $VERSION in ~/.m2/repository"
         ;;
     central)
         for var in ORG_GRADLE_PROJECT_mavenCentralUsername ORG_GRADLE_PROJECT_mavenCentralPassword \
@@ -52,7 +53,10 @@ case "$MODE" in
         rm -rf "$STAGING"
         "${GRADLE[@]}" publishReleasePublicationToStagingRepository
 
-        VERSION_DIRS=("dev/mediacache/alpha-video/$VERSION" "dev/mediacache/alpha-video-media3/$VERSION")
+        VERSION_DIRS=()
+        for artifact in alpha-video alpha-video-media3 alpha-video-vpx alpha-video-av1; do
+            VERSION_DIRS+=("dev/mediacache/$artifact/$VERSION")
+        done
         for dir in "${VERSION_DIRS[@]}"; do
             if ! ls "$STAGING/$dir"/*.aar.asc > /dev/null 2>&1; then
                 echo "❌ $dir was not signed"

@@ -179,6 +179,8 @@ export interface AlphaVideoViewProps extends ViewProps {
   /**
    * Callback when error occurs. On the web, `code` tells the errors apart: `'LOAD_FAILED'`,
    * `'UNSUPPORTED_FILE'`, `'NO_ALPHA_PATH'`, `'DECODER_UNSUPPORTED'`, `'DECODE_FAILED'` or `'WEBGL_UNSUPPORTED'`.
+   * On iOS and Android, `'NO_DECODER'` is a file needing a codec left out of the build (see the
+   * app's `package.json` `"react-native-alpha-video": { "codecs": [...] }`); other errors have none.
    */
   onError?: (event: { error: string; code?: string }) => void;
   /** Callback when video ends */
@@ -262,8 +264,10 @@ const NativePlayer = forwardRef<AlphaVideoViewRef, AlphaVideoViewProps>(
       : undefined;
 
     const handleNativeError = props.onError
-      ? (event: { nativeEvent: { error: string } }) => {
-          props.onError?.(event.nativeEvent);
+      ? (event: { nativeEvent: { error: string; code?: string } }) => {
+          // The new architecture's event struct sends an absent code as ''
+          const { error, code } = event.nativeEvent;
+          props.onError?.(code ? { error, code } : { error });
         }
       : undefined;
 

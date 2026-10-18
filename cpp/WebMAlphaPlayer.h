@@ -275,6 +275,9 @@ public:
     // Callbacks
     void setFrameCallback(FrameCallback callback);
     void setEventCallback(EventCallback callback);
+    // The last "error" event's code: kErrorNoDecoder when no registered software decoder plays a
+    // track, else empty. Callable from the event callback.
+    std::string getLastErrorCode() const;
     
     // Direct frame access (for single-frame rendering)
     std::shared_ptr<YUVAFrame> getFrame(int index);
@@ -285,8 +288,10 @@ public:
     DecoderStatsSnapshot getStats() const;
     void resetStats();
     
-    // The decoder libraries' versions, e.g. "libvpx v1.14.0, dav1d 1.5.1"
+    // The registered decoders' versions, e.g. "libvpx v1.14.0, dav1d 1.5.1"; empty with none
     static std::string getLibraryVersions();
+
+    static constexpr const char* kErrorNoDecoder = "NO_DECODER";
     
 private:
     std::unique_ptr<AlphaDemuxer> demuxer_;
@@ -347,6 +352,8 @@ private:
     FrameCallback frameCallback_;
     EventCallback eventCallback_;
     std::mutex callbackMutex_;
+    std::string lastErrorCode_;
+    mutable std::mutex lastErrorCodeMutex_;  // Not callbackMutex_, which the event callback runs under
     
     // Config
     PlayerConfig config_;
@@ -373,6 +380,7 @@ private:
     std::shared_ptr<YUVAFrame> decodeNextFrame(); // Decode next frame sequentially (no seeking)
     
     void emitEvent(const std::string& event, const std::string& data = "");
+    void emitError(const std::string& code, const std::string& message);
     void emitFrame(std::shared_ptr<YUVAFrame> frame);
     
     std::string makeFrameKey(int index) const;
