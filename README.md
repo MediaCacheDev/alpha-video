@@ -768,6 +768,49 @@ A release carries the prebuilt archive, `AlphaVideoLibvpx.xcframework.zip`, `Alp
 | `web/` | `alpha-video-web`: the browser player, with the C++ demuxer and the decoders in WebAssembly |
 | `Package.swift`, `react-native-alpha-video.podspec`, `package.json` | The SwiftPM, CocoaPods and npm packages |
 
+## Tests
+
+The fixtures in `tests/fixtures/` are test cards from the tester app: every frame carries its index as a row of cells in the colour and in the alpha planes, beside colour swatches and an alpha ramp, so a test can tell which frame it got and how far off its colours are. They're copies of a few of the tester app's cards (`npm run testcards` in [alpha-video-test](https://github.com/MediaCacheDev/alpha-video-test)); regenerate them there.
+
+| Where | Command | What it checks |
+|---|---|---|
+| Host (macOS) | `npm run test:core` | `core_tests`: the C++ core on every fixture (demuxing, keyframes, seeks, colour from the bitstream and the container, every frame decoded through the codec modules). `codec_registry_tests`: the modules registered one at a time, as an app installs them, and `NO_DECODER` naming the missing module |
+| Host, with FFmpeg | `tests/core/build/demuxer_compare tests/fixtures/*/*.webm` | The core's libwebm demuxer against an FFmpeg one: the same info, packets and seeks. Built by `test:core` when FFmpeg 6.1+ is installed |
+| iOS simulator | see below | The iOS library with each codec module linked alone: it finds the module by itself, plays its codecs, and reports `NO_DECODER` for the other's |
+| Web, under Node | `cd web && npm test` | The WebAssembly demuxer on every fixture, also fed one block per fetch (packets, seeks, interruption, a failing source); sniffing; the YUV-to-RGB matrices |
+| Web, in browsers | `cd web && npm run test:browsers` | Chromium, Firefox and WebKit through Playwright: every engine (`<video>`, WebCodecs, software) on every fixture, frame codes after seeks, alpha and colour, then playback through a loop. `-- --isolated` repeats it cross-origin isolated (threaded software decoders); `-- chromium` picks browsers |
+| Web, streaming | `cd web && npm run test:streaming` | Range requests and a seek near the end, a server without range support, replay from storage with no requests |
+| Android and iOS devices | the tester app's `test:pixels` and `test:streaming` | Every Android decoder (MediaCodec hardware and software, the C++ core) and the iOS core on every card, pixel by pixel, and streaming; see below |
+
+The host tests need CMake, Ninja, pkg-config, libvpx and dav1d (`brew install cmake ninja pkg-config libvpx dav1d`; add `ffmpeg` for `demuxer_compare`). The web tests need `npm install` and `npm run build` in `web/` first, and Playwright's browsers (`npx playwright install chromium firefox webkit`); `test:streaming` makes its clip with ffmpeg.
+
+The iOS tests are two Swift Package test targets, `VPXOnlyTests` and `AV1OnlyTests`. Each links one codec module alone, so they run one at a time. They need the codec xcframeworks: with `prebuilt/` in place (see [Codec Build](#codec-build)), `scripts/build_xcframework.sh` makes them there, where `Package.swift` looks first.
+
+```bash
+for t in VPXOnlyTests AV1OnlyTests; do
+  xcodebuild test -scheme AlphaVideo-Package -destination 'platform=iOS Simulator,name=iPhone 16 Pro' -only-testing:$t
+done
+```
+
+Android has no tests of its own here: its paths need a device, so the tester app covers them. In [alpha-video-test](https://github.com/MediaCacheDev/alpha-video-test#tests), with this repo's tarball installed and a Release build on an emulator, phone or simulator:
+
+```bash
+npm run test:pixels -- --platform android --player cpp     # every decoder on every card
+npm run test:pixels -- --platform ios --player cpp
+npm run test:pixels -- --platform android --player cpp --only mediacodec-hw   # one decoder
+npm run test:pixels -- --platform android --player cpp --playback             # playback and looping
+npm run test:streaming -- --platform android --player cpp  # range requests, storage, headers, Media3 data source
+```
+
+`npm pack` here (and in `web/`) makes the tarballs the tester app installs; rebuild its app after installing them. Everything, in order:
+
+```bash
+npm run test:core
+(cd web && npm run build && npm test && npm run test:browsers && npm run test:browsers -- --isolated && npm run test:streaming)
+for t in VPXOnlyTests AV1OnlyTests; do xcodebuild test -scheme AlphaVideo-Package -destination 'platform=iOS Simulator,name=iPhone 16 Pro' -only-testing:$t; done
+# then, in alpha-video-test: test:pixels and test:streaming with --player cpp on each platform
+```
+
 ## Demo and related packages
 
 [alpha-video-test](https://github.com/MediaCacheDev/alpha-video-test) is a React Native app (Android, iOS and web) that plays the same video in each of these formats side by side, with FPS, CPU and memory readouts, so you can compare them on your own device.
@@ -785,7 +828,7 @@ Ideas, not plans:
 - **Drop FFmpeg on the web too.** Android and iOS decode with libvpx and dav1d directly, and the web already demuxes with libwebm. In WebAssembly libvpx is 1.2-1.9x slower than FFmpeg's own VP9 decoder, even with row multithreading, so the web's software engine keeps FFmpeg's VP9 decoder for now.
 - **Hardware decoding of dual-stream files on iOS.** Two VideoToolbox sessions, one per track, composited in the Metal shader, as Android does with MediaCodec, with the C++ core as the fallback. AV1 decodes in hardware on recent Apple chips (A17 Pro, M3 and later). VP9 likely can't, since VideoToolbox's VP9 decoder isn't available to iOS apps.
 - **Audio.** Decode a WebM's Opus or Vorbis track, keep video in sync with it, and drop frames when decoding falls behind.
-- **More codecs.** VP8 (libvpx already has it, so it would join the vpx module; alpha VP8 WebM is common from older encoders) and AV2 once it's final, in software and through platform decoders where they exist.
+- **More codecs.** AV2 once it's final, in software and through platform decoders where they exist.
 - **DRM.** Unlikely: Widevine and FairPlay decode into protected surfaces, which the alpha shader can't read.
 
 ## License
