@@ -1,23 +1,25 @@
 /**
  * What a WebM holds, from its first bytes, so a file `<video>` can play needn't load the
  * WebAssembly demuxer. Follows the C++ demuxer's rule (cpp/AlphaDemuxer): colour is the first
- * VP9 or AV1 track, alpha the second, or a single VP9 track's BlockAdditional.
+ * VP8, VP9 or AV1 track, alpha the second, or a single VP8 or VP9 track's BlockAdditional.
  */
 
 export type WebMLayout =
-  /** One VP9 track with alpha in each block's BlockAdditional: the file browsers play with alpha. */
+  /** One VP8 or VP9 track with alpha in each block's BlockAdditional: the file browsers play with alpha. */
   | 'blockadditional'
-  /** Colour and alpha in two VP9 or AV1 tracks. */
+  /** Colour and alpha in two VP8, VP9 or AV1 tracks. */
   | 'dual'
   /** One track and no alpha. */
   | 'opaque';
 
 export interface WebMSniff {
   layout: WebMLayout;
-  codec: 'vp9' | 'av1';
+  codec: 'vp9' | 'av1' | 'vp8';
   width: number;
   height: number;
 }
+
+const CODEC_IDS: Record<string, WebMSniff['codec']> = { V_VP8: 'vp8', V_VP9: 'vp9', V_AV1: 'av1' };
 
 const ID = {
   EBML: 0x1a45dfa3,
@@ -91,7 +93,7 @@ interface Track {
 
 /**
  * Reads `bytes`, the start of a WebM (64 KB is plenty for files from FFmpeg or libwebm). Returns
- * null if it isn't a WebM with a VP9 or AV1 track, or if the bytes end before the tracks do.
+ * null if it isn't a WebM with a VP8, VP9 or AV1 track, or if the bytes end before the tracks do.
  */
 export function sniffWebM(bytes: Uint8Array): WebMSniff | null {
   const tracks: Track[] = [];
@@ -145,13 +147,13 @@ export function sniffWebM(bytes: Uint8Array): WebMSniff | null {
     if (open.pop()!.id === ID.TrackEntry && track) tracks.push(track);
   }
 
-  const video = tracks.filter((t) => t.video && (t.codecId === 'V_VP9' || t.codecId === 'V_AV1'));
+  const video = tracks.filter((t) => t.video && CODEC_IDS[t.codecId]);
   if (!video.length || !tracksDone) return null;
   const colour = video[0];
-  const codec = colour.codecId === 'V_AV1' ? 'av1' : 'vp9';
+  const codec = CODEC_IDS[colour.codecId];
   let layout: WebMLayout = 'opaque';
   if (video.length >= 2) layout = 'dual';
-  else if (codec === 'vp9' && (colour.alphaMode === 1 || blockAdditionsSeen)) layout = 'blockadditional';
+  else if (codec !== 'av1' && (colour.alphaMode === 1 || blockAdditionsSeen)) layout = 'blockadditional';
   return { layout, codec, width: colour.width, height: colour.height };
 }
 

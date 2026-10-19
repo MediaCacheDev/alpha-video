@@ -168,7 +168,7 @@ struct BitReader {
     }
 };
 
-struct Vp9Header {
+struct VpxHeader {
     int profile = 0;
     int bitDepth = 8;
     int colorSpace = kMatrixUnspecified;
@@ -178,7 +178,7 @@ struct Vp9Header {
 };
 
 // A VP9 keyframe's uncompressed header, as FFmpeg's vp9 decoder reads it (VP9 spec 6.2).
-bool parseVp9KeyframeHeader(const uint8_t* data, size_t size, Vp9Header* out) {
+bool parseVp9KeyframeHeader(const uint8_t* data, size_t size, VpxHeader* out) {
     if (!data || size < 10) return false;  // The fields read below fit in 10 bytes
     BitReader r{data};
     if (r.bits(2) != 2) return false;  // frame_marker
@@ -204,6 +204,60 @@ bool parseVp9KeyframeHeader(const uint8_t* data, size_t size, Vp9Header* out) {
     }
     out->width = r.bits(16) + 1;
     out->height = r.bits(16) + 1;
+    return true;
+}
+
+// VP8's boolean decoder (RFC 6386 7.3), for the first bools of a frame's first partition
+struct BoolDecoder {
+    const uint8_t* p;
+    const uint8_t* end;
+    uint32_t value = 0;
+    uint32_t range = 255;
+    int bitCount = 0;
+
+    BoolDecoder(const uint8_t* data, size_t size) : p(data + 2), end(data + size) {
+        value = (static_cast<uint32_t>(data[0]) << 8) | data[1];
+    }
+
+    int readBool(int probability) {
+        const uint32_t split = 1 + (((range - 1) * static_cast<uint32_t>(probability)) >> 8);
+        const uint32_t bigSplit = split << 8;
+        int bit = 0;
+        if (value >= bigSplit) {
+            bit = 1;
+            range -= split;
+            value -= bigSplit;
+        } else {
+            range = split;
+        }
+        while (range < 128) {
+            value <<= 1;
+            range <<= 1;
+            if (++bitCount == 8) {
+                bitCount = 0;
+                if (p < end) value |= *p++;
+            }
+        }
+        return bit;
+    }
+};
+
+// A VP8 keyframe's header, as FFmpeg's vp8 decoder reads it (RFC 6386 9.1-9.2). There is no
+// matrix for VP8 but BT.601, which color_space 0 says, and clamping_type 1 says full range.
+bool parseVp8KeyframeHeader(const uint8_t* data, size_t size, VpxHeader* out) {
+    if (!data || size < 12) return false;  // The frame tag, start code, size and 2 bytes of bools
+    if (data[0] & 1) return false;         // frame type: not a keyframe
+    if (data[3] != 0x9d || data[4] != 0x01 || data[5] != 0x2a) return false;  // start code
+    BoolDecoder bools(data + 10, size - 10);
+    const int colorSpace = bools.readBool(128);
+    const int clampingType = bools.readBool(128);
+
+    out->profile = (data[0] >> 1) & 7;  // version
+    out->bitDepth = 8;
+    out->colorSpace = colorSpace == 0 ? kMatrixBt470bg : kMatrixUnspecified;
+    out->colorRange = clampingType ? kRangeFull : kRangeLimited;
+    out->width = (data[6] | (data[7] << 8)) & 0x3fff;
+    out->height = (data[8] | (data[9] << 8)) & 0x3fff;
     return true;
 }
 
@@ -242,6 +296,10 @@ bool isVp9Keyframe(const uint8_t* data, int size) {
     const int showExistingBit = profile == 3 ? 2 : 3;
     if ((b >> showExistingBit) & 1) return false;
     return ((b >> (showExistingBit - 1)) & 1) == 0;  // frame_type 0 is a keyframe
+}
+
+bool isVp8Keyframe(const uint8_t* data, int size) {
+    return data && size >= 3 && (data[0] & 1) == 0;  // frame type 0 is a keyframe
 }
 
 /**
@@ -327,7 +385,7 @@ private:
     bool probeComplete() const;
     void buildInfo();
     AlphaDemuxer::StreamInfo streamInfoOf(const Track& track, const std::vector<uint8_t>& firstPacket,
-                                          Vp9Header* vp9) const;
+                                          VpxHeader* vpx) const;
     bool findKeyframe(int64_t ticks, std::map<int64_t, uint64_t>::const_iterator* out);
     std::map<int64_t, uint64_t>::const_iterator keyframeAtOrBefore(int64_t ticks) const;
     bool scan(uint64_t from, int64_t untilTicks);
@@ -492,17 +550,27 @@ AlphaDemuxer::Progress AlphaDemuxer::Impl::tryOpen() {
 }
 
 AlphaDemuxer::StreamInfo AlphaDemuxer::Impl::streamInfoOf(const Track& track, const std::vector<uint8_t>& firstPacket,
-                                                          Vp9Header* vp9) const {
+                                                          VpxHeader* vpx) const {
     AlphaDemuxer::StreamInfo s;
     s.codec = track.codec;
     readContainerColour(track.entry, &s);
     if (track.codec == AlphaDemuxer::VP9) {
         // VP9's range and matrix are the bitstream's; primaries and transfer the container's
-        if (parseVp9KeyframeHeader(firstPacket.data(), firstPacket.size(), vp9)) {
-            s.profile = vp9->profile;
-            s.bitDepth = vp9->bitDepth;
-            s.colorSpace = vp9->colorSpace;
-            s.colorRange = vp9->colorRange;
+        if (parseVp9KeyframeHeader(firstPacket.data(), firstPacket.size(), vpx)) {
+            s.profile = vpx->profile;
+            s.bitDepth = vpx->bitDepth;
+            s.colorSpace = vpx->colorSpace;
+            s.colorRange = vpx->colorRange;
+        }
+        return s;
+    }
+    if (track.codec == AlphaDemuxer::VP8) {
+        // VP8's range is the bitstream's, and its matrix unless color_space 1 leaves it open
+        if (parseVp8KeyframeHeader(firstPacket.data(), firstPacket.size(), vpx)) {
+            s.profile = vpx->profile;
+            s.bitDepth = vpx->bitDepth;
+            if (vpx->colorSpace != kMatrixUnspecified) s.colorSpace = vpx->colorSpace;
+            s.colorRange = vpx->colorRange;
         }
         return s;
     }
@@ -529,11 +597,11 @@ void AlphaDemuxer::Impl::buildInfo() {
         info_.width = static_cast<int>(entry.video.value().pixel_width.value());
         info_.height = static_cast<int>(entry.video.value().pixel_height.value());
     }
-    Vp9Header vp9;
-    info_.color = streamInfoOf(colour_, firstColourPacket_, &vp9);
-    if (vp9.width > 0) {
-        info_.width = vp9.width;
-        info_.height = vp9.height;
+    VpxHeader vpx;
+    info_.color = streamInfoOf(colour_, firstColourPacket_, &vpx);
+    if (vpx.width > 0) {
+        info_.width = vpx.width;
+        info_.height = vpx.height;
     }
 
     if (entry.default_duration.is_present() && entry.default_duration.value() > 0) {
@@ -555,9 +623,10 @@ void AlphaDemuxer::Impl::buildInfo() {
     info_.startUs = haveColourPacket_ ? ticksToUs(startTicks_) : 0;
 
     if (alpha_.number) {
-        Vp9Header alphaVp9;
-        info_.alpha = streamInfoOf(alpha_, firstAlphaPacket_, &alphaVp9);
-    } else if (colour_.codec == AlphaDemuxer::VP9 && firstColourHasBlockAdditional_) {
+        VpxHeader alphaVpx;
+        info_.alpha = streamInfoOf(alpha_, firstAlphaPacket_, &alphaVpx);
+    } else if ((colour_.codec == AlphaDemuxer::VP9 || colour_.codec == AlphaDemuxer::VP8) &&
+               firstColourHasBlockAdditional_) {
         info_.alphaInBlockAdditional = true;
         info_.alpha = info_.color;
         // libvpx's alpha stream says limited range but holds alpha as-is, 0-255
@@ -700,11 +769,13 @@ Status AlphaDemuxer::Impl::OnInfo(const ElementMetadata&, const webm::Info& info
 Status AlphaDemuxer::Impl::OnTrackEntry(const ElementMetadata&, const TrackEntry& entry) {
     if (entry.track_type.value() != TrackType::kVideo) return Status(Status::kOkCompleted);
     const std::string& codecId = entry.codec_id.value();
-    if (codecId != "V_VP9" && codecId != "V_AV1") return Status(Status::kOkCompleted);
+    if (codecId != "V_VP9" && codecId != "V_AV1" && codecId != "V_VP8") return Status(Status::kOkCompleted);
     Track* track = !colour_.number ? &colour_ : !alpha_.number ? &alpha_ : nullptr;
     if (track && entry.track_number.value() > 0) {
         track->number = entry.track_number.value();
-        track->codec = codecId == "V_AV1" ? AlphaDemuxer::AV1 : AlphaDemuxer::VP9;
+        track->codec = codecId == "V_AV1"   ? AlphaDemuxer::AV1
+                       : codecId == "V_VP8" ? AlphaDemuxer::VP8
+                                            : AlphaDemuxer::VP9;
         track->entry = entry;
     }
     return Status(Status::kOkCompleted);
@@ -843,7 +914,9 @@ Status AlphaDemuxer::Impl::finishBlock(const std::vector<uint8_t>* blockAddition
         if (info_.alphaInBlockAdditional) {
             // Empty when the block has no alpha
             std::vector<uint8_t> alpha = blockAdditional ? *blockAdditional : std::vector<uint8_t>();
-            const bool key = isVp9Keyframe(alpha.data(), static_cast<int>(alpha.size()));
+            const int size = static_cast<int>(alpha.size());
+            const bool key = info_.color.codec == AlphaDemuxer::VP8 ? isVp8Keyframe(alpha.data(), size)
+                                                                    : isVp9Keyframe(alpha.data(), size);
             queue_.push_back({1, std::move(alpha), ptsUs, alphaFrameIndex_++, key});
         }
     }

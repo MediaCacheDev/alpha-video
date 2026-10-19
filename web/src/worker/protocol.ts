@@ -12,7 +12,7 @@ export type ToWorker =
   | {
       t: 'open';
       /** 0 VP9, 1 AV1 */
-      codec: 0 | 1;
+      codec: number;
       /** Matroska CodecPrivate, av1C for AV1 */
       extradata: Uint8Array | null;
       threads: number;

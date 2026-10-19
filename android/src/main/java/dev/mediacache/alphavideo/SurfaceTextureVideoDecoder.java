@@ -23,7 +23,7 @@ import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicLong;
 
 /**
- * Hardware-accelerated video decoder (VP9/AV1) that outputs directly to a SurfaceTexture.
+ * Hardware-accelerated video decoder (VP8/VP9/AV1) that outputs directly to a SurfaceTexture.
  * 
  * This keeps decoded frames on the GPU - no CPU readback required!
  * The SurfaceTexture provides an OES texture that can be used directly in OpenGL.
@@ -40,6 +40,7 @@ public class SurfaceTextureVideoDecoder implements SurfaceTexture.OnFrameAvailab
     private static final String TAG = "SurfaceVideoDec";
     public static final String MIME_VP9 = "video/x-vnd.on2.vp9";
     public static final String MIME_AV1 = "video/av01";
+    public static final String MIME_VP8 = "video/x-vnd.on2.vp8";
     
     // Timeout for codec operations (microseconds)
     private static final long DEQUEUE_TIMEOUT_US = 0; // Non-blocking for async
@@ -189,8 +190,8 @@ public class SurfaceTextureVideoDecoder implements SurfaceTexture.OnFrameAvailab
         info.append("Video Decoder Information\n");
         info.append("========================\n");
         
-        String[] mimes = { MIME_VP9, MIME_AV1 };
-        String[] labels = { "VP9", "AV1" };
+        String[] mimes = { MIME_VP8, MIME_VP9, MIME_AV1 };
+        String[] labels = { "VP8", "VP9", "AV1" };
         
         MediaCodecList codecList = new MediaCodecList(MediaCodecList.ALL_CODECS);
         MediaCodecInfo[] codecInfos = codecList.getCodecInfos();

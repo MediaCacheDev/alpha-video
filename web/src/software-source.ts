@@ -1,10 +1,10 @@
 /**
- * Colour and alpha decoded in WebAssembly (FFmpeg's VP9 decoder, dav1d for AV1), for streams
+ * Colour and alpha decoded in WebAssembly (FFmpeg's VP8 and VP9 decoders, dav1d for AV1), for streams
  * WebCodecs can't decode. The C++ demuxer runs on the page's thread; each stream decodes in its
  * own Worker, so the two decode in parallel and the page stays free. On a cross-origin isolated
  * page the decoders also run threads of their own.
  */
-import { isAbort, type DemuxInfo, type DemuxPacket, type StreamInfo, type WasmDemuxer } from './demuxer';
+import { CODEC_NUMBERS, isAbort, type DemuxInfo, type DemuxPacket, type StreamInfo, type WasmDemuxer } from './demuxer';
 import { AlphaVideoError } from './errors';
 import { insertByTimestamp, type FramePair, type PairSource, type Planes, type SourceCallbacks } from './source';
 import type { DecodedFrame, FromWorker, ToWorker } from './worker/protocol';
@@ -35,15 +35,15 @@ function threadCounts(): [number, number] | null {
   return [Math.min(4, free >> 1), Math.min(2, free >> 2)];
 }
 
-type WorkerKind = `${StreamInfo['codec']}${'' | '-mt'}`;
+type WorkerKind = `${'vpx' | 'av1'}${'' | '-mt'}`;
 
-/** Each codec's decoder is its own module, loaded only for streams in that codec. */
+/** Each codec module is its own decoder (vpx: VP8 and VP9), loaded only for streams it decodes. */
 function workerScript(kind: WorkerKind): Promise<{ default: string }> {
   switch (kind) {
-    case 'vp9':
-      return import('./worker/decode-worker-vp9?worker');
-    case 'vp9-mt':
-      return import('./worker/decode-worker-vp9-mt?worker');
+    case 'vpx':
+      return import('./worker/decode-worker-vpx?worker');
+    case 'vpx-mt':
+      return import('./worker/decode-worker-vpx-mt?worker');
     case 'av1':
       return import('./worker/decode-worker-av1?worker');
     case 'av1-mt':
@@ -96,7 +96,7 @@ function startWorker(url: string, stream: StreamInfo, threads: number, alpha: bo
         reject(new AlphaVideoError(message.code, message.message));
       }
     };
-    const open: ToWorker = { t: 'open', codec: stream.codec === 'av1' ? 1 : 0, extradata: stream.codecPrivate, threads, alpha };
+    const open: ToWorker = { t: 'open', codec: CODEC_NUMBERS.indexOf(stream.codec), extradata: stream.codecPrivate, threads, alpha };
     worker.postMessage(open);
   });
 }
@@ -104,7 +104,8 @@ function startWorker(url: string, stream: StreamInfo, threads: number, alpha: bo
 async function startWorkers(info: DemuxInfo, threads: [number, number] | null): Promise<OpenedWorker[]> {
   const streams = [info.color, info.alpha!];
   const started = streams.map(async (stream, i) => {
-    const url = await workerUrl(threads ? `${stream.codec}-mt` : stream.codec);
+    const module = stream.codec === 'av1' ? 'av1' : 'vpx';
+    const url = await workerUrl(threads ? `${module}-mt` : module);
     return startWorker(url, stream, threads?.[i] ?? 1, i === 1);
   });
   const results = await Promise.allSettled(started);

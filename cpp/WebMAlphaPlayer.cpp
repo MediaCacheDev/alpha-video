@@ -683,7 +683,10 @@ bool WebMAlphaPlayer::openStreams() {
             return false;
         }
     }
-    VLOGI("Colour: %s profile %d, %d-bit; alpha: %s", info.color.codec == AlphaDemuxer::AV1 ? "AV1" : "VP9",
+    VLOGI("Colour: %s profile %d, %d-bit; alpha: %s",
+          info.color.codec == AlphaDemuxer::AV1   ? "AV1"
+          : info.color.codec == AlphaDemuxer::VP8 ? "VP8"
+                                                  : "VP9",
           info.color.profile, info.color.bitDepth,
           !info.hasAlpha ? "none" : info.alphaInBlockAdditional ? "BlockAdditional" : "track");
     

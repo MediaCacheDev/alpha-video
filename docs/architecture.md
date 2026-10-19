@@ -8,15 +8,15 @@ The player has two completely separate decode backends, selected automatically b
 
 | | Software Path | Hardware Path |
 |---|---|---|
-| **File format** | Single VP9 stream with YUVA420P alpha, or two VP9 (8-bit) or AV1 (8- to 12-bit) streams | Two VP9 or AV1 streams (color + alpha), or a single VP9 stream with YUVA420P alpha |
+| **File format** | Single VP8 or VP9 stream with YUVA420P alpha, or two VP8, VP9 (8-bit) or AV1 (8- to 12-bit) streams | Two VP8, VP9 or AV1 streams (color + alpha), or a single VP8 or VP9 stream with YUVA420P alpha |
 | **Used for** | iOS always; Android when MediaCodec can't decode the file | Android when it can |
-| **Decoder** | C++ core (libvpx for VP9, dav1d for AV1) | Android MediaCodec (hardware or software codec) |
+| **Decoder** | C++ core (libvpx for VP8 and VP9, dav1d for AV1) | Android MediaCodec (hardware or software codec) |
 | **Rendering** | YUVA textures → fragment shader | OES textures → fragment shader |
 | **Platforms** | iOS + Android | Android only |
 | **Looping** | Seamless (frames stay in cache) | Seamless |
 | **Key class** | `WebMAlphaPlayer` (C++) | `BufferedDualStreamPlayer` (Java) |
 
-Detection happens in `AlphaVideoView.loadProbedSource()`: the JNI function `nativeColorAlphaTracks()` lists the colour and alpha bitstreams with their profiles. They come from 2 VP9/AV1 tracks, or from a standard alpha WebM: one VP9 track whose alpha is a second VP9 stream in each block's BlockAdditional. The demuxer then hands each block's main data to the colour decoder and its BlockAdditional to the alpha decoder, as if they were 2 tracks.
+Detection happens in `AlphaVideoView.loadProbedSource()`: the JNI function `nativeColorAlphaTracks()` lists the colour and alpha bitstreams with their profiles. They come from 2 VP8/VP9/AV1 tracks, or from a standard alpha WebM: one VP8 or VP9 track whose alpha is a second stream of the same codec in each block's BlockAdditional. The demuxer then hands each block's main data to the colour decoder and its BlockAdditional to the alpha decoder, as if they were 2 tracks.
 
 The `decoder` prop then picks the engine. `MediaCodecDecoders.reserve()` takes a decoder for each track, of the kind asked for (hardware, software, or hardware where it can), that lists the track's profile and has an instance free under its `getMaxSupportedInstances()`; it counts the instances players hold per decoder name. Under `auto`, a file goes to MediaCodec if hardware decoders can be reserved for both tracks, else software ones, and otherwise to the C++ core. A VP9 profile MediaCodec doesn't list (usually profile 1, the 4:4:4 a `gbrp` alpha track encodes to) therefore goes to the C++ core, and so does a file once other players hold the decoders' instances (2 each). A forced value reports an error rather than fall back. The player holds its decoders until `unload()`, and `onLoad` reports them.
 
@@ -28,7 +28,7 @@ React (JS) AlphaVideoView props
    │
    ├─ Android: AlphaVideoViewManager → AlphaVideoView (TextureView)
    │      ├─ http(s) or dataSource → SourceReader (RangeReader over AlphaVideoHttpDataSource or the app's AlphaVideoDataSource, store) → load from the reader
-   │      ├─ if colour + alpha VP9/AV1 streams + MediaCodecDecoders reserves 2 decoders → BufferedDualStreamPlayer (MediaCodec)
+   │      ├─ if colour + alpha VP8/VP9/AV1 streams + MediaCodecDecoders reserves 2 decoders → BufferedDualStreamPlayer (MediaCodec)
    │      └─ otherwise (decoder auto or software)                                    → WebMAlphaPlayer (C++)
    │
    ├─ iOS: RNAlphaVideoViewManager → RNAlphaVideoView (an AlphaVideoView) → AlphaVideoMetalView
@@ -54,7 +54,7 @@ React (JS) AlphaVideoView props
 - **`AlphaVideoView`** — TextureView subclass, owns the EGL context and GL render thread. Routes to software or hardware path based on stream detection. Handles view lifecycle (attach/detach/z-index reorder) with deferred source reloading.
 - **`BufferedDualStreamPlayer`** — Hardware decode orchestrator. Manages the demux loop, codec thread, playback loop, and delegates rendering to the GL thread. Handles loop transitions (flush + seek).
 - **`MediaCodecDecoders`** — Picks the MediaCodec decoder for each track by kind, profile and free instances, and counts the instances players hold.
-- **`SurfaceTextureVideoDecoder`** — Codec-agnostic MediaCodec wrapper around the decoder it is given. Supports VP9 and AV1. Creates OES texture + SurfaceTexture per instance. Implements one-frame-per-cycle release gate for synchronized output.
+- **`SurfaceTextureVideoDecoder`** — Codec-agnostic MediaCodec wrapper around the decoder it is given. Supports VP8, VP9 and AV1. Creates OES texture + SurfaceTexture per instance. Implements one-frame-per-cycle release gate for synchronized output.
 - **`AlphaVideoModule`** — Native module exposing `getDecoderInfo()`, `getDecoderStatus()`, `getMaxDecoderInstances()` to JS.
 
 ### iOS (Objective-C++)
@@ -65,8 +65,8 @@ React (JS) AlphaVideoView props
 
 ### C++ Core (cross-platform, software path)
 
-- **`AlphaDemuxer`** — Reads the colour and alpha bitstreams as packets with libwebm's `webm_parser` (`third_party/libwebm`): the first two VP9/AV1 tracks, or one VP9 track and its BlockAdditional alpha. Takes profile, bit depth and colour from the bitstream headers, and seeks by the Cues (loaded when a seek needs them) or by scanning. Shared with the MediaCodec path through JNI, and compiled to WebAssembly for the web, where it reads through JavaScript and stops when bytes haven't arrived yet (`ByteSource::kPending`), carrying on once they have. `tests/core/demuxer_compare` checks it against FFmpeg's Matroska demuxer (`tests/core/ffmpeg/AlphaDemuxer`, which the web used before).
-- **`VideoDecoder`** — A registered decoder plugin behind one interface: send a packet, receive pictures, drain at the end, flush on a seek. Plugins are tables of C functions (`cpp/AlphaVideoDecoderPlugin.h`, versioned by `ALPHA_VIDEO_DECODER_ABI`), one list per codec module: `codecs/vpx` (libvpx, VP9 with row multithreading) and `codecs/av1` (dav1d). Android's `AlphaVideoCodecs` and iOS's register the modules they find by class name (`VpxCodec`/`Av1Codec`, `AlphaVideoVPXCodec`/`AlphaVideoAV1Codec`); the first plugin whose `supports` takes a stream decodes it, and with none the player reports `NO_DECODER`.
+- **`AlphaDemuxer`** — Reads the colour and alpha bitstreams as packets with libwebm's `webm_parser` (`third_party/libwebm`): the first two VP8/VP9/AV1 tracks, or one VP8 or VP9 track and its BlockAdditional alpha. Takes profile, bit depth and colour from the bitstream headers (for VP8, the keyframe's colour space and clamping bits, read with its boolean decoder), and seeks by the Cues (loaded when a seek needs them) or by scanning. Shared with the MediaCodec path through JNI, and compiled to WebAssembly for the web, where it reads through JavaScript and stops when bytes haven't arrived yet (`ByteSource::kPending`), carrying on once they have. `tests/core/demuxer_compare` checks it against FFmpeg's Matroska demuxer (`tests/core/ffmpeg/AlphaDemuxer`, which the web used before).
+- **`VideoDecoder`** — A registered decoder plugin behind one interface: send a packet, receive pictures, drain at the end, flush on a seek. Plugins are tables of C functions (`cpp/AlphaVideoDecoderPlugin.h`, versioned by `ALPHA_VIDEO_DECODER_ABI`), one list per codec module: `codecs/vpx` (libvpx: VP8, and VP9 with row multithreading) and `codecs/av1` (dav1d). Android's `AlphaVideoCodecs` and iOS's register the modules they find by class name (`VpxCodec`/`Av1Codec`, `AlphaVideoVPXCodec`/`AlphaVideoAV1Codec`); the first plugin whose `supports` takes a stream decodes it, and with none the player reports `NO_DECODER`.
 - **`ByteSource`** — Where the demuxer reads: a file, a range of a file descriptor (an APK asset or `content://` URI), a `RangeReader` (blocking until its bytes arrive, or until the player stops), or memory.
 - **`WebMAlphaPlayer`** — The player on top of them:
   - `openStreams` (fails with `NO_DECODER` when no plugin takes a track), `initCodecs` (a decoder per track), `loadFromFile/loadFromMemory/loadFromFileRange/loadFromReader`
@@ -123,7 +123,7 @@ loadDualStreamFile(path)
        3. bufferedPlayer.loadFromFile(path):
             a. nativeCreateDemuxer (JNI) → AlphaDemuxer opens WebM, finds the colour and alpha streams
             b. nativeGetVideoInfo → [width, height, frames, fps*1000, streamCount, codec]
-            c. Map codec to MIME type (VP9=0 → "video/x-vnd.on2.vp9", AV1=1 → "video/av01")
+            c. Map codec to MIME type (VP9=0 → "video/x-vnd.on2.vp9", AV1=1 → "video/av01", VP8=2 → "video/x-vnd.on2.vp8")
             d. Create 2 SurfaceTextureVideoDecoder instances (color + alpha)
                  - Each creates: OES texture → SurfaceTexture → Surface → MediaCodec
                  - MediaCodec configured with Surface output (GPU-accelerated)

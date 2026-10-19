@@ -17,13 +17,13 @@ namespace webm {
  * cpp/AlphaDemuxer over FFmpeg's Matroska demuxer, which the web used before it moved to the
  * core's; kept as a second reading of each file for tests/core/demuxer_compare.
  *
- * The colour stream is the first VP9 or AV1 track. The alpha stream is the second, or, for a
- * single VP9 track, the VP9 stream in each block's BlockAdditional (ID 1), which is how libvpx
+ * The colour stream is the first VP8, VP9 or AV1 track. The alpha stream is the second, or, for a
+ * single VP8 or VP9 track, the stream in each block's BlockAdditional (ID 1), which is how libvpx
  * writes a standard `yuva420p` WebM.
  */
 class AlphaDemuxer {
 public:
-    enum Codec { VP9 = 0, AV1 = 1 };
+    enum Codec { VP9 = 0, AV1 = 1, VP8 = 2 };
 
     struct StreamInfo {
         Codec codec = VP9;
@@ -104,5 +104,8 @@ private:
 
 /** Whether a VP9 frame (or superframe) starts with a keyframe, from its uncompressed header. */
 bool isVp9Keyframe(const uint8_t* data, int size);
+
+/** Whether a VP8 frame is a keyframe, from its frame tag. */
+bool isVp8Keyframe(const uint8_t* data, int size);
 
 } // namespace webm

@@ -125,7 +125,7 @@ public class AlphaVideoView extends TextureView implements
     
     private String mode = MODE_STREAM;
     
-    // Decoder for files with colour and alpha as separate VP9/AV1 bitstreams; see setDecoder()
+    // Decoder for files with colour and alpha as separate VP8/VP9/AV1 bitstreams; see setDecoder()
     public static final String DECODER_AUTO = "auto";
     public static final String DECODER_MEDIACODEC = "mediacodec";
     public static final String DECODER_MEDIACODEC_HW = "mediacodec-hw";
@@ -138,7 +138,7 @@ public class AlphaVideoView extends TextureView implements
     
     /**
      * {@link PlayerCallback#onError}'s code when the file needs a software decoder that isn't
-     * installed: add {@code dev.mediacache:alpha-video-vpx} (VP9) or {@code alpha-video-av1} (AV1),
+     * installed: add {@code dev.mediacache:alpha-video-vpx} (VP8, VP9) or {@code alpha-video-av1} (AV1),
      * as the message says. See {@link AlphaVideoCodecs}.
      */
     public static final String ERROR_NO_DECODER = "NO_DECODER";
@@ -360,8 +360,8 @@ public class AlphaVideoView extends TextureView implements
      * - "mediacodec-hw" / "mediacodec-sw": hardware / software decoders only, for both tracks
      * - "software": the C++ core
      * A forced engine never falls back: a file it can't play reports onError. MediaCodec plays
-     * only files with colour and alpha as separate VP9/AV1 bitstreams. The core decodes with the
-     * codec modules installed ({@link AlphaVideoCodecs}): 8-bit VP9 with alpha-video-vpx, 8- to
+     * only files with colour and alpha as separate VP8/VP9/AV1 bitstreams. The core decodes with
+     * the codec modules installed ({@link AlphaVideoCodecs}): VP8 and 8-bit VP9 with alpha-video-vpx, 8- to
      * 12-bit AV1 with alpha-video-av1. A file needing one that's missing reports
      * {@link #ERROR_NO_DECODER}.
      */
@@ -593,8 +593,8 @@ public class AlphaVideoView extends TextureView implements
         try {
             source = WebMSource.parse(uri);
             try (AssetFileDescriptor afd = source.open(getContext())) {
-                // Colour and alpha as separate VP9/AV1 bitstreams (2 tracks, or VP9 alpha in
-                // BlockAdditional) decode on MediaCodec; anything else on the software decoder
+                // Colour and alpha as separate VP8/VP9/AV1 bitstreams (2 tracks, or VP8/VP9 alpha
+                // in BlockAdditional) decode on MediaCodec; anything else on the software decoder
                 colorAlphaTracks = BufferedDualStreamPlayer.nativeColorAlphaTracks(
                     afd.getParcelFileDescriptor().getFd(), afd.getStartOffset(), afd.getLength());
             }
@@ -631,7 +631,7 @@ public class AlphaVideoView extends TextureView implements
         
         if (colorAlphaTracks == null) {
             if (forcedMediaCodec) {
-                reportError("decoder \"" + decoder + "\" needs colour and alpha as separate VP9 or AV1 "
+                reportError("decoder \"" + decoder + "\" needs colour and alpha as separate VP8, VP9 or AV1 "
                     + "bitstreams, and " + source + " has none");
             } else {
                 loadSingleStream(source);

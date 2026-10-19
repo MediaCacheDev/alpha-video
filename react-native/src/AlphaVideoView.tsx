@@ -125,7 +125,7 @@ export interface AlphaVideoViewProps extends ViewProps {
   mode?: PlaybackMode;
 
   /**
-   * Android: the decoder for files with colour and alpha as separate VP9/AV1 bitstreams
+   * Android: the decoder for files with colour and alpha as separate VP8/VP9/AV1 bitstreams
    * (default `'auto'`; see {@link Decoder}). `onLoad` reports the one used. iOS always uses
    * the C++ core; the web has `webDecoder`.
    */
@@ -306,7 +306,7 @@ const NativePlayer = forwardRef<AlphaVideoViewRef, AlphaVideoViewProps>(
 NativePlayer.displayName = 'NativePlayer';
 
 /**
- * AlphaVideoView - Cross-platform WebM VP9/AV1 video player with alpha transparency support
+ * AlphaVideoView - Cross-platform WebM VP8/VP9/AV1 video player with alpha transparency support
  * 
  * Uses native C++ implementation with Metal (iOS) and OpenGL ES (Android) for optimal performance.
  * On the web, alpha-video-web: `<video>` where the browser keeps the alpha, otherwise WebCodecs or

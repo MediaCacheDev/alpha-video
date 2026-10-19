@@ -16,7 +16,7 @@ const WEB = fileURLToPath(new URL('../..', import.meta.url));
 const FIXTURES = join(WEB, '../tests/fixtures');
 const TOLERANCE = 6;
 const CARDS = ['card_256x256', 'card_383x217'];
-const FILES = ['yuva.webm', 'dual_vp9.webm', 'dual_vp9_p0.webm', 'dual_av1.webm', 'dual_av1_10bit.webm'];
+const FILES = ['yuva.webm', 'dual_vp9.webm', 'dual_vp9_p0.webm', 'dual_av1.webm', 'dual_av1_10bit.webm', 'yuva_vp8.webm', 'dual_vp8.webm'];
 const DECODERS = ['auto', 'webcodecs', 'software'];
 const SEEK_FRAMES = [0, 37, 5];
 // A forced engine reports what it can't decode rather than falling back: VP9 profile 1 alpha
@@ -138,7 +138,11 @@ for (const [name, type] of Object.entries(engines)) {
   }
 
   // Playback: frames advance, alpha stays with its colour frame, and the clip loops
-  for (const [file, decoder] of [['yuva.webm', 'webcodecs'], ['dual_av1.webm', 'webcodecs'], ['dual_vp9.webm', 'software'], ['dual_av1.webm', 'software']]) {
+  const playback = [
+    ['yuva.webm', 'webcodecs'], ['dual_av1.webm', 'webcodecs'], ['yuva_vp8.webm', 'webcodecs'],
+    ['dual_vp9.webm', 'software'], ['dual_av1.webm', 'software'], ['dual_vp8.webm', 'software'],
+  ];
+  for (const [file, decoder] of playback) {
     const result = await page.evaluate((c) => window.playCase(c), {
       src: `/fixtures/card_256x256/${file}`,
       layoutUrl: '/fixtures/card_256x256/layout.json',

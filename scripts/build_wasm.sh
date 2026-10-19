@@ -7,8 +7,9 @@
 #                                 through JavaScript so files stream in by range, and the shared
 #                                 colour conversion (cpp/YuvToRgb), for the WebCodecs and software
 #                                 engines
-#   web/src/wasm/software-vp9.mjs FFmpeg's VP9 decoder, single-threaded, run in a Web Worker per
-#                                 stream by the software engine; loaded only for VP9 streams
+#   web/src/wasm/software-vpx.mjs FFmpeg's VP8 and VP9 decoders, single-threaded, run in a Web
+#                                 Worker per stream by the software engine; loaded only for VP8
+#                                 and VP9 streams
 #   web/src/wasm/software-av1.mjs dav1d through the av1 codec module's plugin (codecs/av1), as on
 #                                 Android and iOS; no FFmpeg. Loaded only for AV1 streams
 #   web/src/wasm/software-*-mt.mjs the same with threads (FFmpeg's frame threads, dav1d's own),
@@ -183,8 +184,8 @@ fi
 
 build_dav1d dav1d
 build_dav1d dav1d-mt -pthread
-build_ffmpeg software-vp9 --disable-avformat --enable-decoder=vp9
-build_ffmpeg software-vp9-mt --disable-avformat --enable-decoder=vp9 \
+build_ffmpeg software-vpx --disable-avformat --enable-decoder=vp8,vp9
+build_ffmpeg software-vpx-mt --disable-avformat --enable-decoder=vp8,vp9 \
     --enable-pthreads --extra-cflags=-pthread --extra-ldflags=-pthread
 
 WEBM_PARSER="$PROJECT_DIR/third_party/libwebm/webm_parser"
@@ -194,8 +195,8 @@ link_module demuxer.mjs \
     "$PROJECT_DIR/cpp/Av1SequenceHeader.cpp" "$PROJECT_DIR/cpp/YuvToRgb.cpp" "$WEBM_PARSER"/src/*.cc \
     -sMALLOC=emmalloc -sINITIAL_MEMORY=16777216
 
-# vp9_module <output> <FFmpeg variant> <flags...>
-vp9_module() {
+# vpx_module <output> <FFmpeg variant> <flags...>
+vpx_module() {
     local output=$1 stage="$BUILD_DIR/stage-$2"
     shift 2
     link_module "$output" \
@@ -223,7 +224,7 @@ av1_module() {
 # space after a few at the default 2 GB.
 THREADED=(-pthread -sPTHREAD_POOL_SIZE=Module.pthreadPoolSize -sPTHREAD_POOL_SIZE_STRICT=2
     -sINCOMING_MODULE_JS_API=mainScriptUrlOrBlob -sMAXIMUM_MEMORY=1073741824)
-vp9_module software-vp9.mjs software-vp9 -sMALLOC=emmalloc
-vp9_module software-vp9-mt.mjs software-vp9-mt "${THREADED[@]}"
+vpx_module software-vpx.mjs software-vpx -sMALLOC=emmalloc
+vpx_module software-vpx-mt.mjs software-vpx-mt "${THREADED[@]}"
 av1_module software-av1.mjs dav1d -sMALLOC=emmalloc
 av1_module software-av1-mt.mjs dav1d-mt "${THREADED[@]}"

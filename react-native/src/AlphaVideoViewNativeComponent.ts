@@ -26,7 +26,7 @@ import codegenNativeComponent from 'react-native/Libraries/Utilities/codegenNati
 export type PlaybackMode = 'preload' | 'stream' | 'streamAndPreload';
 
 /**
- * Decoder for files with colour and alpha as separate VP9/AV1 bitstreams (two tracks, or a
+ * Decoder for files with colour and alpha as separate VP8/VP9/AV1 bitstreams (two tracks, or a
  * standard alpha WebM's BlockAdditional). Android only; iOS always uses the C++ core and web the browser.
  *
  * - `'auto'` (default): MediaCodec hardware decoders that list every track's profile, else
@@ -34,7 +34,7 @@ export type PlaybackMode = 'preload' | 'stream' | 'streamAndPreload';
  * - `'mediacodec'`: per track, a hardware decoder if one lists the profile and has an instance
  *   free, else a software one.
  * - `'mediacodec-hw'` / `'mediacodec-sw'`: hardware / software decoders only, for both tracks.
- * - `'software'`: the C++ core, with the codecs built in (libvpx for 8-bit VP9, dav1d for 8- to
+ * - `'software'`: the C++ core, with the codecs built in (libvpx for VP8 and 8-bit VP9, dav1d for 8- to
  *   12-bit AV1).
  *
  * A forced engine never falls back: a file it can't play calls `onError`. One that needs a codec

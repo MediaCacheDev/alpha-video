@@ -1,7 +1,7 @@
 {
   "name": "react-native-alpha-video",
   "version": "1.0.0",
-  "description": "Transparent video for React Native: VP9 WebM with alpha on iOS and Android, decoded by a C++ core (libvpx, dav1d for AV1) or the Android hardware decoder, drawn with Metal and OpenGL ES. On the web, alpha-video-web shows the alpha in every browser: <video>, WebCodecs or WebAssembly decoding.",
+  "description": "Transparent video for React Native: VP8, VP9 or AV1 WebM with alpha on iOS and Android, decoded by a C++ core (libvpx, dav1d for AV1) or the Android hardware decoder, drawn with Metal and OpenGL ES. On the web, alpha-video-web shows the alpha in every browser: <video>, WebCodecs or WebAssembly decoding.",
   "source": "react-native/src/index.tsx",
   "main": "lib/commonjs/index.js",
   "module": "lib/module/index.js",
@@ -66,6 +66,7 @@
     "transparent-video",
     "transparency",
     "webm",
+    "vp8",
     "vp9",
     "video",
     "player",

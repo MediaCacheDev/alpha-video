@@ -142,7 +142,8 @@ static std::vector<Fixture> fixtures() {
     std::vector<Fixture> all;
     for (auto [w, h] : {std::pair{383, 217}, std::pair{256, 256}}) {
         std::string card = "card_" + std::to_string(w) + "x" + std::to_string(h);
-        for (const char* file : {"yuva.webm", "dual_vp9.webm", "dual_vp9_p0.webm", "dual_av1.webm", "dual_av1_10bit.webm"}) {
+        for (const char* file : {"yuva.webm", "dual_vp9.webm", "dual_vp9_p0.webm", "dual_av1.webm", "dual_av1_10bit.webm",
+                                 "yuva_vp8.webm", "dual_vp8.webm"}) {
             all.push_back({card + "/" + file, std::string(FIXTURES_DIR) + "/" + card + "/" + file, Card::forSize(w, h)});
         }
     }
@@ -376,9 +377,12 @@ static void registerTests() {
             CHECK(fd >= 0, fx.path);
             std::vector<int> tracks = AlphaDemuxer::colorAlphaTracks(openFileRange(fd, 0, -1));
             const bool av1 = fx.name.find("av1") != std::string::npos;
-            const bool blockAdditional = fx.name.find("yuva.webm") != std::string::npos;
+            const AlphaDemuxer::Codec codec = av1                                       ? AlphaDemuxer::AV1
+                                              : fx.name.find("vp8") != std::string::npos ? AlphaDemuxer::VP8
+                                                                                         : AlphaDemuxer::VP9;
+            const bool blockAdditional = fx.name.find("/yuva") != std::string::npos;
             CHECK(tracks.size() == 4, tracks.size());
-            CHECK(tracks[0] == (av1 ? 1 : 0) && tracks[2] == tracks[0], tracks[0] << " " << tracks[2]);
+            CHECK(tracks[0] == codec && tracks[2] == tracks[0], tracks[0] << " " << tracks[2]);
 
             std::unique_ptr<ByteSource> source = openFileRange(fd, 0, -1);
             ::close(fd);
@@ -389,7 +393,7 @@ static void registerTests() {
                 CHECK(info.width == fx.card.width && info.height == fx.card.height, info.width << "x" << info.height);
                 CHECK(info.totalFrames == fx.card.frames, info.totalFrames);
                 CHECK(info.hasAlpha && info.alphaInBlockAdditional == blockAdditional, info.alphaInBlockAdditional);
-                CHECK(info.color.codec == (av1 ? AlphaDemuxer::AV1 : AlphaDemuxer::VP9), info.color.codec);
+                CHECK(info.color.codec == codec && info.alpha.codec == codec, info.color.codec << " " << info.alpha.codec);
                 CHECK(info.color.bitDepth == (fx.name.find("10bit") != std::string::npos ? 10 : 8), info.color.bitDepth);
                 CHECK(info.alpha.bitDepth == info.color.bitDepth, info.alpha.bitDepth);
                 if (blockAdditional) CHECK(info.alpha.colorRange == kRangeFull, info.alpha.colorRange);

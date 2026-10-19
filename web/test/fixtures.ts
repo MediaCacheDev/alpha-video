@@ -10,7 +10,7 @@ export interface Fixture {
   bytes: Uint8Array;
   width: number;
   height: number;
-  codec: 'vp9' | 'av1';
+  codec: 'vp9' | 'av1' | 'vp8';
   bitDepth: number;
   blockAdditional: boolean;
 }
@@ -26,9 +26,9 @@ export function cards(): Fixture[] {
         bytes: new Uint8Array(readFileSync(join(FIXTURES, dir, file))),
         width: Number(m[1]),
         height: Number(m[2]),
-        codec: file.includes('av1') ? 'av1' : 'vp9',
+        codec: file.includes('av1') ? 'av1' : file.includes('vp8') ? 'vp8' : 'vp9',
         bitDepth: file.includes('10bit') ? 10 : 8,
-        blockAdditional: file === 'yuva.webm',
+        blockAdditional: file.startsWith('yuva'),
       });
     }
   }

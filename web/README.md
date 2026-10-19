@@ -1,6 +1,6 @@
 # alpha-video-web
 
-Plays transparent WebM video in every browser that can show it: VP9 or AV1, with alpha in each block's BlockAdditional (what FFmpeg and libvpx write for `yuva420p`) or in a second track. Plain JS/TS, with an optional React component.
+Plays transparent WebM video in every browser that can show it: VP8, VP9 or AV1, with alpha in each block's BlockAdditional (what FFmpeg and libvpx write for `yuva420p`) or in a second track. Plain JS/TS, with an optional React component.
 
 It's the web half of [react-native-alpha-video](https://github.com/MediaCacheDev/alpha-video), whose `AlphaVideoView` plays through it on react-native-web, and it reuses that package's C++ core: the demuxer that splits a file into its colour and alpha bitstreams (`cpp/AlphaDemuxer`, on libwebm's parser, the same one Android and iOS run) and the YUV to RGB conversion of the iOS and Android players (`cpp/YuvToRgb`), compiled to WebAssembly. Files stream in by HTTP range requests as they play, and can be kept in the browser's storage between plays.
 
@@ -12,16 +12,16 @@ npm install alpha-video-web
 
 `<video>` is the fastest way to play a WebM, but it doesn't always keep the alpha, and `canPlayType` can't tell: every browser answers `"probably"`, including Safari, which drops it. So the first time a page plays a file, a 599-byte clip is drawn into a canvas and two of its pixels are read (about 25 ms in Chromium, 5 ms in Firefox, once per page). Then, best first:
 
-1. **`browser`**: a `<video>` element, when the probe shows it keeps WebM alpha (Chromium, Firefox) and the file is a single VP9 track with alpha. The first 64 KB of the file tell which kind it is, so nothing else is downloaded.
+1. **`browser`**: a `<video>` element, when the probe shows it keeps WebM alpha (Chromium, Firefox) and the file is a single VP8 or VP9 track with alpha. The first 64 KB of the file tell which kind it is, so nothing else is downloaded.
 2. **`webcodecs`**: the C++ demuxer in WebAssembly reads the file by range and feeds two WebCodecs `VideoDecoder`s, one for colour and one for alpha, and WebGL2 draws the pair with the native players' colour matrix. For dual-stream files, and for every alpha WebM in Safari.
-3. **`software`**: the same demuxer feeding FFmpeg's VP9 decoder and dav1d (AV1) in WebAssembly, for streams WebCodecs can't decode: VP9 profile 1 alpha, the RGB-coded kind, in Safari (no decoder) and Firefox (converts it as if it were YUV). Colour and alpha each decode in their own Web Worker, in parallel and off the page's thread. On a [cross-origin isolated](#threads) page each decoder also runs threads of its own.
+3. **`software`**: the same demuxer feeding FFmpeg's VP8 and VP9 decoders and dav1d (AV1) in WebAssembly, for streams WebCodecs can't decode: VP9 profile 1 alpha, the RGB-coded kind, in Safari (no decoder) and Firefox (converts it as if it were YUV). Colour and alpha each decode in their own Web Worker, in parallel and off the page's thread. On a [cross-origin isolated](#threads) page each decoder also runs threads of its own.
 
-The WebAssembly modules are inlined in the package, in their own chunks, and loaded by dynamic `import()` only when an engine needs them: the demuxer (183 KB, 63 KB gzipped) for `webcodecs` and `software`, and for `software` one decode Worker per codec the file uses, VP9 (1.0 MB, 348 KB gzipped) or AV1 (480 KB, 211 KB gzipped). Cross-origin isolated pages load their threaded builds (1.1 MB and 518 KB).
+The WebAssembly modules are inlined in the package, in their own chunks, and loaded by dynamic `import()` only when an engine needs them: the demuxer (183 KB, 63 KB gzipped) for `webcodecs` and `software`, and for `software` one decode Worker per codec module the file uses, vpx for VP8 and VP9 (1.2 MB, 403 KB gzipped) or AV1 (480 KB, 211 KB gzipped). Cross-origin isolated pages load their threaded builds (1.3 MB and 518 KB).
 
 | | Chromium | Firefox | Safari |
 |---|---|---|---|
-| VP9, alpha in BlockAdditional (`yuva420p`) | `browser` | `browser` | `webcodecs` |
-| VP9, two tracks | `webcodecs` | `webcodecs` | `webcodecs` |
+| VP8 or VP9, alpha in BlockAdditional (`yuva420p`) | `browser` | `browser` | `webcodecs` |
+| VP8 or VP9, two tracks | `webcodecs` | `webcodecs` | `webcodecs` |
 | VP9 profile 1 (RGB) alpha track | `webcodecs` | `software` | `software` |
 | AV1, two tracks (8- and 10-bit) | `webcodecs` | `webcodecs` | `webcodecs` |
 
@@ -51,7 +51,7 @@ The player adds a `<video>` or `<canvas>` to the container and sizes it to fill 
 
 Options: `src`, `autoPlay`, `loop`, `playbackSpeed`, `decoder`, `objectFit`, `headers`, `cacheKey`, `storage`, `maxStorageBytes`, `fetchInit` (other `fetch()` options, e.g. `{ credentials: 'include' }`), `onLoad`, `onError`, `onEnd`. `player.loaded` is a promise of the `onLoad` event.
 
-`decoder` is `'auto'` by default. Naming an engine (`'browser'`, `'webcodecs'`, `'webcodecs-hw'`, `'webcodecs-sw'`, `'software'`) forces it: if it can't play the file, `onError` says why and nothing else is tried. `'webcodecs-hw'` and `'webcodecs-sw'` ask the browser for a hardware or a software decoder. `onLoad`'s `decoder` names the engine used: `'browser'`, `'webcodecs (vp09.00.20.08)'` with the decoders' codec strings, or `'software (vp9)'`.
+`decoder` is `'auto'` by default. Naming an engine (`'browser'`, `'webcodecs'`, `'webcodecs-hw'`, `'webcodecs-sw'`, `'software'`) forces it: if it can't play the file, `onError` says why and nothing else is tried. `'webcodecs-hw'` and `'webcodecs-sw'` ask the browser for a hardware or a software decoder. `onLoad`'s `decoder` names the engine used: `'browser'`, `'webcodecs (vp09.00.20.08)'` with the decoders' codec strings (`vp8` for VP8), or `'software (vp9)'` (`'software (vp8)'`).
 
 `videoElementKeepsWebMAlpha()` runs the probe on its own (a cached promise), and `sniffWebM(bytes)` reads the layout from the start of a file, for pages that want to decide for themselves.
 
@@ -94,7 +94,7 @@ Props: the options above, plus `paused`, `className` and `style` for the contain
 `onError` gets an `AlphaVideoError` with a `code`:
 
 - `'LOAD_FAILED'`: the file couldn't be fetched, or reading it failed while playing (the connection dropped, the file changed on the server). The canvas engines read the file with `fetch()`, so a file on another origin needs CORS headers; under `auto`, one without them plays in `<video>`, as far as `<video>` can.
-- `'UNSUPPORTED_FILE'`: not a WebM with a VP9 or AV1 track.
+- `'UNSUPPORTED_FILE'`: not a WebM with a VP8, VP9 or AV1 track.
 - `'NO_ALPHA_PATH'`: no engine in this browser can show the file with its alpha (no WebCodecs and no WebGL2, say).
 - `'DECODER_UNSUPPORTED'`: a forced engine has no decoder for the file.
 - `'DECODE_FAILED'`: a decoder failed while playing.

@@ -1,6 +1,6 @@
 /**
  * AlphaVideo.h
- * Transparent video for iOS: VP9 or AV1 WebM with alpha, decoded by the C++ core's codec modules
+ * Transparent video for iOS: VP8, VP9 or AV1 WebM with alpha, decoded by the C++ core's codec modules
  * (libvpx, dav1d) and drawn with Metal. AlphaVideoView is the view to use; the rest is the
  * lower-level API.
  */
@@ -14,13 +14,13 @@ NS_ASSUME_NONNULL_BEGIN
 
 /**
  * The error code when no linked codec module decodes the file: the message names the module to
- * add (AlphaVideoVPX for VP9, AlphaVideoAV1 for AV1).
+ * add (AlphaVideoVPX for VP8 and VP9, AlphaVideoAV1 for AV1).
  */
 extern NSString *const AlphaVideoErrorNoDecoder;
 
 /**
  * The software decoders the player plays with. The codec modules register themselves when the
- * app links them, nothing to call: SwiftPM products AlphaVideoVPX (libvpx, VP9) and AlphaVideoAV1
+ * app links them, nothing to call: SwiftPM products AlphaVideoVPX (libvpx, VP8, VP9) and AlphaVideoAV1
  * (dav1d, AV1), or pods alpha-video/VPX and alpha-video/AV1.
  */
 @interface AlphaVideoCodecs : NSObject

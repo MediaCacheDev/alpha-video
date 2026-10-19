@@ -192,6 +192,6 @@ function softwareEngine(demuxer: WasmDemuxer, options: EngineOptions, events: En
 
 async function demux(input: Input, signal: AbortSignal): Promise<WasmDemuxer> {
   const demuxer = await WasmDemuxer.open(await input.open(signal));
-  if (!demuxer) throw new AlphaVideoError('UNSUPPORTED_FILE', 'Not a WebM with a VP9 or AV1 track');
+  if (!demuxer) throw new AlphaVideoError('UNSUPPORTED_FILE', 'Not a WebM with a VP8, VP9 or AV1 track');
   return demuxer;
 }

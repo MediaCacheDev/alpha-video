@@ -17,7 +17,7 @@ std::vector<const AlphaVideoDecoderPlugin*>& registry() {
 std::mutex registryMutex;
 
 const char* codecName(int codec) {
-    return codec == ALPHA_VIDEO_CODEC_AV1 ? "AV1" : "VP9";
+    return codec == ALPHA_VIDEO_CODEC_AV1 ? "AV1" : codec == ALPHA_VIDEO_CODEC_VP8 ? "VP8" : "VP9";
 }
 
 const char* codecModuleName(int codec) {

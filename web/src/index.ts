@@ -1,5 +1,5 @@
 /**
- * alpha-video-web: transparent WebM (VP9 or AV1, alpha in BlockAdditional or a second track) in
+ * alpha-video-web: transparent WebM (VP8, VP9 or AV1, alpha in BlockAdditional or a second track) in
  * every browser that can show it, by the best path it has:
  *
  * 1. a `<video>`, where a pixel probe shows the browser keeps WebM alpha (Chromium, Firefox);

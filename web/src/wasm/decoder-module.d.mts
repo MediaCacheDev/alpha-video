@@ -1,6 +1,6 @@
-// Types for the software decoder modules, which scripts/build_wasm.sh generates: software-vp9.mjs
+// Types for the software decoder modules, which scripts/build_wasm.sh generates: software-vpx.mjs
 // from web/wasm/decoder_bindings.cpp, software-av1.mjs from web/wasm/plugin_bindings.cpp, and
-// their threaded builds software-vp9-mt.mjs and software-av1-mt.mjs
+// their threaded builds software-vpx-mt.mjs and software-av1-mt.mjs
 
 export interface DecoderModule {
   readonly wasmMemory: WebAssembly.Memory;

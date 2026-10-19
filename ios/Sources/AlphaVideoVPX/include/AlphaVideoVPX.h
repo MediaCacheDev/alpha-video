@@ -1,6 +1,6 @@
 /**
  * AlphaVideoVPX.h
- * The vpx codec module: libvpx, for VP9. Linking it is enough; AlphaVideo registers it itself.
+ * The vpx codec module: libvpx, for VP8 and VP9. Linking it is enough; AlphaVideo registers it itself.
  */
 
 #import <Foundation/Foundation.h>

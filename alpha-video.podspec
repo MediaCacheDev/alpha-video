@@ -1,8 +1,8 @@
 # The iOS library without React Native, for CocoaPods. (React Native apps use
 # react-native-alpha-video.podspec, which autolinking finds in the npm package.)
 #
-#   pod 'alpha-video'          both codec modules: VP9 (libvpx) and AV1 (dav1d)
-#   pod 'alpha-video/VPX'      VP9 only
+#   pod 'alpha-video'          both codec modules: VP8 and VP9 (libvpx), and AV1 (dav1d)
+#   pod 'alpha-video/VPX'      VP8 and VP9 only
 #   pod 'alpha-video/AV1'      AV1 only
 # alpha-video/Core alone plays nothing on iOS, which has no platform decoder for these files.
 #
@@ -15,7 +15,7 @@ Pod::Spec.new do |s|
   s.name         = 'alpha-video'
   s.module_name  = 'AlphaVideo'
   s.version      = '1.0.0'
-  s.summary      = 'Transparent video for iOS: VP9 or AV1 WebM with alpha, decoded by libvpx or dav1d and drawn with Metal.'
+  s.summary      = 'Transparent video for iOS: VP8, VP9 or AV1 WebM with alpha, decoded by libvpx or dav1d and drawn with Metal.'
   s.homepage     = 'https://github.com/MediaCacheDev/alpha-video'
   s.license      = { :type => 'MIT', :file => 'LICENSE' }
   s.author       = { 'Daniel Kasprowicz' => '9932671+danielkpl2@users.noreply.github.com' }

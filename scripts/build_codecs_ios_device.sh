@@ -91,6 +91,7 @@ build_libvpx_device() {
         --disable-tools \
         --disable-docs \
         --disable-unit-tests \
+        --enable-vp8-decoder \
         --enable-vp9-decoder \
         --disable-vp8-encoder \
         --disable-vp9-encoder \

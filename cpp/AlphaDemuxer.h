@@ -13,8 +13,8 @@ class ByteSource;
  * decoders that take one bitstream each: the core's libvpx and dav1d decoders, MediaCodec, and on
  * the web WebCodecs and the software decoders in Workers.
  *
- * The colour stream is the first VP9 or AV1 track. The alpha stream is the second, or, for a
- * single VP9 track, the VP9 stream in each block's BlockAdditional (ID 1), which is how libvpx
+ * The colour stream is the first VP8, VP9 or AV1 track. The alpha stream is the second, or, for a
+ * single VP8 or VP9 track, the stream in each block's BlockAdditional (ID 1), which is how libvpx
  * writes a standard `yuva420p` WebM.
  *
  * Built on libwebm's webm_parser. Android, iOS and the web (compiled to WebAssembly) all use it;
@@ -22,7 +22,7 @@ class ByteSource;
  */
 class AlphaDemuxer {
 public:
-    enum Codec { VP9 = 0, AV1 = 1 };
+    enum Codec { VP9 = 0, AV1 = 1, VP8 = 2 };
 
     /** Colour numbers are H.273's, as in YuvToRgb.h (and FFmpeg's AVColor* enums). */
     struct StreamInfo {
@@ -33,7 +33,7 @@ public:
         int colorSpace = 2;  // ColorMatrix (2 = unspecified)
         int colorPrimaries = 2;
         int colorTrc = 2;
-        std::vector<uint8_t> codecPrivate;  // Matroska CodecPrivate: av1C for AV1, empty for VP9
+        std::vector<uint8_t> codecPrivate;  // Matroska CodecPrivate: av1C for AV1, empty for VP8 and VP9
     };
 
     struct Info {
@@ -60,7 +60,7 @@ public:
 
     enum class Progress { kDone, kPending, kFailed };
 
-    /** Opens `source` as a WebM. Returns null if it can't be read or has no VP9 or AV1 track. */
+    /** Opens `source` as a WebM. Returns null if it can't be read or has no VP8, VP9 or AV1 track. */
     static std::unique_ptr<AlphaDemuxer> open(std::unique_ptr<ByteSource> source);
 
     /**
@@ -71,7 +71,7 @@ public:
 
     /**
      * Reads the headers and the first packets. kPending: the source didn't have the bytes yet;
-     * call again once it has. kFailed: not a WebM with a VP9 or AV1 track, or unreadable.
+     * call again once it has. kFailed: not a WebM with a VP8, VP9 or AV1 track, or unreadable.
      * info() is valid once it returns kDone.
      */
     Progress tryOpen();
@@ -116,5 +116,8 @@ private:
 
 /** Whether a VP9 frame (or superframe) starts with a keyframe, from its uncompressed header. */
 bool isVp9Keyframe(const uint8_t* data, int size);
+
+/** Whether a VP8 frame is a keyframe, from its frame tag. */
+bool isVp8Keyframe(const uint8_t* data, int size);
 
 } // namespace webm

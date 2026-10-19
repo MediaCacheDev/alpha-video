@@ -4,11 +4,11 @@ import type { AlphaVideoError } from './errors';
 /**
  * Which engine plays the file. `'auto'` (default) picks the best one this browser has for it:
  * - `'browser'`: a `<video>` element, when the probe shows it keeps WebM alpha (Chromium,
- *   Firefox) and the file is a single VP9 track with alpha, or has no alpha at all.
+ *   Firefox) and the file is a single VP8 or VP9 track with alpha, or has no alpha at all.
  * - `'webcodecs'`: the C++ demuxer in WebAssembly and two WebCodecs decoders, drawn with WebGL2.
- *   For dual-stream VP9 and AV1, and for any alpha WebM where `<video>` drops alpha (Safari).
+ *   For dual-stream VP8, VP9 and AV1, and for any alpha WebM where `<video>` drops alpha (Safari).
  *   `'webcodecs-hw'` and `'webcodecs-sw'` ask the browser for a hardware or software decoder.
- * - `'software'`: the same demuxer with FFmpeg's VP9 decoder and dav1d (AV1) in WebAssembly, on
+ * - `'software'`: the same demuxer with FFmpeg's VP8 and VP9 decoders and dav1d (AV1) in WebAssembly, on
  *   the page's thread, for streams the browser's WebCodecs can't decode (VP9 profile 1 alpha in
  *   Safari and Firefox). Slower than the others, and a 1.2 MB module, loaded only when used.
  *

@@ -17,11 +17,15 @@ struct VpxDecoder {
 };
 
 // The libvpx build is 8-bit only
-int supportsStream(const AlphaVideoStreamInfo* stream) {
+int supportsVp9(const AlphaVideoStreamInfo* stream) {
     return stream->codec == ALPHA_VIDEO_CODEC_VP9 && stream->bitDepth <= 8;
 }
 
-void* openDecoder(const AlphaVideoStreamInfo*, int threads, char* error, size_t errorSize) {
+int supportsVp8(const AlphaVideoStreamInfo* stream) {
+    return stream->codec == ALPHA_VIDEO_CODEC_VP8;
+}
+
+void* openDecoder(const AlphaVideoStreamInfo* stream, int threads, char* error, size_t errorSize) {
     auto* decoder = new (std::nothrow) VpxDecoder();
     if (!decoder) {
         std::snprintf(error, errorSize, "libvpx: out of memory");
@@ -29,13 +33,14 @@ void* openDecoder(const AlphaVideoStreamInfo*, int threads, char* error, size_t 
     }
     vpx_codec_dec_cfg_t cfg = {};
     cfg.threads = static_cast<unsigned>(std::clamp(threads, 1, 16));
-    if (vpx_codec_dec_init(&decoder->ctx, vpx_codec_vp9_dx(), &cfg, 0) != VPX_CODEC_OK) {
+    const bool vp8 = stream->codec == ALPHA_VIDEO_CODEC_VP8;
+    if (vpx_codec_dec_init(&decoder->ctx, vp8 ? vpx_codec_vp8_dx() : vpx_codec_vp9_dx(), &cfg, 0) != VPX_CODEC_OK) {
         std::snprintf(error, errorSize, "libvpx: %s", vpx_codec_error(&decoder->ctx));
         delete decoder;
         return nullptr;
     }
     // Rows of a frame decode in parallel, not only its tile columns, which narrow frames lack
-    vpx_codec_control(&decoder->ctx, VP9D_SET_ROW_MT, 1);
+    if (!vp8) vpx_codec_control(&decoder->ctx, VP9D_SET_ROW_MT, 1);
     return decoder;
 }
 
@@ -84,10 +89,15 @@ void closeDecoder(void* opaque) {
 const AlphaVideoDecoderPlugin* const* alpha_video_vpx_plugins(int* count) {
     static const AlphaVideoDecoderPlugin vp9 = {
         ALPHA_VIDEO_DECODER_ABI, sizeof(AlphaVideoDecoderPlugin), "libvpx", vpx_codec_version_str(),
-        ALPHA_VIDEO_CODEC_VP9, supportsStream, openDecoder, sendPacket, receivePicture, drainDecoder,
+        ALPHA_VIDEO_CODEC_VP9, supportsVp9, openDecoder, sendPacket, receivePicture, drainDecoder,
         flushDecoder, closeDecoder,
     };
-    static const AlphaVideoDecoderPlugin* const plugins[] = {&vp9};
-    *count = 1;
+    static const AlphaVideoDecoderPlugin vp8 = {
+        ALPHA_VIDEO_DECODER_ABI, sizeof(AlphaVideoDecoderPlugin), "libvpx", vpx_codec_version_str(),
+        ALPHA_VIDEO_CODEC_VP8, supportsVp8, openDecoder, sendPacket, receivePicture, drainDecoder,
+        flushDecoder, closeDecoder,
+    };
+    static const AlphaVideoDecoderPlugin* const plugins[] = {&vp9, &vp8};
+    *count = 2;
     return plugins;
 }

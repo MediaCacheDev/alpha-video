@@ -67,6 +67,7 @@ export function av1CodecString(av1C: Uint8Array | null, bitDepth: number): strin
 /** The codec string for `stream`, given its first packet (a keyframe). */
 export function codecString(stream: StreamInfo, firstKey: Uint8Array, width: number, height: number): string {
   if (stream.codec === 'av1') return av1CodecString(stream.codecPrivate, stream.bitDepth);
+  if (stream.codec === 'vp8') return 'vp8';
   const header = readVp9Header(firstKey) ?? { profile: stream.bitDepth > 8 ? 2 : 0, bitDepth: stream.bitDepth };
   return vp9CodecString(header, width, height);
 }

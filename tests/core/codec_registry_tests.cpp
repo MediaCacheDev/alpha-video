@@ -70,6 +70,7 @@ std::string registerError(AlphaVideoDecoderPluginList list) {
 
 int main() {
     const std::string vp9 = "card_256x256/dual_vp9.webm", av1 = "card_256x256/dual_av1.webm";
+    const std::string vp8 = "card_256x256/dual_vp8.webm", vp8BlockAdditional = "card_256x256/yuva_vp8.webm";
 
     std::string result = play(vp9);
     check(contains(result, "no VP9 decoder is installed (the vpx codec module)"), "no modules, VP9: " + result);
@@ -78,6 +79,8 @@ int main() {
     check(!result.empty() && lastErrorCode.empty(), "another error has no code: " + result + ", " + lastErrorCode);
     result = play(av1);
     check(contains(result, "no AV1 decoder is installed (the av1 codec module)"), "no modules, AV1: " + result);
+    result = play(vp8);
+    check(contains(result, "no VP8 decoder is installed (the vpx codec module)"), "no modules, VP8: " + result);
     check(decoderLibraryVersions().empty(), "no modules, versions: " + decoderLibraryVersions());
 
     AlphaVideoDecoderPlugin future = copyOfLibvpx();
@@ -99,6 +102,8 @@ int main() {
     check(registerError(alpha_video_vpx_plugins).empty(), "registering vpx");
     check(play(vp9).empty(), "vpx after the refusing plugin, VP9 plays");
     check(contains(play(av1), "(the av1 codec module)"), "vpx, AV1 still needs av1");
+    check(play(vp8).empty(), "vpx, VP8 plays");
+    check(play(vp8BlockAdditional).empty(), "vpx, VP8 with BlockAdditional alpha plays");
     result = play("vp9_10bit.webm");
     check(contains(result, "picky doesn't decode VP9 profile 2, 10-bit"), "10-bit VP9: " + result);
     check(registerError(alpha_video_vpx_plugins).empty(), "registering vpx again");

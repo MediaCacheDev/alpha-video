@@ -12,7 +12,10 @@ import type { ByteReader } from 'alpha-video-source';
 import { AlphaVideoError } from './errors';
 import type { DemuxerModule } from './wasm/demuxer.mjs';
 
-export type Codec = 'vp9' | 'av1';
+export type Codec = 'vp9' | 'av1' | 'vp8';
+
+/** AlphaDemuxer::Codec's values, which the WebAssembly modules take and return */
+export const CODEC_NUMBERS: readonly Codec[] = ['vp9', 'av1', 'vp8'];
 
 export interface StreamInfo {
   codec: Codec;
@@ -25,7 +28,7 @@ export interface StreamInfo {
   colorSpace: number;
   colorPrimaries: number;
   colorTrc: number;
-  /** Matroska CodecPrivate: the av1C record for AV1, usually absent for VP9 */
+  /** Matroska CodecPrivate: the av1C record for AV1, usually absent for VP8 and VP9 */
   codecPrivate: Uint8Array | null;
 }
 
@@ -265,7 +268,7 @@ export class WasmDemuxer {
       codecPrivate = this.module.HEAPU8.slice(ptr, ptr + privateSize);
     }
     return {
-      codec: n[o] === 1 ? 'av1' : 'vp9',
+      codec: CODEC_NUMBERS[n[o]],
       profile: n[o + 1],
       bitDepth: n[o + 2],
       colorRange: n[o + 3],

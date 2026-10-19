@@ -21,4 +21,10 @@ final class AV1OnlyTests: XCTestCase {
         XCTAssertEqual(outcome.code, AlphaVideoErrorNoDecoder)
         XCTAssertTrue(outcome.error?.contains("(the vpx codec module)") == true, outcome.error ?? "")
     }
+
+    func testVP8ReportsNoDecoder() throws {
+        let outcome = try open(fixture("dual_vp8.webm"))
+        XCTAssertEqual(outcome.code, AlphaVideoErrorNoDecoder)
+        XCTAssertTrue(outcome.error?.contains("no VP8 decoder is installed") == true, outcome.error ?? "")
+    }
 }

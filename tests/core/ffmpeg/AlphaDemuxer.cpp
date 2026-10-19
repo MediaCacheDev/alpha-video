@@ -14,7 +14,11 @@ namespace webm {
 namespace {
 
 bool isSupportedVideoCodec(AVCodecID id) {
-    return id == AV_CODEC_ID_VP9 || id == AV_CODEC_ID_AV1;
+    return id == AV_CODEC_ID_VP9 || id == AV_CODEC_ID_AV1 || id == AV_CODEC_ID_VP8;
+}
+
+AlphaDemuxer::Codec codecOf(AVCodecID id) {
+    return id == AV_CODEC_ID_AV1 ? AlphaDemuxer::AV1 : id == AV_CODEC_ID_VP8 ? AlphaDemuxer::VP8 : AlphaDemuxer::VP9;
 }
 
 // Opens io as a demuxer input, or returns null. Never frees io.
@@ -36,10 +40,11 @@ const uint8_t* blockAdditionalAlpha(const AVPacket* packet, size_t* size) {
     return side + 8;
 }
 
-// Whether the first packet of a VP9 stream carries alpha in its BlockAdditional. Leaves the read
+// Whether the first packet of a VP8 or VP9 stream carries alpha in its BlockAdditional. Leaves the read
 // position past that packet.
 bool hasBlockAdditionalAlpha(AVFormatContext* formatCtx, int streamIndex) {
-    if (formatCtx->streams[streamIndex]->codecpar->codec_id != AV_CODEC_ID_VP9) return false;
+    const AVCodecID id = formatCtx->streams[streamIndex]->codecpar->codec_id;
+    if (id != AV_CODEC_ID_VP9 && id != AV_CODEC_ID_VP8) return false;
     AVPacket* packet = av_packet_alloc();
     bool found = false;
     while (packet && av_read_frame(formatCtx, packet) >= 0) {
@@ -67,7 +72,7 @@ int bitDepthOf(const AVCodecParameters* par) {
 
 AlphaDemuxer::StreamInfo streamInfoOf(const AVCodecParameters* par) {
     AlphaDemuxer::StreamInfo s;
-    s.codec = par->codec_id == AV_CODEC_ID_AV1 ? AlphaDemuxer::AV1 : AlphaDemuxer::VP9;
+    s.codec = codecOf(par->codec_id);
     s.profile = par->profile;
     s.bitDepth = bitDepthOf(par);
     s.colorRange = par->color_range;
@@ -93,6 +98,10 @@ bool isVp9Keyframe(const uint8_t* data, int size) {
     return ((b >> (showExistingBit - 1)) & 1) == 0;  // frame_type 0 is a keyframe
 }
 
+bool isVp8Keyframe(const uint8_t* data, int size) {
+    return data && size >= 3 && (data[0] & 1) == 0;  // frame type 0 is a keyframe
+}
+
 std::unique_ptr<AlphaDemuxer> AlphaDemuxer::open(AVIOContext* io) {
     std::unique_ptr<AlphaDemuxer> demuxer(new AlphaDemuxer());
     demuxer->formatCtx_ = openInput(io);
@@ -112,7 +121,7 @@ std::vector<int> AlphaDemuxer::colorAlphaTracks(AVIOContext* io) {
             AVCodecParameters* par = formatCtx->streams[i]->codecpar;
             if (par->codec_type == AVMEDIA_TYPE_VIDEO && isSupportedVideoCodec(par->codec_id)) {
                 if (firstTrack < 0) firstTrack = static_cast<int>(i);
-                tracks.push_back(par->codec_id == AV_CODEC_ID_AV1 ? AV1 : VP9);
+                tracks.push_back(codecOf(par->codec_id));
                 tracks.push_back(par->profile);
             }
         }
@@ -192,7 +201,7 @@ bool AlphaDemuxer::readPacket(Packet* out) {
         out->size = static_cast<int>(pendingAlpha_.size());
         out->ptsUs = pendingAlphaPtsUs_;
         out->frameIndex = alphaFrameIndex_++;
-        out->key = isVp9Keyframe(out->data, out->size);
+        out->key = info_.color.codec == VP8 ? isVp8Keyframe(out->data, out->size) : isVp9Keyframe(out->data, out->size);
         return true;
     }
 

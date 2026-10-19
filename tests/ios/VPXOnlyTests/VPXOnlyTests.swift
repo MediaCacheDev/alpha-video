@@ -16,6 +16,13 @@ final class VPXOnlyTests: XCTestCase {
         XCTAssertEqual(outcome.loaded, true, outcome.error ?? "")
     }
 
+    func testPlaysVP8() throws {
+        for name in ["dual_vp8.webm", "yuva_vp8.webm"] {
+            let outcome = try open(fixture(name))
+            XCTAssertEqual(outcome.loaded, true, "\(name): \(outcome.error ?? "")")
+        }
+    }
+
     func testAV1ReportsNoDecoder() throws {
         let outcome = try open(fixture("dual_av1.webm"))
         XCTAssertEqual(outcome.code, AlphaVideoErrorNoDecoder)

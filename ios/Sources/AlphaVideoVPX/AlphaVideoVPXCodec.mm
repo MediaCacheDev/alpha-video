@@ -1,6 +1,6 @@
 /**
  * AlphaVideoVPXCodec.mm
- * The vpx codec module (libvpx: VP9) on iOS. AlphaVideoCodecs finds this class by name and
+ * The vpx codec module (libvpx: VP8, VP9) on iOS. AlphaVideoCodecs finds this class by name and
  * registers its plugin list.
  */
 

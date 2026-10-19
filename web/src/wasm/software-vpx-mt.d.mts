@@ -1,4 +1,4 @@
-// Types for software-vp9-mt.mjs: FFmpeg's VP9 decoder, threaded
+// Types for software-vpx-mt.mjs: FFmpeg's VP8 and VP9 decoders, threaded
 
 import type { CreateDecoderModule } from './decoder-module.mjs';
 

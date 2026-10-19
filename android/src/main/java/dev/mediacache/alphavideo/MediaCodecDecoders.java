@@ -72,8 +72,11 @@ final class MediaCodecDecoders {
     }
 
     static String mimeFor(int codec) {
-        return codec == BufferedDualStreamPlayer.TRACK_AV1
-            ? SurfaceTextureVideoDecoder.MIME_AV1 : SurfaceTextureVideoDecoder.MIME_VP9;
+        switch (codec) {
+            case BufferedDualStreamPlayer.TRACK_AV1: return SurfaceTextureVideoDecoder.MIME_AV1;
+            case BufferedDualStreamPlayer.TRACK_VP8: return SurfaceTextureVideoDecoder.MIME_VP8;
+            default: return SurfaceTextureVideoDecoder.MIME_VP9;
+        }
     }
 
     private static String pick(String mime, int avProfile, Kind kind) {
@@ -101,10 +104,12 @@ final class MediaCodecDecoders {
 
     /**
      * Android VP9 decoders rarely list the 4:4:4 profiles 1 and 3, and MediaCodec has no AV1
-     * profile beyond Main. An unknown (negative) profile counts as listed.
+     * profile beyond Main. VP8's versions (its profiles) only change the loop filter, and every
+     * VP8 decoder takes all four. An unknown (negative) profile counts as listed.
      */
     private static boolean listsProfile(MediaCodecInfo.CodecCapabilities caps, String mime, int avProfile) {
         if (avProfile < 0) return true;
+        if (SurfaceTextureVideoDecoder.MIME_VP8.equalsIgnoreCase(mime)) return true;
         if (SurfaceTextureVideoDecoder.MIME_AV1.equalsIgnoreCase(mime)) return avProfile == 0;
         if (avProfile > 3) return false;
         int profile = MediaCodecInfo.CodecProfileLevel.VP9Profile0 << avProfile;  // 1, 2, 4, 8

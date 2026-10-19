@@ -2,7 +2,7 @@
 import Foundation
 import PackageDescription
 
-// Apps add AlphaVideoVPX (VP9), AlphaVideoAV1 (AV1) or both, and `import AlphaVideo` either way.
+// Apps add AlphaVideoVPX (VP8, VP9), AlphaVideoAV1 (AV1) or both, and `import AlphaVideo` either way.
 // The core alone isn't a product: iOS has no platform decoder for these files.
 //
 // Each codec library is a binary target (scripts/build_xcframework.sh). A local build in

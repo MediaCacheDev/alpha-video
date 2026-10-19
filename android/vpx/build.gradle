@@ -1,4 +1,4 @@
-// dev.mediacache:alpha-video-vpx: libvpx, VP9 in software for alpha-video's C++ core. alpha-video
+// dev.mediacache:alpha-video-vpx: libvpx, VP8 and VP9 in software for alpha-video's C++ core. alpha-video
 // finds it on the classpath (AlphaVideoCodecs), so adding the dependency is all an app does.
 
 apply plugin: 'com.android.library'
@@ -60,7 +60,7 @@ dependencies {
 }
 
 ext.publishArtifactId = 'alpha-video-vpx'
-ext.publishDescription = 'libvpx for alpha-video: VP9 transparent video in software, for files and devices MediaCodec can\'t take, preload, and many players at once.'
+ext.publishDescription = 'libvpx for alpha-video: VP8 and VP9 transparent video in software, for files and devices MediaCodec can\'t take, preload, and many players at once.'
 ext.publishLicenses = [
     [name: 'BSD-3-Clause (bundled libvpx)', url: 'https://chromium.googlesource.com/webm/libvpx/+/refs/tags/v1.14.0/LICENSE'],
 ]

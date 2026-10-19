@@ -10,9 +10,9 @@ import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
 
 /**
- * Direct OES dual-stream VP9 alpha player.
+ * Direct OES dual-stream alpha player (VP8, VP9 or AV1).
  * 
- * Colour and alpha come from two tracks, or from one VP9 track whose alpha is in each block's
+ * Colour and alpha come from two tracks, or from one VP8 or VP9 track whose alpha is in each block's
  * BlockAdditional (a standard alpha WebM); the native demuxer hands both out as stream 0 and 1.
  * 
  * Architecture (per instructions3.json):
@@ -227,12 +227,7 @@ public class BufferedDualStreamPlayer implements SurfaceTextureVideoDecoder.Fram
             int numStreams = videoInfo[4];
             int codec = videoInfo[5];
             
-            String mimeType;
-            if (codec == TRACK_AV1) {
-                mimeType = SurfaceTextureVideoDecoder.MIME_AV1;
-            } else {
-                mimeType = SurfaceTextureVideoDecoder.MIME_VP9;
-            }
+            String mimeType = MediaCodecDecoders.mimeFor(codec);
             
             frameRate = fpsMul1000 / 1000.0;
             duration = totalFrames / frameRate;
@@ -956,12 +951,13 @@ public class BufferedDualStreamPlayer implements SurfaceTextureVideoDecoder.Fram
     
     public static final int TRACK_VP9 = 0;
     public static final int TRACK_AV1 = 1;
+    public static final int TRACK_VP8 = 2;
     
     /**
      * The colour and alpha bitstreams in bytes [offset, offset + length) of fd, as pairs of codec
-     * ({@link #TRACK_VP9} or {@link #TRACK_AV1}) and profile. They come from 2 or more
-     * VP9/AV1 tracks, or from one VP9 track with its alpha in BlockAdditional (a standard alpha
-     * WebM). Null for any other file.
+     * ({@link #TRACK_VP9}, {@link #TRACK_AV1} or {@link #TRACK_VP8}) and profile. They come from
+     * 2 or more VP8/VP9/AV1 tracks, or from one VP8 or VP9 track with its alpha in BlockAdditional
+     * (a standard alpha WebM). Null for any other file.
      */
     public static native int[] nativeColorAlphaTracks(int fd, long offset, long length);
     
