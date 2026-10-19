@@ -15,7 +15,7 @@ import type { DemuxerModule } from './wasm/demuxer.mjs';
 export type Codec = 'vp9' | 'av1' | 'vp8';
 
 /** AlphaDemuxer::Codec's values, which the WebAssembly modules take and return */
-export const CODEC_NUMBERS: readonly Codec[] = ['vp9', 'av1', 'vp8'];
+export const CODEC_NUMBERS: readonly Codec[] = ['vp8', 'vp9', 'av1'];
 
 export interface StreamInfo {
   codec: Codec;

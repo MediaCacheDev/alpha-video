@@ -1145,7 +1145,7 @@ jintArray intArray(JNIEnv* env, const std::vector<jint>& values) {
     return result;
 }
 
-// The colour and alpha bitstreams of source, for MediaCodec: each one's codec (0 VP9, 1 AV1, 2 VP8) and
+// The colour and alpha bitstreams of source, for MediaCodec: each one's codec (0 VP8, 1 VP9, 2 AV1) and
 // profile, in pairs (AlphaDemuxer::colorAlphaTracks). Null unless there are two.
 jintArray colorAlphaTracks(JNIEnv* env, std::unique_ptr<webm::ByteSource> source) {
     std::vector<int> tracks = webm::AlphaDemuxer::colorAlphaTracks(std::move(source));
@@ -1265,7 +1265,7 @@ Java_dev_mediacache_alphavideo_BufferedDualStreamPlayer_nativeGetVideoInfo(
     std::shared_ptr<DualStreamDemuxer> demuxer = findDemuxer(demuxerId);
     if (!demuxer) return nullptr;
     const webm::AlphaDemuxer::Info& info = demuxer->demuxer->info();
-    // [width, height, totalFrames, frameRate*1000, streamCount, codec (0 VP9, 1 AV1, 2 VP8)]
+    // [width, height, totalFrames, frameRate*1000, streamCount, codec (0 VP8, 1 VP9, 2 AV1)]
     return intArray(env, {
         info.width,
         info.height,

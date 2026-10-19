@@ -123,7 +123,7 @@ loadDualStreamFile(path)
        3. bufferedPlayer.loadFromFile(path):
             a. nativeCreateDemuxer (JNI) → AlphaDemuxer opens WebM, finds the colour and alpha streams
             b. nativeGetVideoInfo → [width, height, frames, fps*1000, streamCount, codec]
-            c. Map codec to MIME type (VP9=0 → "video/x-vnd.on2.vp9", AV1=1 → "video/av01", VP8=2 → "video/x-vnd.on2.vp8")
+            c. Map codec to MIME type (VP8=0 → "video/x-vnd.on2.vp8", VP9=1 → "video/x-vnd.on2.vp9", AV1=2 → "video/av01")
             d. Create 2 SurfaceTextureVideoDecoder instances (color + alpha)
                  - Each creates: OES texture → SurfaceTexture → Surface → MediaCodec
                  - MediaCodec configured with Surface output (GPU-accelerated)

@@ -11,7 +11,7 @@ export interface WorkerScope {
 export type ToWorker =
   | {
       t: 'open';
-      /** 0 VP9, 1 AV1 */
+      /** 0 VP8, 1 VP9, 2 AV1 */
       codec: number;
       /** Matroska CodecPrivate, av1C for AV1 */
       extradata: Uint8Array | null;

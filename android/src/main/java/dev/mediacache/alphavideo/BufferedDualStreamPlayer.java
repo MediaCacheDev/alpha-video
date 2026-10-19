@@ -949,13 +949,13 @@ public class BufferedDualStreamPlayer implements SurfaceTextureVideoDecoder.Fram
     private static native void nativeSeekToStart(long ptr);
     private static native void nativeSeekToTime(long ptr, long timeUs);
     
-    public static final int TRACK_VP9 = 0;
-    public static final int TRACK_AV1 = 1;
-    public static final int TRACK_VP8 = 2;
+    public static final int TRACK_VP8 = 0;
+    public static final int TRACK_VP9 = 1;
+    public static final int TRACK_AV1 = 2;
     
     /**
      * The colour and alpha bitstreams in bytes [offset, offset + length) of fd, as pairs of codec
-     * ({@link #TRACK_VP9}, {@link #TRACK_AV1} or {@link #TRACK_VP8}) and profile. They come from
+     * ({@link #TRACK_VP8}, {@link #TRACK_VP9} or {@link #TRACK_AV1}) and profile. They come from
      * 2 or more VP8/VP9/AV1 tracks, or from one VP8 or VP9 track with its alpha in BlockAdditional
      * (a standard alpha WebM). Null for any other file.
      */

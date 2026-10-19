@@ -19,9 +19,9 @@ extern "C" {
 #define ALPHA_VIDEO_DECODER_ABI 1
 
 /* AlphaDemuxer::Codec */
-#define ALPHA_VIDEO_CODEC_VP9 0
-#define ALPHA_VIDEO_CODEC_AV1 1
-#define ALPHA_VIDEO_CODEC_VP8 2
+#define ALPHA_VIDEO_CODEC_VP8 0
+#define ALPHA_VIDEO_CODEC_VP9 1
+#define ALPHA_VIDEO_CODEC_AV1 2
 
 /* A bitstream to decode, as the demuxer read it. Colour numbers are H.273's. */
 typedef struct AlphaVideoStreamInfo {

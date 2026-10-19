@@ -22,7 +22,7 @@ class ByteSource;
  */
 class AlphaDemuxer {
 public:
-    enum Codec { VP9 = 0, AV1 = 1, VP8 = 2 };
+    enum Codec { VP8 = 0, VP9 = 1, AV1 = 2 };
 
     /** Colour numbers are H.273's, as in YuvToRgb.h (and FFmpeg's AVColor* enums). */
     struct StreamInfo {

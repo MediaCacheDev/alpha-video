@@ -23,7 +23,7 @@ namespace webm {
  */
 class AlphaDemuxer {
 public:
-    enum Codec { VP9 = 0, AV1 = 1, VP8 = 2 };
+    enum Codec { VP8 = 0, VP9 = 1, AV1 = 2 };
 
     struct StreamInfo {
         Codec codec = VP9;

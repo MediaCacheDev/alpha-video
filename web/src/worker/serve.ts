@@ -36,7 +36,7 @@ export function serve(load: (threads: number) => Promise<DecoderModule>): void {
     decoder = m._avw_decoder_open(message.codec, ptr, extradata?.length ?? 0, message.threads);
     if (ptr) m._free(ptr);
     if (!decoder) {
-      const codec = ['VP9', 'AV1', 'VP8'][message.codec];
+      const codec = ['VP8', 'VP9', 'AV1'][message.codec];
       post({ t: 'error', code: 'DECODER_UNSUPPORTED', message: `The software ${codec} decoder could not open the stream` });
       return;
     }

@@ -31,15 +31,15 @@ struct Decoder {
 extern "C" {
 
 /**
- * A decoder for `codec` (0 VP9, 1 AV1, 2 VP8), with the stream's CodecPrivate as extradata, on
+ * A decoder for `codec` (0 VP8, 1 VP9, 2 AV1), with the stream's CodecPrivate as extradata, on
  * `threads` threads: 1 in the single-threaded build; in the threaded one, no more than the
  * module's pthread pool holds. Returns 0 if it can't be opened, or isn't this module's codec.
  */
 EMSCRIPTEN_KEEPALIVE Decoder* avw_decoder_open(int codec, const uint8_t* extradata, int size, int threads) {
     // FFmpeg logs to the console; its info lines are noise there
     av_log_set_level(AV_LOG_ERROR);
-    const AVCodec* c = codec == 0   ? avcodec_find_decoder(AV_CODEC_ID_VP9)
-                       : codec == 2 ? avcodec_find_decoder(AV_CODEC_ID_VP8)
+    const AVCodec* c = codec == 0   ? avcodec_find_decoder(AV_CODEC_ID_VP8)
+                       : codec == 1 ? avcodec_find_decoder(AV_CODEC_ID_VP9)
                                     : nullptr;
     if (!c) return nullptr;
     auto* d = new Decoder;

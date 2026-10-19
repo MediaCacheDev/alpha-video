@@ -73,8 +73,8 @@ final class MediaCodecDecoders {
 
     static String mimeFor(int codec) {
         switch (codec) {
-            case BufferedDualStreamPlayer.TRACK_AV1: return SurfaceTextureVideoDecoder.MIME_AV1;
             case BufferedDualStreamPlayer.TRACK_VP8: return SurfaceTextureVideoDecoder.MIME_VP8;
+            case BufferedDualStreamPlayer.TRACK_AV1: return SurfaceTextureVideoDecoder.MIME_AV1;
             default: return SurfaceTextureVideoDecoder.MIME_VP9;
         }
     }

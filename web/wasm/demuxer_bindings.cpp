@@ -77,8 +77,8 @@ EMSCRIPTEN_KEEPALIVE int avw_try_open(Handle* handle) {
 
 /**
  * Writes 24 numbers to `out`: width, height, totalFrames, frameRate, durationUs, hasAlpha,
- * alphaInBlockAdditional, startUs, then the colour and the alpha stream, 8 each: codec (0 VP9,
- * 1 AV1, 2 VP8), profile, bitDepth, colour range, matrix, primaries and transfer (H.273), codecPrivate
+ * alphaInBlockAdditional, startUs, then the colour and the alpha stream, 8 each: codec (0 VP8,
+ * 1 VP9, 2 AV1), profile, bitDepth, colour range, matrix, primaries and transfer (H.273), codecPrivate
  * size.
  */
 EMSCRIPTEN_KEEPALIVE void avw_info(Handle* handle, double* out) {
