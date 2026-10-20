@@ -6,7 +6,7 @@ export default defineConfig({
   format: ['esm', 'cjs'],
   dts: { resolve: ['alpha-video-source'] },
   clean: true,
-  // Bundled until alpha-video-source is published, so the tarball installs on its own
+  // alpha-video-source isn't on npm: it's bundled, so the tarball installs on its own
   noExternal: ['alpha-video-source'],
   // ESM keeps the WebAssembly modules in their own chunks, loaded only when <video> can't play a file
   splitting: true,
