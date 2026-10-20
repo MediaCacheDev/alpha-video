@@ -1,7 +1,7 @@
 {
   "name": "alpha-video-web",
   "version": "1.0.0",
-  "description": "Transparent WebM video (VP8, VP9 and AV1 with alpha, single- or dual-stream) in every browser that can show it: <video> where it keeps WebM alpha, otherwise WebCodecs into WebGL2. Plain JS/TS, with an optional React component.",
+  "description": "Transparent WebM video (VP8, VP9 and AV1 with alpha, single- or dual-stream) in every modern browser, including those that can't show transparent video themselves, such as Safari: <video> where it keeps WebM alpha, otherwise WebCodecs or a WebAssembly decoder into WebGL2. Plain JS/TS, with an optional React component.",
   "main": "dist/index.js",
   "module": "dist/index.mjs",
   "types": "dist/index.d.ts",

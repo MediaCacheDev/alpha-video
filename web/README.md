@@ -1,6 +1,6 @@
 # alpha-video-web
 
-Plays transparent WebM video in every browser that can show it: VP8, VP9 or AV1, with alpha in each block's BlockAdditional (what FFmpeg and libvpx write for `yuva420p`) or in a second track. Plain JS/TS, with an optional React component.
+Plays transparent WebM video in every modern browser, including those that can't show transparent video themselves: Safari drops WebM's alpha channel, and no browser shows the alpha track of a dual-stream file. It plays VP8, VP9 or AV1, with alpha in each block's BlockAdditional (what FFmpeg and libvpx write for `yuva420p`) or in a second track. Plain JS/TS, with an optional React component.
 
 It's the web half of [react-native-alpha-video](https://github.com/MediaCacheDev/alpha-video), whose `AlphaVideoView` plays through it on react-native-web, and it reuses that package's C++ core: the demuxer that splits a file into its colour and alpha bitstreams (`cpp/AlphaDemuxer`, on libwebm's parser, the same one Android and iOS run) and the YUV to RGB conversion of the iOS and Android players (`cpp/YuvToRgb`), compiled to WebAssembly. Files stream in by HTTP range requests as they play, and can be kept in the browser's storage between plays.
 
