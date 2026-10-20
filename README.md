@@ -827,6 +827,7 @@ Ideas, not plans:
 
 - **Drop FFmpeg on the web too.** Android and iOS decode with libvpx and dav1d directly, and the web already demuxes with libwebm. In WebAssembly libvpx is 1.2-1.9x slower than FFmpeg's own VP9 decoder, even with row multithreading, so the web's software engine keeps FFmpeg's VP9 decoder for now.
 - **Hardware decoding of dual-stream files on iOS.** Two VideoToolbox sessions, one per track, composited in the Metal shader, as Android does with MediaCodec, with the C++ core as the fallback. AV1 decodes in hardware on recent Apple chips (A17 Pro, M3 and later). VP9 likely can't, since VideoToolbox's VP9 decoder isn't available to iOS apps.
+- **Alpha for any codec.** Dual-stream playback doesn't depend on the codec: colour and alpha are two ordinary video tracks, decoded separately and composited in the shader. The same handling would add transparency to codecs that have none, such as H.264, on Android, iOS and the web. H.264 decodes in hardware almost everywhere, so a dual-stream H.264 file would play transparent video in hardware on every platform. Each codec needs its container demuxed (MP4 as well as WebM) and a decoder on each platform: MediaCodec on Android, VideoToolbox on iOS, WebCodecs on the web.
 - **Audio.** Decode a WebM's Opus or Vorbis track, keep video in sync with it, and drop frames when decoding falls behind.
 - **More codecs.** AV2 once it's final, in software and through platform decoders where they exist.
 - **DRM.** Unlikely: Widevine and FairPlay decode into protected surfaces, which the alpha shader can't read.
