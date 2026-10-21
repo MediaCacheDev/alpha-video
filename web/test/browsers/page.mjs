@@ -1,13 +1,6 @@
 // Runs one case in the page for run.mjs: loads a test card, seeks to frames, measures them.
 import { createAlphaVideo, videoElementKeepsWebMAlpha } from '/dist/index.mjs';
 
-// Pixels of a WebGL canvas can only be read back after compositing when they're preserved
-const getContext = HTMLCanvasElement.prototype.getContext;
-HTMLCanvasElement.prototype.getContext = function (type, attributes) {
-  if (type === 'webgl2') attributes = { ...attributes, preserveDrawingBuffer: true };
-  return getContext.call(this, type, attributes);
-};
-
 const CODE_BITS = 12;
 
 /** Mean of each channel over the middle half of `r`, like planeMean in the C++ host tests. */
@@ -108,6 +101,34 @@ window.playCase = async ({ src, layoutUrl, decoder, ms, loop }) => {
   } finally {
     player.destroy();
     container.remove();
+  }
+};
+
+/** Opens `count` players at once, then shows a new frame in each, oldest first. */
+window.manyCase = async ({ src, layoutUrl, decoder, count }) => {
+  const layout = await (await fetch(layoutUrl)).json();
+  const containers = [];
+  const players = [];
+  for (let i = 0; i < count; i++) {
+    const container = document.createElement('div');
+    container.style.cssText = `width:${layout.width}px;height:${layout.height}px`;
+    document.body.append(container);
+    containers.push(container);
+    players.push(createAlphaVideo(container, { src, decoder, autoPlay: false, loop: false }));
+  }
+  try {
+    const loads = await Promise.all(players.map((p) => p.loaded.catch((e) => ({ error: `${e.code}: ${e.message}` }))));
+    const failed = loads.find((load) => load.error);
+    if (failed) return { error: failed.error };
+    const blank = [];
+    for (const [i, player] of players.entries()) {
+      player.seekToFrame(i + 1);
+      if ((await waitForFrame(player, layout, i + 1)).timedOut) blank.push(i);
+    }
+    return { blank };
+  } finally {
+    for (const player of players) player.destroy();
+    for (const container of containers) container.remove();
   }
 };
 

@@ -19,6 +19,8 @@ const CARDS = ['card_256x256', 'card_383x217'];
 const FILES = ['yuva.webm', 'dual_vp9.webm', 'dual_vp9_p0.webm', 'dual_av1.webm', 'dual_av1_10bit.webm', 'yuva_vp8.webm', 'dual_vp8.webm'];
 const DECODERS = ['auto', 'webcodecs', 'software'];
 const SEEK_FRAMES = [0, 37, 5];
+// Chromium keeps 16 WebGL contexts on a page and loses the oldest past that
+const MANY_PLAYERS = 20;
 // A forced engine reports what it can't decode rather than falling back: VP9 profile 1 alpha
 // (dual_vp9.webm) has no WebCodecs decoder in Safari, and Firefox converts it as if it were YUV
 const EXPECTED_UNSUPPORTED = {
@@ -157,6 +159,18 @@ for (const [name, type] of Object.entries(engines)) {
       `  ${ok ? '✓' : '✗'} play ${file} [${decoder}] ${result.error ?? `${result.seen.length} frames seen, looped: ${looped}, alpha mismatches: ${result.mismatches.length}`}`,
     );
   }
+
+  // More players than a page gets WebGL contexts: they share one, so none goes blank
+  const many = await page.evaluate((c) => window.manyCase(c), {
+    src: '/fixtures/card_256x256/yuva.webm',
+    layoutUrl: '/fixtures/card_256x256/layout.json',
+    decoder: 'webcodecs',
+    count: MANY_PLAYERS,
+  });
+  const manyOk = !many.error && !many.blank.length;
+  if (!manyOk) failures++;
+  const manyWhat = many.error ?? (many.blank.length ? `players ${many.blank.join(', ')} blank` : 'all drawing');
+  console.log(`  ${manyOk ? '✓' : '✗'} ${MANY_PLAYERS} players at once [webcodecs] ${manyWhat}`);
   await browser.close();
 }
 

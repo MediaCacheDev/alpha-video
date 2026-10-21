@@ -118,6 +118,7 @@ Cross-Origin-Embedder-Policy: require-corp
 - The canvas engines seek by the file's Cues. A file without them (some live recordings) is scanned from the start for the keyframe, which on a long file means fetching what lies before it.
 - `software` costs CPU. On an M4 Pro, in Chromium and Safari's engine, a 30 fps 1080p clip with alpha decodes at about 5× real time as VP9 and 3× as AV1 without threads, and 11× and 7× with them. Phones are several times slower; keep software-decoded clips small, or offer a file WebCodecs can decode.
 - Frame rate: `browser` doesn't know it and assumes 30 fps for `totalFrames` and frame seeks, like the React Native component on the web; the canvas engines read it from the file.
+- Players per page: browsers keep about 16 WebGL contexts on a page and lose the oldest past that, so the canvas engines share one. Each player draws into it in turn and copies the picture into its own 2D canvas, which costs next to nothing where the page is GPU-accelerated (0.03 ms per 1080p frame in Chromium and Firefox on an M4 Pro). Headless browsers without GPU compositing read each copy back, several milliseconds a frame.
 
 ## Development
 

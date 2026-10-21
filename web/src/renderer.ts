@@ -1,10 +1,11 @@
 /**
- * Draws a colour and alpha picture pair into a canvas with WebGL2, premultiplied. YUV planes go
- * through the native players' matrix (cpp/YuvToRgb), so colours match iOS and Android; pictures
- * only available as frames (Firefox) are converted by the browser.
+ * Draws a colour and alpha picture pair into a canvas, premultiplied: with the WebGL2 context the
+ * players share, then copied into this player's 2D canvas. YUV planes go through the native
+ * players' matrix (cpp/YuvToRgb), so colours match iOS and Android; pictures only available as
+ * frames (Firefox) are converted by the browser.
  */
-import { AlphaVideoError } from './errors';
 import type { FramePair, Picture, Planes } from './source';
+import { SharedGL } from './shared-gl';
 
 export interface DrawParams {
   /** YUV to RGB for colour planes: a column-major mat4 from yuvToRgbMatrix */
@@ -18,40 +19,6 @@ export interface DrawParams {
   alphaUndoExpansion: boolean;
 }
 
-const VERTEX = `#version 300 es
-out vec2 vUv;
-void main() {
-  vec2 p = vec2(float((gl_VertexID & 1) << 2) - 1.0, float((gl_VertexID & 2) << 1) - 1.0);
-  vUv = vec2(p.x + 1.0, 1.0 - p.y) * 0.5;
-  gl_Position = vec4(p, 0.0, 1.0);
-}`;
-
-const FRAGMENT = `#version 300 es
-precision highp float;
-uniform sampler2D uY, uU, uV, uA;
-uniform mat4 uMatrix;
-uniform int uColorMode;  // 0 planar YUV, 1 NV12, 2 RGB
-uniform int uAlphaMode;  // 0 limited-range plane, 1 full-range plane, 2 RGB, 3 RGB to undo
-uniform float uColorScale, uAlphaScale;
-in vec2 vUv;
-out vec4 outColor;
-void main() {
-  vec3 rgb;
-  if (uColorMode == 2) {
-    rgb = texture(uY, vUv).rgb;
-  } else {
-    float y = texture(uY, vUv).r * uColorScale;
-    vec2 uv = uColorMode == 1 ? texture(uU, vUv).rg : vec2(texture(uU, vUv).r, texture(uV, vUv).r);
-    rgb = clamp((uMatrix * vec4(y, uv * uColorScale, 1.0)).rgb, 0.0, 1.0);
-  }
-  float a = texture(uA, vUv).r * uAlphaScale;
-  if (uAlphaMode == 0) a = (a - 16.0 / 255.0) * (255.0 / 219.0);
-  // The browser clipped what it expanded: 0-16 all read 0, 235-255 all read 1
-  else if (uAlphaMode == 3) a = a <= 0.0 || a >= 1.0 ? a : a * (219.0 / 255.0) + 16.0 / 255.0;
-  a = clamp(a, 0.0, 1.0);
-  outColor = vec4(rgb * a, a);
-}`;
-
 // EXT_texture_norm16 formats
 const R16_EXT = 0x822a;
 const RG16_EXT = 0x822c;
@@ -62,43 +29,35 @@ interface Texture {
 }
 
 export class AlphaRenderer {
-  readonly canvas: HTMLCanvasElement | OffscreenCanvas;
-  private gl: WebGL2RenderingContext;
-  private program!: WebGLProgram;
-  private uniforms!: Record<string, WebGLUniformLocation | null>;
-  private textures!: Texture[];
-  private norm16 = false;
-  private lost = false;
+  readonly canvas: HTMLCanvasElement;
+  private readonly context: CanvasRenderingContext2D;
+  private readonly shared: SharedGL;
+  private textures: Texture[];
+  /** The shared context's generation the textures were made in */
+  private generation: number;
 
-  constructor(canvas: HTMLCanvasElement | OffscreenCanvas) {
+  constructor(canvas: HTMLCanvasElement) {
+    this.shared = SharedGL.acquire();
     this.canvas = canvas;
-    const gl = canvas.getContext('webgl2', {
-      alpha: true,
-      premultipliedAlpha: true,
-      antialias: false,
-      depth: false,
-      stencil: false,
-      preserveDrawingBuffer: false,
-    }) as WebGL2RenderingContext | null;
-    if (!gl) throw new AlphaVideoError('WEBGL_UNSUPPORTED', 'WebGL2 is unavailable');
-    this.gl = gl;
-    this.setUp();
-    canvas.addEventListener('webglcontextlost', this.onLost as EventListener);
-    canvas.addEventListener('webglcontextrestored', this.onRestored as EventListener);
+    this.context = canvas.getContext('2d')!;
+    this.textures = createTextures(this.shared.gl);
+    this.generation = this.shared.generation;
   }
 
   draw(pair: FramePair, params: DrawParams): void {
-    if (this.lost) return;
-    const gl = this.gl;
+    const shared = this.shared;
+    if (shared.lost) return;
+    if (this.generation !== shared.generation) {
+      this.textures = createTextures(shared.gl);
+      this.generation = shared.generation;
+    }
+    const gl = shared.gl;
     const { color, alpha } = pair;
     const width = pictureWidth(color);
     const height = pictureHeight(color);
-    if (this.canvas.width !== width || this.canvas.height !== height) {
-      this.canvas.width = width;
-      this.canvas.height = height;
-    }
+    shared.fit(width, height);
     gl.viewport(0, 0, width, height);
-    gl.useProgram(this.program);
+    gl.useProgram(shared.program);
 
     let colorMode = 2;
     let colorScale = 1;
@@ -125,7 +84,7 @@ export class AlphaRenderer {
       this.uploadFrame(3, alpha.frame);
     }
 
-    const u = this.uniforms;
+    const u = shared.uniforms;
     gl.uniformMatrix4fv(u.uMatrix, false, params.matrix);
     gl.uniform1i(u.uColorMode, colorMode);
     gl.uniform1i(u.uAlphaMode, alphaMode);
@@ -134,51 +93,35 @@ export class AlphaRenderer {
     gl.clearColor(0, 0, 0, 0);
     gl.clear(gl.COLOR_BUFFER_BIT);
     gl.drawArrays(gl.TRIANGLES, 0, 3);
+    this.copyFromShared(width, height);
   }
 
   /** Empties the canvas, e.g. after stop(). */
   clear(): void {
-    if (this.lost) return;
-    this.gl.clearColor(0, 0, 0, 0);
-    this.gl.clear(this.gl.COLOR_BUFFER_BIT);
+    this.context.clearRect(0, 0, this.canvas.width, this.canvas.height);
   }
 
   dispose(): void {
-    this.canvas.removeEventListener('webglcontextlost', this.onLost as EventListener);
-    this.canvas.removeEventListener('webglcontextrestored', this.onRestored as EventListener);
-    if (this.lost) return;
-    for (const t of this.textures) this.gl.deleteTexture(t.texture);
-    this.gl.deleteProgram(this.program);
-    this.gl.getExtension('WEBGL_lose_context')?.loseContext();
+    const shared = this.shared;
+    if (!shared.lost && this.generation === shared.generation) {
+      for (const t of this.textures) shared.gl.deleteTexture(t.texture);
+    }
+    shared.release();
   }
 
-  private onLost = (e: Event) => {
-    e.preventDefault();
-    this.lost = true;
-  };
-
-  private onRestored = () => {
-    this.lost = false;
-    this.setUp();
-  };
-
-  private setUp(): void {
-    const gl = this.gl;
-    this.norm16 = !!gl.getExtension('EXT_texture_norm16');
-    this.program = linkProgram(gl, VERTEX, FRAGMENT);
-    const names = ['uY', 'uU', 'uV', 'uA', 'uMatrix', 'uColorMode', 'uAlphaMode', 'uColorScale', 'uAlphaScale'];
-    this.uniforms = Object.fromEntries(names.map((n) => [n, gl.getUniformLocation(this.program, n)]));
-    gl.useProgram(this.program);
-    ['uY', 'uU', 'uV', 'uA'].forEach((n, unit) => gl.uniform1i(this.uniforms[n], unit));
-    this.textures = [0, 1, 2, 3].map(() => {
-      const texture = gl.createTexture()!;
-      gl.bindTexture(gl.TEXTURE_2D, texture);
-      gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR);
-      gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
-      gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
-      gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
-      return { texture, key: '' };
-    });
+  /**
+   * Copies the picture just drawn, before the next player draws over it. WebGL's rows run bottom
+   * up, so it's the bottom-left corner of the shared canvas.
+   */
+  private copyFromShared(width: number, height: number): void {
+    const source = this.shared.canvas;
+    if (this.canvas.width !== width || this.canvas.height !== height) {
+      this.canvas.width = width;
+      this.canvas.height = height;
+    } else {
+      this.context.clearRect(0, 0, width, height);
+    }
+    this.context.drawImage(source, 0, source.height - height, width, height, 0, 0, width, height);
   }
 
   /**
@@ -186,7 +129,7 @@ export class AlphaRenderer {
    * to 0–1: 16-bit textures hold 10- or 12-bit values.
    */
   private uploadPlane(unit: number, p: Planes, plane: number, width: number, height: number, channels: 1 | 2): number {
-    const gl = this.gl;
+    const gl = this.shared.gl;
     const { offset, stride } = p.layout[plane];
     const bytes = p.bytesPerSample;
     gl.activeTexture(gl.TEXTURE0 + unit);
@@ -203,7 +146,7 @@ export class AlphaRenderer {
     if (bytes === 2) {
       const maxValue = (1 << p.bitDepth) - 1;
       const byteOffset = p.data.byteOffset + offset;
-      if (this.norm16 && byteOffset % 2 === 0) {
+      if (this.shared.norm16 && byteOffset % 2 === 0) {
         data = new Uint16Array(p.data.buffer, byteOffset, (p.data.length - offset) >> 1);
         internal = channels === 2 ? RG16_EXT : R16_EXT;
         type = gl.UNSIGNED_SHORT;
@@ -227,7 +170,7 @@ export class AlphaRenderer {
   }
 
   private uploadFrame(unit: number, frame: VideoFrame): void {
-    const gl = this.gl;
+    const gl = this.shared.gl;
     gl.activeTexture(gl.TEXTURE0 + unit);
     const t = this.textures[unit];
     gl.bindTexture(gl.TEXTURE_2D, t.texture);
@@ -235,6 +178,19 @@ export class AlphaRenderer {
     gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, gl.RGBA, gl.UNSIGNED_BYTE, frame);
     t.key = '';
   }
+}
+
+/** One texture per sampler: Y, U, V and alpha. */
+function createTextures(gl: WebGL2RenderingContext): Texture[] {
+  return [0, 1, 2, 3].map(() => {
+    const texture = gl.createTexture()!;
+    gl.bindTexture(gl.TEXTURE_2D, texture);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
+    return { texture, key: '' };
+  });
 }
 
 function pictureWidth(p: Picture): number {
@@ -255,24 +211,4 @@ function toEightBit(src: Uint8Array, offset: number, stride: number, samples: nu
     for (let x = 0; x < samples; x++, s += 2) out[o + x] = Math.min(255, (src[s] | (src[s + 1] << 8)) >> shift);
   }
   return out;
-}
-
-function linkProgram(gl: WebGL2RenderingContext, vertex: string, fragment: string): WebGLProgram {
-  const compile = (type: number, source: string) => {
-    const shader = gl.createShader(type)!;
-    gl.shaderSource(shader, source);
-    gl.compileShader(shader);
-    if (!gl.getShaderParameter(shader, gl.COMPILE_STATUS)) {
-      throw new AlphaVideoError('WEBGL_UNSUPPORTED', `Shader: ${gl.getShaderInfoLog(shader)}`);
-    }
-    return shader;
-  };
-  const program = gl.createProgram()!;
-  gl.attachShader(program, compile(gl.VERTEX_SHADER, vertex));
-  gl.attachShader(program, compile(gl.FRAGMENT_SHADER, fragment));
-  gl.linkProgram(program);
-  if (!gl.getProgramParameter(program, gl.LINK_STATUS)) {
-    throw new AlphaVideoError('WEBGL_UNSUPPORTED', `Program: ${gl.getProgramInfoLog(program)}`);
-  }
-  return program;
 }
