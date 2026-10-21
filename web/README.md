@@ -121,6 +121,13 @@ Cross-Origin-Embedder-Policy: require-corp
 - Frame rate: `browser` doesn't know it and assumes 30 fps for `totalFrames` and frame seeks, like the React Native component on the web; the canvas engines read it from the file.
 - Players per page: browsers keep about 16 WebGL contexts on a page and lose the oldest past that, so the canvas engines share one. Each player draws into it in turn and copies the picture into its own 2D canvas, which costs next to nothing where the page is GPU-accelerated (0.03 ms per 1080p frame in Chromium and Firefox on an M4 Pro). Headless browsers without GPU compositing read each copy back, several milliseconds a frame.
 
+## Potential future work
+
+- **The native players' buffering options.** On Android and iOS, `AlphaVideoView` takes `mode` (`stream`, `preload` or `streamAndPreload`), `streamCacheSize`, `streamPrefetchAhead` and `useDecodeQueue`; on the web they're ignored. The canvas engines only stream: decoding stays a fixed number of pairs ahead of the playhead (4 for `software`, 6 for `webcodecs`), and a frame's buffer goes back to its decoder once drawn, so each loop decodes the clip again. Carrying the options over would mean:
+  - a decode-ahead option in place of those constants. WebCodecs hardware decoders have few output frames, so holding many undrawn ones would need a cap or a copy out of the decoder;
+  - a cache of decoded pairs, which `preload` and `streamAndPreload` fill with the whole clip, so loops play from memory and decoding stops. That suits short loops in `software`, which otherwise keeps its two Workers busy for as long as the clip plays. A 400×400 frame with alpha takes about 400 KB, so a 6-second glow loop about 72 MB, and 1080p about 5 MB a frame. The pairs could be kept as textures in the shared WebGL2 context, which also saves uploading them again on each loop;
+  - with preloading, a page-wide queue so that many players starting at once don't all decode at the same time.
+
 ## Development
 
 ```bash
