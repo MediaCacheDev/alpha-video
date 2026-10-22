@@ -74,7 +74,6 @@
   "devDependencies": {
     "@types/react": "^18.3.31",
     "playwright": "1.62.1",
-    "range-source-web": "file:../../../range-source/web",
     "react": "^18.3.1",
     "tsup": "^8.5.1",
     "typescript": "^5.9.3",

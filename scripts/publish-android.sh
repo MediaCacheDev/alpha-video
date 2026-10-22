@@ -5,9 +5,8 @@
 # Builds the standalone Android library in android/ and publishes it as
 # dev.mediacache:alpha-video:<version>, the version in android/build.gradle, with the codec
 # modules alpha-video-vpx (android/vpx, libvpx) and alpha-video-av1 (android/av1, dav1d). Needs
-# libvpx and dav1d in prebuilt/android (build_codecs_android.sh, or fetch-prebuilt.sh), and
-# dev.mediacache:range-source, which the player depends on, published first (or in ~/.m2, from
-# range-source's scripts/publish-android.sh local).
+# libvpx and dav1d in prebuilt/android (build_codecs_android.sh, or fetch-prebuilt.sh).
+# dev.mediacache:range-source, which the player depends on, comes from Maven Central.
 #
 #   local    publishToMavenLocal (~/.m2), unsigned unless a key is set. The default.
 #   central  signs, bundles and uploads to the Maven Central Portal. Needs:
