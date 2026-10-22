@@ -1,10 +1,12 @@
 # The iOS library without React Native, for CocoaPods. (React Native apps use
 # react-native-alpha-video.podspec, which autolinking finds in the npm package.)
 #
-#   pod 'alpha-video'          both codec modules: VP8 and VP9 (libvpx), and AV1 (dav1d)
-#   pod 'alpha-video/VPX'      VP8 and VP9 only
-#   pod 'alpha-video/AV1'      AV1 only
+#   pod 'alpha-video'                                   VP8 and VP9 (libvpx), AV1 (dav1d), range-source
+#   pod 'alpha-video', :subspecs => ['VPX', 'Source']   VP8 and VP9 only
+#   pod 'alpha-video', :subspecs => ['VPX', 'AV1']      without range-source
 # alpha-video/Core alone plays nothing on iOS, which has no platform decoder for these files.
+# Source is the range-source add-on: URLs read by range and kept on disk or in memory, and app
+# data sources. Without it, the basic input: URLs downloaded whole.
 #
 # The source is alpha-video-<version>-ios.zip from the GitHub Release (scripts/package_release.sh),
 # because the codec xcframeworks aren't in git. 1.0.0 is on CocoaPods trunk, which is read-only from
@@ -22,21 +24,26 @@ Pod::Spec.new do |s|
   s.platform     = :ios, '13.0'
   s.source       = { :http => "https://github.com/MediaCacheDev/alpha-video/releases/download/v#{s.version}/alpha-video-#{s.version}-ios.zip",
                      :sha256 => '42cfc0297a74da447102fd1620f64a398b904661991467a675deb01adb83cd1c' }
-  s.default_subspecs = 'VPX', 'AV1'
+  s.default_subspecs = 'VPX', 'AV1', 'Source'
   s.pod_target_xcconfig = {
     'CLANG_CXX_LANGUAGE_STANDARD' => 'c++17',
-    'HEADER_SEARCH_PATHS' => '"$(PODS_TARGET_SRCROOT)/cpp" "$(PODS_TARGET_SRCROOT)/codecs/vpx" "$(PODS_TARGET_SRCROOT)/codecs/av1" "$(PODS_TARGET_SRCROOT)/third_party/range-source/include" "$(PODS_TARGET_SRCROOT)/third_party/range-source/src" "$(PODS_TARGET_SRCROOT)/third_party/libwebm/webm_parser" "$(PODS_TARGET_SRCROOT)/third_party/libwebm/webm_parser/include"'
+    'HEADER_SEARCH_PATHS' => '"$(PODS_TARGET_SRCROOT)/cpp" "$(PODS_TARGET_SRCROOT)/codecs/vpx" "$(PODS_TARGET_SRCROOT)/codecs/av1" "$(PODS_TARGET_SRCROOT)/third_party/range-source/include" "$(PODS_TARGET_SRCROOT)/third_party/libwebm/webm_parser" "$(PODS_TARGET_SRCROOT)/third_party/libwebm/webm_parser/include"'
   }
 
   s.subspec 'Core' do |core|
     core.source_files        = 'cpp/*.{h,cpp}', 'ios/Sources/AlphaVideo/**/*.{h,mm}',
                                'third_party/libwebm/webm_parser/**/*.{h,cc}',
-                               'third_party/range-source/include/*.h',
-                               'third_party/range-source/src/*.{h,cpp}'
+                               'third_party/range-source/include/*.h'
     core.exclude_files       = 'cpp/*_jni.cpp'
     core.public_header_files = 'ios/Sources/AlphaVideo/include/AlphaVideo.h'
     core.frameworks          = 'Metal', 'MetalKit', 'UIKit'
     core.libraries           = 'c++'
+  end
+
+  # The range-source add-on, found at runtime
+  s.subspec 'Source' do |source|
+    source.dependency 'alpha-video/Core'
+    source.dependency 'range-source', '~> 1.0'
   end
 
   # Each codec module: its plugin adapter, the class the core finds by name, and the library

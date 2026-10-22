@@ -45,6 +45,15 @@ static void releaseGlobalDecodeQueue(void) {
 
 static const int64_t AlphaVideoDefaultMaxStorageBytes = 512LL * 1024 * 1024;
 
+static void AlphaVideoWarnWithoutAddOn(void) {
+    static dispatch_once_t once;
+    dispatch_once(&once, ^{
+        NSLog(@"[AlphaVideo] range-source isn't installed (the RangeSource SwiftPM product, the alpha-video pod's "
+              @"Source subspec, or for React Native npm i react-native-range-source): URLs are downloaded whole for "
+              @"each play, without range requests, storage, maxStorageBytes or cacheKey");
+    });
+}
+
 @interface AlphaVideoView () <AlphaVideoPlayerDelegate>
 @end
 
@@ -238,23 +247,16 @@ static const int64_t AlphaVideoDefaultMaxStorageBytes = 512LL * 1024 * 1024;
     if (!AlphaVideoRangeSourcePlugin()) {
         if (appSource) {
             [self playerDidEncounterError:[NSString stringWithFormat:
-                @"The data source \"%@\" needs the range-source add-on (the RangeSource SwiftPM product, or the "
-                @"alpha-video pod's Source subspec), which the app's build leaves out", self.dataSource]
+                @"The data source \"%@\" needs the range-source add-on (the RangeSource SwiftPM product, the "
+                @"alpha-video pod's Source subspec, or for React Native react-native-range-source), which the "
+                @"app doesn't include", self.dataSource]
                                      code:AlphaVideoErrorNoSourceModule];
             return;
         }
-        [self warnIfStorageWithoutAddOn];
+        AlphaVideoWarnWithoutAddOn();
     }
 
-    id<AlphaVideoDataSource> dataSource = nil;
-    if (appSource) {
-        dataSource = [AlphaVideoDataSources dataSourceNamed:self.dataSource];
-        if (!dataSource) {
-            [self playerDidEncounterError:[NSString stringWithFormat:
-                @"No data source is registered as \"%@\" (AlphaVideoDataSources)", self.dataSource] code:nil];
-            return;
-        }
-    }
+    NSString *dataSource = appSource ? [self.dataSource copy] : nil;
     NSURL *url = [NSURL URLWithString:sourceUri];
     if (!url) {
         [self playerDidEncounterError:[NSString stringWithFormat:@"Invalid URL: %@", sourceUri] code:nil];
@@ -290,18 +292,6 @@ static const int64_t AlphaVideoDefaultMaxStorageBytes = 512LL * 1024 * 1024;
             [strongSelf loadWithQueue:^(AlphaVideoView *view) { [view.metalView loadFromReader:reader]; } offMain:YES];
         });
     });
-}
-
-- (void)warnIfStorageWithoutAddOn {
-    BOOL set = ![_storage isEqualToString:@"auto"] || _maxStorageBytes != AlphaVideoDefaultMaxStorageBytes
-        || self.cacheKey.length > 0;
-    static dispatch_once_t once;
-    if (set) {
-        dispatch_once(&once, ^{
-            NSLog(@"[AlphaVideo] storage, maxStorageBytes and cacheKey need the range-source add-on, which the app's "
-                  @"build leaves out; URLs are downloaded whole for each play instead");
-        });
-    }
 }
 
 /**

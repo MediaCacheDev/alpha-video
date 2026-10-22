@@ -7,7 +7,7 @@
 
 #ifdef __cplusplus
 #include <memory>
-#include "RangeSource.h"
+#include "RangeSourceClient.h"
 #endif
 
 NS_ASSUME_NONNULL_BEGIN
@@ -29,12 +29,13 @@ const RangeSourcePlugin *_Nullable AlphaVideoRangeSourcePlugin(void);
  * Opens the source at 0 to learn its size and version, unless the store holds it whole. Blocks
  * on the network, so not on the main queue.
  *
- * @param dataSource nil for the built-in URLSession fetcher (http and https only); with the add-on
+ * @param dataSource the name of a data source registered with the add-on's RangeDataSources; nil
+ * for the built-in URLSession fetcher (http and https only)
  * @param storage "disk", "memory" or "none"; with the add-on
  * @param key what the store calls the file; with the add-on
  */
 + (nullable instancetype)openURL:(NSURL *)url
-                      dataSource:(nullable id<AlphaVideoDataSource>)dataSource
+                      dataSource:(nullable NSString *)dataSource
                          headers:(NSDictionary<NSString *, NSString *> *)headers
                          storage:(NSString *)storage
                              key:(NSString *)key

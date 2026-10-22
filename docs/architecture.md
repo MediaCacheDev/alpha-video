@@ -77,7 +77,7 @@ React (JS) AlphaVideoView props
   - `FrameCache` (LRU, mutex-protected) for decoded frames
   - Playback loop clocking frames at target FPS
   - `PlayerConfig`: cache size, `preloadAllFrames`, playback speed
-- **`webm::SourceReader`** (`cpp/RangeSource.h`) — What `loadFromReader` reads: range-source's client `Reader`, in the namespace `webm_rs`. `DownloadReader` (`range_source_download.h`, header-only) is the basic input: one request at 0, reopened where it stopped if the connection drops, into an unlinked temporary file; a read waits for its bytes. `RangeReader` calls range-source through its C table (`range_source.h`, versioned by `RANGE_SOURCE_ABI`).
+- **`webm::SourceReader`** (`cpp/RangeSourceClient.h`) — What `loadFromReader` reads: range-source's client `Reader`, in the namespace `webm_rs`. `DownloadReader` (`range_source_download.h`, header-only) is the basic input: one request at 0, reopened where it stopped if the connection drops, into an unlinked temporary file; a read waits for its bytes. `RangeReader` calls range-source through its C table (`range_source.h`, versioned by `RANGE_SOURCE_ABI`).
 - **range-source's reader** (`third_party/range-source/src`) — Reads a file by offset from an `Upstream`, in 256 KB blocks kept in memory (16 MB, LRU) and in the store. One fetch thread keeps one read open and moves it only for a read far from it, reads 2 MB ahead of the last read, retries a failed read 3 times, and drops a stored copy whose size or validator changed. A file the store holds whole is read without opening the upstream.
 
 ## Threading Model

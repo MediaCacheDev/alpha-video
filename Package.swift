@@ -1,9 +1,16 @@
-// swift-tools-version:5.9
+// swift-tools-version:6.1
 import Foundation
 import PackageDescription
 
 // Apps add AlphaVideoVPX (VP8, VP9), AlphaVideoAV1 (AV1) or both, and `import AlphaVideo` either way.
 // The core alone isn't a product: iOS has no platform decoder for these files.
+//
+// URLs and data sources are read through range-source's RangeSource product, which the default
+// trait "Source" adds. The player finds it at runtime, so a package that turns the trait off
+// (`traits: []` on its dependency on this one) gets the basic input: URLs downloaded whole.
+// RANGE_SOURCE_PATH, a local range-source checkout, replaces its release.
+let rangeSource: Package.Dependency = Context.environment["RANGE_SOURCE_PATH"].map { .package(path: $0) }
+    ?? .package(url: "https://github.com/MediaCacheDev/range-source.git", from: "1.0.0")
 //
 // Each codec library is a binary target (scripts/build_xcframework.sh). A local build in
 // prebuilt/ wins, so the package can be developed without a release.
@@ -21,8 +28,8 @@ func codecLibrary(_ name: String, checksum: String) -> Target {
 
 // The targets live at the repo root, and SwiftPM takes resource-like files anywhere under a
 // target as its resources (the codec sources in scripts/build, node_modules), so everything
-// except cpp, codecs, ios/Sources, libwebm's parser and range-source is excluded. Listed from disk: excluding a missing
-// path warns.
+// except cpp, codecs, ios/Sources, libwebm's parser and range-source's headers is excluded.
+// Listed from disk: excluding a missing path warns.
 func entries(_ dir: String, except kept: Set<String>) -> [String] {
     let url = dir.isEmpty ? packageDir : packageDir.appendingPathComponent(dir)
     let names = (try? FileManager.default.contentsOfDirectory(atPath: url.path)) ?? []
@@ -31,14 +38,13 @@ func entries(_ dir: String, except kept: Set<String>) -> [String] {
         .map { dir.isEmpty ? $0 : "\(dir)/\($0)" }
 }
 let webmParser = "third_party/libwebm/webm_parser"
-// range-source, vendored by scripts/vendor_range_source.sh: its C interface and the basic input
-// (include), and the add-on's reader and stores (src), compiled in until the add-on is its own package
-let rangeSource = "third_party/range-source"
+// range-source's headers, vendored by scripts/vendor_range_source.sh: its C interface and the basic input
+let rangeSourceHeaders = "third_party/range-source/include"
 let excluded = entries("", except: ["cpp", "codecs", "ios", "third_party", "Package.swift"])
     + entries("ios", except: ["Sources"])
     + entries("third_party", except: ["libwebm", "range-source"])
     + entries("third_party/libwebm", except: ["webm_parser"])
-    + entries(rangeSource, except: ["include", "src"])
+    + entries("third_party/range-source", except: ["include"])
     + ["cpp/WebMAlphaPlayer_jni.cpp"]
 
 // A codec module: its plugin adapter (codecs/<codec>) and the class AlphaVideoCodecs finds by name
@@ -62,21 +68,28 @@ let package = Package(
         .library(name: "AlphaVideoVPX", targets: ["AlphaVideoVPX"]),
         .library(name: "AlphaVideoAV1", targets: ["AlphaVideoAV1"]),
     ],
+    traits: [
+        .trait(name: "Source", description: "range-source: URLs read by range and kept on disk or in memory, and app data sources"),
+        .default(enabledTraits: ["Source"]),
+    ],
+    dependencies: [rangeSource],
     targets: [
         // One target for the C++ core and the Objective-C++ API: a separate core target would
         // have to make its C++ headers public, and Swift apps can't import a module with C++
         // headers unless they turn on C++ interop.
         .target(
             name: "AlphaVideo",
+            dependencies: [
+                .product(name: "RangeSource", package: "range-source", condition: .when(traits: ["Source"])),
+            ],
             path: ".",
             exclude: excluded,
-            sources: ["cpp", "ios/Sources/AlphaVideo", webmParser, "\(rangeSource)/include", "\(rangeSource)/src"],
+            sources: ["cpp", "ios/Sources/AlphaVideo", webmParser, rangeSourceHeaders],
             publicHeadersPath: "ios/Sources/AlphaVideo/include",
             cSettings: [.headerSearchPath("cpp")],
             cxxSettings: [
                 .headerSearchPath("cpp"),
-                .headerSearchPath("\(rangeSource)/include"),
-                .headerSearchPath("\(rangeSource)/src"),
+                .headerSearchPath(rangeSourceHeaders),
                 .headerSearchPath(webmParser),
                 .headerSearchPath("\(webmParser)/include"),
             ],
@@ -93,6 +106,13 @@ let package = Package(
         .target(name: "AlphaVideoTestSupport", dependencies: ["AlphaVideo"], path: "tests/ios/Support"),
         .testTarget(name: "VPXOnlyTests", dependencies: ["AlphaVideoVPX", "AlphaVideoTestSupport"], path: "tests/ios/VPXOnlyTests"),
         .testTarget(name: "AV1OnlyTests", dependencies: ["AlphaVideoAV1", "AlphaVideoTestSupport"], path: "tests/ios/AV1OnlyTests"),
+        // With the add-on, found at runtime; tests/ios/WithoutRangeSource builds without it
+        .testTarget(
+            name: "SourceTests",
+            dependencies: ["AlphaVideoVPX", "AlphaVideoTestSupport", .product(name: "RangeSource", package: "range-source")],
+            path: "tests/ios/SourceTests"
+        ),
     ],
+    swiftLanguageModes: [.v5],
     cxxLanguageStandard: .cxx17
 )

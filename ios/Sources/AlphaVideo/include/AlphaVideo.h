@@ -20,7 +20,8 @@ extern NSString *const AlphaVideoErrorNoDecoder;
 
 /**
  * The error code for a data source without the range-source add-on, which reads them (the
- * RangeSource SwiftPM product, or the alpha-video pod's Source subspec).
+ * RangeSource SwiftPM product, the alpha-video pod's Source subspec, or for React Native
+ * react-native-range-source).
  */
 extern NSString *const AlphaVideoErrorNoSourceModule;
 
@@ -96,7 +97,7 @@ extern NSString *const AlphaVideoErrorNoSourceModule;
 - (void)playerDidStop;
 - (void)playerDidLoop;
 - (void)playerDidEnd;
-// `code`: AlphaVideoErrorNoDecoder, or nil
+// `code`: AlphaVideoErrorNoDecoder, AlphaVideoErrorNoSourceModule, or nil
 - (void)playerDidEncounterError:(NSString *)error code:(nullable NSString *)code;
 - (void)playerPreloadProgress:(int)loaded total:(int)total;
 - (void)playerPreloadComplete:(int)totalFrames timeMs:(double)timeMs;
@@ -232,71 +233,6 @@ extern NSString *const AlphaVideoErrorNoSourceModule;
 
 @end
 
-/** What a data source knows about a file, given at the start of each read. */
-@interface AlphaVideoDataInfo : NSObject
-
-/** The whole file's size in bytes (not what's left after the offset), or -1 if not known. */
-@property (nonatomic, readonly) int64_t size;
-/** An ETag, or any string that changes when the content does. */
-@property (nonatomic, copy, readonly, nullable) NSString *etag;
-/** Last-Modified, for sources without an ETag. */
-@property (nonatomic, copy, readonly, nullable) NSString *lastModified;
-
-- (instancetype)initWithSize:(int64_t)size
-                        etag:(nullable NSString *)etag
-                lastModified:(nullable NSString *)lastModified NS_DESIGNATED_INITIALIZER;
-- (instancetype)init NS_UNAVAILABLE;
-
-@end
-
-/** A read in progress. */
-@protocol AlphaVideoCancellable <NSObject>
-/** Stops the read; the source may still call its handlers, which are then ignored. */
-- (void)cancel;
-@end
-
-/**
- * Where a video's bytes come from, for an app that fetches, caches or decrypts them itself: the
- * role of AVAssetResourceLoaderDelegate, without the AVFoundation types. The player asks for byte
- * ranges as it plays, a window of a few megabytes at a time, and a new one at a seek.
- *
- * Shared by every player it's registered for, so a read must not depend on the one before.
- */
-@protocol AlphaVideoDataSource <NSObject>
-
-/**
- * Reads `length` bytes of `url` from `offset`, fewer at the end of the file. Call `response`
- * once, then `data` with the bytes in order (any number of times), then `completion` once: nil
- * when done, an error otherwise. A read at or past the end calls `response`, then `completion`
- * with nil. The handlers may be called on any thread, and soon after this returns or much later.
- *
- * @param headers the source's `headers`, for sources that make HTTP requests; may be empty
- */
-- (id<AlphaVideoCancellable>)readURL:(NSURL *)url
-                              offset:(int64_t)offset
-                              length:(int64_t)length
-                             headers:(NSDictionary<NSString *, NSString *> *)headers
-                            response:(void (^)(AlphaVideoDataInfo *info))response
-                                data:(void (^)(NSData *data))data
-                          completion:(void (^)(NSError *_Nullable error))completion
-    NS_SWIFT_NAME(read(url:offset:length:headers:response:data:completion:));
-
-@end
-
-/**
- * Data sources by name, for React Native: register one here, then pass
- * `source={{ uri, dataSource: 'name' }}` to AlphaVideoView. Thread-safe.
- */
-@interface AlphaVideoDataSources : NSObject
-
-/** Registers `dataSource` under `name`, replacing any registered before. */
-+ (void)registerDataSource:(id<AlphaVideoDataSource>)dataSource name:(NSString *)name
-    NS_SWIFT_NAME(register(_:name:));
-+ (void)unregisterName:(NSString *)name NS_SWIFT_NAME(unregister(name:));
-+ (nullable id<AlphaVideoDataSource>)dataSourceNamed:(NSString *)name NS_SWIFT_NAME(dataSource(named:));
-
-@end
-
 @class AlphaVideoView;
 
 /** AlphaVideoView events, delivered on the main queue. */
@@ -311,7 +247,8 @@ extern NSString *const AlphaVideoErrorNoSourceModule;
 /**
  * The player view: resolves a source, loads it in the chosen mode and draws it with Metal.
  *
- * `source` takes an https:// or http:// URL (read by range requests as it plays),
+ * `source` takes an https:// or http:// URL (read by range requests as it plays, or without the
+ * range-source add-on downloaded whole),
  * asset://path inside the app bundle, a file:// URL or an absolute path, or with `dataSource` any
  * URL that data source reads. A new source loads on the next main-queue turn, so set the other
  * properties in the same turn and they apply to it.
@@ -323,7 +260,8 @@ extern NSString *const AlphaVideoErrorNoSourceModule;
 @property (nonatomic, copy, nullable) NSString *source;
 // Sent with every request for an http(s) source, and given to a data source
 @property (nonatomic, copy, nullable) NSDictionary<NSString *, NSString *> *headers;
-// Reads the source through the data source registered under this name (AlphaVideoDataSources)
+// Reads the source through the data source registered under this name with range-source's
+// RangeDataSources (the range-source add-on)
 @property (nonatomic, copy, nullable) NSString *dataSource;
 // What the store keeps the source under, instead of its URL (for presigned URLs that change)
 @property (nonatomic, copy, nullable) NSString *cacheKey;

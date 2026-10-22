@@ -9,7 +9,7 @@
 #include "AlphaDemuxer.h"
 #include "Av1SequenceHeader.h"
 #include "ByteSource.h"
-#include "RangeSource.h"
+#include "RangeSourceClient.h"
 #include "VideoDecoder.h"
 
 #include "../../codecs/av1/Dav1dDecoderPlugin.h"

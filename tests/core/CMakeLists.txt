@@ -3,9 +3,10 @@
 #   cmake -S tests/core -B tests/core/build -G Ninja && cmake --build tests/core/build && tests/core/build/core_tests
 #   tests/core/build/codec_registry_tests
 #
-# Needs libvpx and dav1d (macOS: brew install libvpx dav1d pkg-config). With FFmpeg 6.1 or later
-# too (brew install ffmpeg), it also builds demuxer_compare, which checks the core's demuxer
-# against the web's FFmpeg one.
+# Needs libvpx and dav1d (macOS: brew install libvpx dav1d pkg-config), and a range-source checkout
+# beside this repository (or -DRANGE_SOURCE_DIR=...): the tests link the add-on as an app does.
+# With FFmpeg 6.1 or later too (brew install ffmpeg), it also builds demuxer_compare, which checks
+# the core's demuxer against the web's FFmpeg one.
 cmake_minimum_required(VERSION 3.20)
 project(alpha_video_core_tests CXX)
 
@@ -27,6 +28,23 @@ file(GLOB WEBM_PARSER_SOURCES ${WEBM_PARSER}/src/*.cc)
 add_library(webm_parser STATIC ${WEBM_PARSER_SOURCES})
 target_include_directories(webm_parser PUBLIC ${WEBM_PARSER} ${WEBM_PARSER}/include)
 
+set(RANGE_SOURCE_DIR "" CACHE PATH "A range-source checkout")
+if(NOT RANGE_SOURCE_DIR)
+  foreach(candidate ${ROOT}/../range-source ${ROOT}/../../range-source)
+    if(EXISTS ${candidate}/native/src/range_source.cpp)
+      set(RANGE_SOURCE_DIR ${candidate})
+      break()
+    endif()
+  endforeach()
+endif()
+if(NOT EXISTS ${RANGE_SOURCE_DIR}/native/src/range_source.cpp)
+  message(FATAL_ERROR "No range-source checkout found beside this repository; pass -DRANGE_SOURCE_DIR=")
+endif()
+set(RANGE_SOURCE_ADDON ${RANGE_SOURCE_DIR}/native/src)
+add_library(range_source STATIC ${RANGE_SOURCE_ADDON}/RangeReader.cpp ${RANGE_SOURCE_ADDON}/Store.cpp ${RANGE_SOURCE_ADDON}/range_source.cpp)
+target_include_directories(range_source PRIVATE ${RANGE_SOURCE_DIR}/native/include ${RANGE_SOURCE_ADDON})
+target_link_libraries(range_source PUBLIC Threads::Threads)
+
 add_library(alpha_video_core STATIC
   ${CORE}/WebMAlphaPlayer.cpp
   ${CORE}/AlphaDemuxer.cpp
@@ -34,11 +52,8 @@ add_library(alpha_video_core STATIC
   ${CORE}/VideoDecoder.cpp
   ${CORE}/YuvToRgb.cpp
   ${CORE}/ByteSource.cpp
-  ${RANGE_SOURCE}/src/RangeReader.cpp
-  ${RANGE_SOURCE}/src/Store.cpp
-  ${RANGE_SOURCE}/src/range_source.cpp
 )
-target_include_directories(alpha_video_core PUBLIC ${CORE} ${RANGE_SOURCE}/include ${RANGE_SOURCE}/src)
+target_include_directories(alpha_video_core PUBLIC ${CORE} ${RANGE_SOURCE}/include)
 target_compile_options(alpha_video_core PRIVATE -Wall)
 target_link_libraries(alpha_video_core PUBLIC webm_parser Threads::Threads)
 
@@ -55,7 +70,7 @@ target_link_libraries(alpha_video_av1 PUBLIC PkgConfig::DAV1D)
 add_executable(core_tests core_tests.cpp)
 target_compile_definitions(core_tests PRIVATE FIXTURES_DIR="${CMAKE_CURRENT_SOURCE_DIR}/../fixtures")
 target_compile_options(core_tests PRIVATE -Wall)
-target_link_libraries(core_tests PRIVATE alpha_video_core alpha_video_vpx alpha_video_av1)
+target_link_libraries(core_tests PRIVATE alpha_video_core alpha_video_vpx alpha_video_av1 range_source)
 
 add_executable(codec_registry_tests codec_registry_tests.cpp)
 target_compile_definitions(codec_registry_tests PRIVATE FIXTURES_DIR="${CMAKE_CURRENT_SOURCE_DIR}/../fixtures")
@@ -69,9 +84,8 @@ if(FFMPEG_FOUND)
   target_link_libraries(ffmpeg_demuxer PUBLIC PkgConfig::FFMPEG)
 
   add_executable(demuxer_compare demuxer_compare.cpp
-    ${CORE}/AlphaDemuxer.cpp ${CORE}/Av1SequenceHeader.cpp ${CORE}/YuvToRgb.cpp ${CORE}/ByteSource.cpp
-    ${RANGE_SOURCE}/src/RangeReader.cpp ${RANGE_SOURCE}/src/Store.cpp ${RANGE_SOURCE}/src/range_source.cpp)
-  target_include_directories(demuxer_compare PRIVATE ${CORE} ${RANGE_SOURCE}/include ${RANGE_SOURCE}/src)
+    ${CORE}/AlphaDemuxer.cpp ${CORE}/Av1SequenceHeader.cpp ${CORE}/YuvToRgb.cpp ${CORE}/ByteSource.cpp)
+  target_include_directories(demuxer_compare PRIVATE ${CORE} ${RANGE_SOURCE}/include)
   target_compile_options(demuxer_compare PRIVATE -Wall)
-  target_link_libraries(demuxer_compare PRIVATE ffmpeg_demuxer webm_parser Threads::Threads)
+  target_link_libraries(demuxer_compare PRIVATE ffmpeg_demuxer webm_parser range_source Threads::Threads)
 endif()
