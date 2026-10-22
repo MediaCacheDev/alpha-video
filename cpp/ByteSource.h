@@ -1,19 +1,16 @@
 #pragma once
 
-#include <atomic>
+#include "RangeSource.h"
+
 #include <cstdint>
 #include <memory>
 #include <string>
-
-namespace avsource {
-class RangeReader;
-}
 
 namespace webm {
 
 /**
  * The bytes of a video, read at any position: a file, a range of one, a URL or an app's data
- * source read by range (avsource::RangeReader), or memory. The demuxer reads through one of these.
+ * source read through a SourceReader, or memory. The demuxer reads through one of these.
  */
 class ByteSource {
 public:
@@ -47,13 +44,14 @@ std::unique_ptr<ByteSource> openFileRange(int fd, int64_t offset, int64_t length
 std::unique_ptr<ByteSource> openFile(const std::string& path);
 
 /**
- * A file read by range: a URL or an app's data source, through blocks in memory and a store.
+ * A URL or an app's data source, through a SourceReader: the range-source add-on's reader, or the
+ * basic input's download.
  *
  * Reads wait for bytes being fetched. They fail if the fetch fails, or once `abort` (may be null;
- * must outlive the source) becomes true, so a player can unload without waiting for the network.
+ * must outlive the source) is raised, so a player can unload without waiting for the network.
  * The reader may be shared, by a probe and then the player.
  */
-std::unique_ptr<ByteSource> openReader(std::shared_ptr<avsource::RangeReader> reader, const std::atomic<bool>* abort);
+std::unique_ptr<ByteSource> openReader(std::shared_ptr<SourceReader> reader, const AbortFlag* abort);
 
 /** A copy of `size` bytes at `data`. */
 std::unique_ptr<ByteSource> openMemory(const uint8_t* data, size_t size);

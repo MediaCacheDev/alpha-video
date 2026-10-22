@@ -235,6 +235,17 @@ static const int64_t AlphaVideoDefaultMaxStorageBytes = 512LL * 1024 * 1024;
         return;
     }
     
+    if (!AlphaVideoRangeSourcePlugin()) {
+        if (appSource) {
+            [self playerDidEncounterError:[NSString stringWithFormat:
+                @"The data source \"%@\" needs the range-source add-on (the RangeSource SwiftPM product, or the "
+                @"alpha-video pod's Source subspec), which the app's build leaves out", self.dataSource]
+                                     code:AlphaVideoErrorNoSourceModule];
+            return;
+        }
+        [self warnIfStorageWithoutAddOn];
+    }
+
     id<AlphaVideoDataSource> dataSource = nil;
     if (appSource) {
         dataSource = [AlphaVideoDataSources dataSourceNamed:self.dataSource];
@@ -279,6 +290,18 @@ static const int64_t AlphaVideoDefaultMaxStorageBytes = 512LL * 1024 * 1024;
             [strongSelf loadWithQueue:^(AlphaVideoView *view) { [view.metalView loadFromReader:reader]; } offMain:YES];
         });
     });
+}
+
+- (void)warnIfStorageWithoutAddOn {
+    BOOL set = ![_storage isEqualToString:@"auto"] || _maxStorageBytes != AlphaVideoDefaultMaxStorageBytes
+        || self.cacheKey.length > 0;
+    static dispatch_once_t once;
+    if (set) {
+        dispatch_once(&once, ^{
+            NSLog(@"[AlphaVideo] storage, maxStorageBytes and cacheKey need the range-source add-on, which the app's "
+                  @"build leaves out; URLs are downloaded whole for each play instead");
+        });
+    }
 }
 
 /**

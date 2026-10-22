@@ -1,6 +1,5 @@
 #include "ByteSource.h"
 
-#include "RangeReader.h"
 
 #include <algorithm>
 #include <cerrno>
@@ -43,7 +42,7 @@ private:
 
 class ReaderSource : public ByteSource {
 public:
-    ReaderSource(std::shared_ptr<avsource::RangeReader> reader, const std::atomic<bool>* abort)
+    ReaderSource(std::shared_ptr<SourceReader> reader, const AbortFlag* abort)
         : reader_(std::move(reader)), abort_(abort) {}
 
     int64_t read(int64_t pos, uint8_t* out, int64_t size) override { return reader_->read(pos, out, size, abort_); }
@@ -51,8 +50,8 @@ public:
     int64_t size() const override { return reader_->size(); }
 
 private:
-    const std::shared_ptr<avsource::RangeReader> reader_;
-    const std::atomic<bool>* const abort_;
+    const std::shared_ptr<SourceReader> reader_;
+    const AbortFlag* const abort_;
 };
 
 class MemorySource : public ByteSource {
@@ -105,7 +104,7 @@ std::unique_ptr<ByteSource> openFile(const std::string& path) {
     return source;
 }
 
-std::unique_ptr<ByteSource> openReader(std::shared_ptr<avsource::RangeReader> reader, const std::atomic<bool>* abort) {
+std::unique_ptr<ByteSource> openReader(std::shared_ptr<SourceReader> reader, const AbortFlag* abort) {
     if (!reader) return nullptr;
     return std::make_unique<ReaderSource>(std::move(reader), abort);
 }

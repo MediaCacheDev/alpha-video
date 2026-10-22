@@ -21,7 +21,7 @@ func codecLibrary(_ name: String, checksum: String) -> Target {
 
 // The targets live at the repo root, and SwiftPM takes resource-like files anywhere under a
 // target as its resources (the codec sources in scripts/build, node_modules), so everything
-// except cpp, codecs, ios/Sources, libwebm's parser and alpha-video-source's reader is excluded. Listed from disk: excluding a missing
+// except cpp, codecs, ios/Sources, libwebm's parser and range-source is excluded. Listed from disk: excluding a missing
 // path warns.
 func entries(_ dir: String, except kept: Set<String>) -> [String] {
     let url = dir.isEmpty ? packageDir : packageDir.appendingPathComponent(dir)
@@ -31,13 +31,14 @@ func entries(_ dir: String, except kept: Set<String>) -> [String] {
         .map { dir.isEmpty ? $0 : "\(dir)/\($0)" }
 }
 let webmParser = "third_party/libwebm/webm_parser"
-// Range reading and storage, vendored by scripts/vendor_alpha_video_source.sh
-let sourceReader = "third_party/alpha-video-source/src"
+// range-source, vendored by scripts/vendor_range_source.sh: its C interface and the basic input
+// (include), and the add-on's reader and stores (src), compiled in until the add-on is its own package
+let rangeSource = "third_party/range-source"
 let excluded = entries("", except: ["cpp", "codecs", "ios", "third_party", "Package.swift"])
     + entries("ios", except: ["Sources"])
-    + entries("third_party", except: ["libwebm", "alpha-video-source"])
+    + entries("third_party", except: ["libwebm", "range-source"])
     + entries("third_party/libwebm", except: ["webm_parser"])
-    + entries("third_party/alpha-video-source", except: ["src"])
+    + entries(rangeSource, except: ["include", "src"])
     + ["cpp/WebMAlphaPlayer_jni.cpp"]
 
 // A codec module: its plugin adapter (codecs/<codec>) and the class AlphaVideoCodecs finds by name
@@ -69,12 +70,13 @@ let package = Package(
             name: "AlphaVideo",
             path: ".",
             exclude: excluded,
-            sources: ["cpp", "ios/Sources/AlphaVideo", webmParser, sourceReader],
+            sources: ["cpp", "ios/Sources/AlphaVideo", webmParser, "\(rangeSource)/include", "\(rangeSource)/src"],
             publicHeadersPath: "ios/Sources/AlphaVideo/include",
             cSettings: [.headerSearchPath("cpp")],
             cxxSettings: [
                 .headerSearchPath("cpp"),
-                .headerSearchPath(sourceReader),
+                .headerSearchPath("\(rangeSource)/include"),
+                .headerSearchPath("\(rangeSource)/src"),
                 .headerSearchPath(webmParser),
                 .headerSearchPath("\(webmParser)/include"),
             ],

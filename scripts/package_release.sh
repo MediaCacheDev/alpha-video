@@ -8,7 +8,7 @@
 #   AlphaVideoLibvpx.xcframework.zip      Package.swift's binary targets, as built by
 #   AlphaVideoDav1d.xcframework.zip       build_xcframework.sh
 #   alpha-video-<version>-ios.zip         the CocoaPods source (alpha-video.podspec): the iOS sources,
-#                                         the codec modules, libwebm's parser, alpha-video-source's
+#                                         the codec modules, libwebm's parser, range-source's
 #                                         reader and both xcframeworks
 #   SHA256SUMS
 #
@@ -79,7 +79,7 @@ cp "$ROOT"/cpp/*.h "$ROOT"/cpp/*.cpp "$POD/cpp/"
 rm "$POD/cpp/WebMAlphaPlayer_jni.cpp"
 cp -R "$ROOT/ios/Sources/AlphaVideo" "$ROOT/ios/Sources/AlphaVideoVPX" "$ROOT/ios/Sources/AlphaVideoAV1" "$POD/ios/Sources/"
 cp -R "$ROOT/codecs" "$POD/"
-cp -R "$ROOT/third_party/libwebm" "$ROOT/third_party/alpha-video-source" "$POD/third_party/"
+cp -R "$ROOT/third_party/libwebm" "$ROOT/third_party/range-source" "$POD/third_party/"
 for name in $XCFRAMEWORKS; do
     cp -R "$ROOT/prebuilt/$name.xcframework" "$POD/"
 done

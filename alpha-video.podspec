@@ -25,13 +25,14 @@ Pod::Spec.new do |s|
   s.default_subspecs = 'VPX', 'AV1'
   s.pod_target_xcconfig = {
     'CLANG_CXX_LANGUAGE_STANDARD' => 'c++17',
-    'HEADER_SEARCH_PATHS' => '"$(PODS_TARGET_SRCROOT)/cpp" "$(PODS_TARGET_SRCROOT)/codecs/vpx" "$(PODS_TARGET_SRCROOT)/codecs/av1" "$(PODS_TARGET_SRCROOT)/third_party/alpha-video-source/src" "$(PODS_TARGET_SRCROOT)/third_party/libwebm/webm_parser" "$(PODS_TARGET_SRCROOT)/third_party/libwebm/webm_parser/include"'
+    'HEADER_SEARCH_PATHS' => '"$(PODS_TARGET_SRCROOT)/cpp" "$(PODS_TARGET_SRCROOT)/codecs/vpx" "$(PODS_TARGET_SRCROOT)/codecs/av1" "$(PODS_TARGET_SRCROOT)/third_party/range-source/include" "$(PODS_TARGET_SRCROOT)/third_party/range-source/src" "$(PODS_TARGET_SRCROOT)/third_party/libwebm/webm_parser" "$(PODS_TARGET_SRCROOT)/third_party/libwebm/webm_parser/include"'
   }
 
   s.subspec 'Core' do |core|
     core.source_files        = 'cpp/*.{h,cpp}', 'ios/Sources/AlphaVideo/**/*.{h,mm}',
                                'third_party/libwebm/webm_parser/**/*.{h,cc}',
-                               'third_party/alpha-video-source/src/*.{h,cpp}'
+                               'third_party/range-source/include/*.h',
+                               'third_party/range-source/src/*.{h,cpp}'
     core.exclude_files       = 'cpp/*_jni.cpp'
     core.public_header_files = 'ios/Sources/AlphaVideo/include/AlphaVideo.h'
     core.frameworks          = 'Metal', 'MetalKit', 'UIKit'

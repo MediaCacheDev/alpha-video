@@ -142,6 +142,13 @@ public class AlphaVideoView extends TextureView implements
      * as the message says. See {@link AlphaVideoCodecs}.
      */
     public static final String ERROR_NO_DECODER = "NO_DECODER";
+    /**
+     * {@link PlayerCallback#onError}'s code for a data source ({@link #setDataSource}) without the
+     * range-source add-on ({@code dev.mediacache:range-source}), which reads them.
+     */
+    public static final String ERROR_NO_SOURCE_MODULE = "NO_SOURCE_MODULE";
+    // Storage set without the add-on is warned of once per process
+    private static final AtomicBoolean warnedStorageWithoutAddOn = new AtomicBoolean(false);
     private int streamCacheSize = 30;      // Frames to keep in cache when streaming
     private int streamPrefetchAhead = 15;  // Frames to decode ahead of playback
     
@@ -509,6 +516,16 @@ public class AlphaVideoView extends TextureView implements
             return;
         }
         
+        final boolean addOn = RangeSourceLink.available();
+        if (!addOn) {
+            if (appSource) {
+                reportError("The data source \"" + dataSource + "\" needs the range-source add-on "
+                    + "(dev.mediacache:range-source), which the app's build leaves out", ERROR_NO_SOURCE_MODULE);
+                return;
+            }
+            warnIfStorageWithoutAddOn();
+        }
+
         final AlphaVideoDataSource source;
         if (appSource) {
             AlphaVideoDataSource.Factory factory = AlphaVideoDataSources.get(dataSource);
@@ -526,6 +543,7 @@ public class AlphaVideoView extends TextureView implements
         final String key = cacheKey != null && !cacheKey.isEmpty() ? cacheKey : uri;
         final Map<String, String> requestHeaders = headers;
         final long maxBytes = maxStorageBytes;
+        final String downloadDir = getContext().getCacheDir().getPath();
         // The stream modes start on the first bytes. Preload decodes the whole clip before
         // showing anything, and would hold the global decode queue for the whole transfer.
         final boolean fetchFirst = MODE_PRELOAD.equals(mode);
@@ -533,7 +551,8 @@ public class AlphaVideoView extends TextureView implements
             SourceReader opened = null;
             String error = null;
             try {
-                opened = SourceReader.open(source, Uri.parse(uri), requestHeaders, readerStorage, storeDir, key, maxBytes);
+                opened = SourceReader.open(source, Uri.parse(uri), requestHeaders, readerStorage, storeDir, key, maxBytes,
+                    downloadDir);
                 if (fetchFirst) opened.fetchAll();
             } catch (IOException e) {
                 error = e.getMessage();
@@ -567,6 +586,16 @@ public class AlphaVideoView extends TextureView implements
         }
     }
     
+    private void warnIfStorageWithoutAddOn() {
+        boolean set = !STORAGE_AUTO.equals(storage) || maxStorageBytes != DEFAULT_MAX_STORAGE_BYTES
+            || (cacheKey != null && !cacheKey.isEmpty());
+        if (set && warnedStorageWithoutAddOn.compareAndSet(false, true)) {
+            Log.w(TAG, "storage, maxStorageBytes and cacheKey need the range-source add-on "
+                + "(dev.mediacache:range-source), which the app's build leaves out; URLs are downloaded whole "
+                + "for each play instead");
+        }
+    }
+
     /** Drops this view's reference; a player still reading keeps the reader until it unloads. */
     private void closeReader() {
         if (reader != null) {

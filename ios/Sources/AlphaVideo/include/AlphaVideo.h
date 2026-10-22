@@ -19,6 +19,12 @@ NS_ASSUME_NONNULL_BEGIN
 extern NSString *const AlphaVideoErrorNoDecoder;
 
 /**
+ * The error code for a data source without the range-source add-on, which reads them (the
+ * RangeSource SwiftPM product, or the alpha-video pod's Source subspec).
+ */
+extern NSString *const AlphaVideoErrorNoSourceModule;
+
+/**
  * The software decoders the player plays with. The codec modules register themselves when the
  * app links them, nothing to call: SwiftPM products AlphaVideoVPX (libvpx, VP8, VP9) and AlphaVideoAV1
  * (dav1d, AV1), or pods alpha-video/VPX and alpha-video/AV1.

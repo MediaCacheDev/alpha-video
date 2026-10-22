@@ -11,7 +11,6 @@
 #include "WebMAlphaPlayer.h"
 #include "AlphaDemuxer.h"
 #include "ByteSource.h"
-#include "RangeReader.h"
 #include "VideoDecoder.h"
 #include <pthread.h>
 #include <algorithm>
@@ -133,7 +132,7 @@ bool clearException(JNIEnv* env) {
     return true;
 }
 
-class JavaUpstream : public avsource::Upstream {
+class JavaUpstream : public webm::Upstream {
 public:
     static std::unique_ptr<JavaUpstream> create(JNIEnv* env, jobject upstream) {
         auto result = std::unique_ptr<JavaUpstream>(new JavaUpstream());
@@ -165,7 +164,7 @@ public:
         if (buffer_) env->DeleteGlobalRef(buffer_);
     }
 
-    bool open(int64_t position, avsource::SourceInfo& info, std::string& error) override {
+    bool open(int64_t position, webm::SourceInfo& info, std::string& error) override {
         JNIEnv* env = threadEnv(vm_);
         if (!env) {
             error = "Cannot attach the reader's thread to Java";
@@ -235,7 +234,7 @@ private:
 };
 
 // A SourceReader reference: a shared_ptr of its own, so each holder frees only its own.
-using ReaderRef = std::shared_ptr<avsource::RangeReader>;
+using ReaderRef = std::shared_ptr<webm::SourceReader>;
 
 const ReaderRef& readerOf(jlong reference) {
     return *reinterpret_cast<ReaderRef*>(reference);
@@ -681,32 +680,45 @@ Java_dev_mediacache_alphavideo_WebMAlphaPlayerNative_nativeLoadFromReader(
 //==============================================================================
 
 JNIEXPORT jlong JNICALL
+Java_dev_mediacache_alphavideo_RangeSourceLink_nativeBuiltInPlugin(JNIEnv* env, jclass clazz) {
+    std::string why;
+    const RangeSourcePlugin* plugin = webm::usablePlugin(range_source_plugin(), why);
+    if (!plugin && !why.empty()) LOGE("Not using range-source: %s", why.c_str());
+    return reinterpret_cast<jlong>(plugin);
+}
+
+JNIEXPORT jlong JNICALL
 Java_dev_mediacache_alphavideo_SourceReader_nativeOpen(
     JNIEnv* env,
     jclass clazz,
+    jlong plugin,
     jobject upstream,
     jint storage,
     jstring storeDir,
     jstring key,
     jlong maxStorageBytes,
+    jstring downloadDir,
     jobjectArray errorOut
 ) {
     // SourceReader.Storage ordinals
     enum { kDisk = 0, kMemory = 1 };
     std::string error;
-    std::shared_ptr<avsource::RangeReader> reader;
+    std::shared_ptr<webm::SourceReader> reader;
     std::unique_ptr<JavaUpstream> javaUpstream = JavaUpstream::create(env, upstream);
-    if (javaUpstream) {
-        std::shared_ptr<avsource::Store> store;
-        if (storage == kDisk) {
-            store = avsource::Store::disk(stringFromJava(env, storeDir), maxStorageBytes);
-        } else if (storage == kMemory) {
-            store = avsource::Store::memory(stringFromJava(env, storeDir), maxStorageBytes);
-        }
-        reader = avsource::RangeReader::open(std::move(javaUpstream), std::move(store), stringFromJava(env, key),
-                                             avsource::ReaderOptions(), error);
-    } else {
+    const auto* table = reinterpret_cast<const RangeSourcePlugin*>(plugin);
+    if (!javaUpstream) {
         error = "Cannot call the data source";
+    } else if (table) {
+        std::shared_ptr<webm_rs::Store> store;
+        if (storage == kDisk) {
+            store = webm_rs::Store::disk(table, stringFromJava(env, storeDir), maxStorageBytes);
+        } else if (storage == kMemory) {
+            store = webm_rs::Store::memory(table, stringFromJava(env, storeDir), maxStorageBytes);
+        }
+        reader = webm_rs::RangeReader::open(table, std::move(javaUpstream), store, stringFromJava(env, key),
+                                            webm_rs::ReaderOptions(), error);
+    } else {
+        reader = webm_rs::DownloadReader::open(std::move(javaUpstream), stringFromJava(env, downloadDir), error);
     }
     if (!reader) {
         jstring message = env->NewStringUTF(error.c_str());
@@ -1135,7 +1147,7 @@ namespace {
 // download source polls.
 struct DualStreamDemuxer {
     // Set on destroy so a read waiting on a download returns
-    std::atomic<bool> aborted{false};
+    webm::AbortFlag aborted{0};
     std::unique_ptr<webm::AlphaDemuxer> demuxer;
 };
 

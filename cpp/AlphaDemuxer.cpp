@@ -33,9 +33,9 @@ constexpr uint64_t kProbeBytes = 5000000;
 
 // webm_parser's Reader over a ByteSource. Buffered: the parser reads element headers a few bytes
 // at a time. A source's kPending is the parser's kWouldBlock, from which it resumes.
-class SourceReader : public Reader {
+class ByteSourceReader : public Reader {
 public:
-    explicit SourceReader(ByteSource* source) : source_(source), buffer_(new uint8_t[kReadBufferSize]) {}
+    explicit ByteSourceReader(ByteSource* source) : source_(source), buffer_(new uint8_t[kReadBufferSize]) {}
 
     Status Read(std::size_t numToRead, std::uint8_t* buffer, std::uint64_t* numActuallyRead) override {
         *numActuallyRead = 0;
@@ -401,7 +401,7 @@ private:
     int64_t usToTicks(int64_t us) const;
 
     std::unique_ptr<ByteSource> source_;
-    SourceReader reader_;
+    ByteSourceReader reader_;
     WebmParser parser_;
     bool ended_ = false;
     bool opened_ = false;
@@ -701,7 +701,7 @@ bool AlphaDemuxer::Impl::scan(uint64_t from, int64_t untilTicks) {
 bool AlphaDemuxer::Impl::loadCues() {
     cuesLoaded_ = true;
     if (cuesPosition_ < 0) return true;
-    SourceReader reader(source_.get());
+    ByteSourceReader reader(source_.get());
     reader.seek(static_cast<uint64_t>(cuesPosition_));
     WebmParser parser;
     parser.DidSeek();

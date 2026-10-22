@@ -1,12 +1,12 @@
 /**
  * AlphaVideoSource.mm
  * Range reading for URLs and data sources: the built-in URLSession fetcher, the adapter for an
- * app's AlphaVideoDataSource, and the reader they feed (alpha-video-source's RangeReader).
+ * app's AlphaVideoDataSource, and the reader they feed: the range-source add-on's, through its C
+ * table, or the basic input's download.
  */
 
 #import "AlphaVideoInternal.h"
 
-#include "RangeReader.h"
 
 #include <condition_variable>
 #include <functional>
@@ -32,7 +32,7 @@ public:
     }
 
     /** `skip`: bytes of the data to drop first, for a server that answered from 0. */
-    void respond(const avsource::SourceInfo& info, int64_t skip = 0) {
+    void respond(const webm::SourceInfo& info, int64_t skip = 0) {
         std::lock_guard<std::mutex> lock(mutex_);
         if (responded_ || done_) return;
         responded_ = true;
@@ -70,7 +70,7 @@ public:
 
     void cancel() { finish("Cancelled"); }
 
-    bool waitResponse(avsource::SourceInfo& info, std::string& error) {
+    bool waitResponse(webm::SourceInfo& info, std::string& error) {
         std::unique_lock<std::mutex> lock(mutex_);
         changed_.wait(lock, [&] { return responded_ || done_; });
         if (!responded_) {
@@ -119,7 +119,7 @@ private:
     bool paused_ = false;
     bool responded_ = false;
     bool done_ = false;
-    avsource::SourceInfo info_;
+    webm::SourceInfo info_;
     int64_t skip_ = 0;
     std::string buffer_;
     size_t offset_ = 0;
@@ -206,7 +206,7 @@ didReceiveResponse:(NSURLResponse *)response
         return;
     }
     NSHTTPURLResponse *http = [response isKindOfClass:[NSHTTPURLResponse class]] ? (NSHTTPURLResponse *)response : nil;
-    avsource::SourceInfo info;
+    webm::SourceInfo info;
     info.etag = stdString([http valueForHTTPHeaderField:@"ETag"]);
     info.lastModified = stdString([http valueForHTTPHeaderField:@"Last-Modified"]);
     NSString *encoding = [http valueForHTTPHeaderField:@"Content-Encoding"];
@@ -269,7 +269,7 @@ namespace {
  * Reads a URL with URLSession: a `Range: bytes=N-` request per open, kept open as the reader
  * reads on, and suspended while the reader has a megabyte waiting.
  */
-class URLSessionUpstream : public avsource::Upstream {
+class URLSessionUpstream : public webm::Upstream {
 public:
     URLSessionUpstream(NSURL* url, NSDictionary<NSString*, NSString*>* headers)
         : url_(url), headers_([headers copy]), delegate_([AlphaVideoSessionDelegate new]) {
@@ -287,7 +287,7 @@ public:
         [session_ invalidateAndCancel];
     }
 
-    bool open(int64_t position, avsource::SourceInfo& info, std::string& error) override {
+    bool open(int64_t position, webm::SourceInfo& info, std::string& error) override {
         close();
         NSMutableURLRequest* request = [NSMutableURLRequest requestWithURL:url_];
         [headers_ enumerateKeysAndObjectsUsingBlock:^(NSString* name, NSString* value, BOOL* stop) {
@@ -370,7 +370,7 @@ private:
  * Reads through an app's AlphaVideoDataSource in windows of kWindowBytes, asking for the next
  * window when one ends, so that a source never has more than one window to hold.
  */
-class DataSourceUpstream : public avsource::Upstream {
+class DataSourceUpstream : public webm::Upstream {
 public:
     static constexpr int64_t kWindowBytes = 4 * 1024 * 1024;
 
@@ -379,7 +379,7 @@ public:
 
     ~DataSourceUpstream() override { close(); }
 
-    bool open(int64_t position, avsource::SourceInfo& info, std::string& error) override {
+    bool open(int64_t position, webm::SourceInfo& info, std::string& error) override {
         close();
         position_ = position;
         size_ = -1;
@@ -424,7 +424,7 @@ public:
     }
 
 private:
-    bool startWindow(avsource::SourceInfo* info, std::string& error) {
+    bool startWindow(webm::SourceInfo* info, std::string& error) {
         auto pipe = std::make_shared<Pipe>();
         {
             std::lock_guard<std::mutex> lock(mutex_);
@@ -440,7 +440,7 @@ private:
                                                     length:kWindowBytes
                                                    headers:headers_ ?: @{}
                                                   response:^(AlphaVideoDataInfo* dataInfo) {
-            avsource::SourceInfo sourceInfo;
+            webm::SourceInfo sourceInfo;
             sourceInfo.size = dataInfo.size >= 0 ? dataInfo.size : -1;
             sourceInfo.etag = stdString(dataInfo.etag);
             sourceInfo.lastModified = stdString(dataInfo.lastModified);
@@ -462,7 +462,7 @@ private:
         }
         if (cancelNow) [token cancel];
 
-        avsource::SourceInfo got;
+        webm::SourceInfo got;
         if (!pipe->waitResponse(got, error)) return false;
         if (got.size >= 0) size_ = got.size;
         if (info) *info = got;
@@ -538,11 +538,24 @@ static NSMutableDictionary<NSString *, id<AlphaVideoDataSource>> *AlphaVideoRegi
 
 #pragma mark - AlphaVideoSourceReader
 
+NSString *const AlphaVideoErrorNoSourceModule = @"NO_SOURCE_MODULE";
+
+const RangeSourcePlugin *AlphaVideoRangeSourcePlugin(void) {
+    // The add-on's reader and stores, built into this library until the add-on is its own package
+    static const RangeSourcePlugin *plugin = [] {
+        std::string why;
+        const RangeSourcePlugin *usable = webm::usablePlugin(range_source_plugin(), why);
+        if (!usable && !why.empty()) NSLog(@"[AlphaVideo] Not using range-source: %s", why.c_str());
+        return usable;
+    }();
+    return plugin;
+}
+
 // Caches/alpha-video on disk, or the memory store's name
 static NSString *const AlphaVideoStoreName = @"alpha-video";
 
 @implementation AlphaVideoSourceReader {
-    std::shared_ptr<avsource::RangeReader> _reader;
+    std::shared_ptr<webm::SourceReader> _reader;
 }
 
 + (instancetype)openURL:(NSURL *)url
@@ -552,7 +565,7 @@ static NSString *const AlphaVideoStoreName = @"alpha-video";
                     key:(NSString *)key
         maxStorageBytes:(int64_t)maxStorageBytes
                   error:(NSString **)error {
-    std::unique_ptr<avsource::Upstream> upstream;
+    std::unique_ptr<webm::Upstream> upstream;
     if (dataSource) {
         upstream = std::make_unique<DataSourceUpstream>(dataSource, url, headers);
     } else if ([url.scheme isEqualToString:@"https"] || [url.scheme isEqualToString:@"http"]) {
@@ -562,17 +575,22 @@ static NSString *const AlphaVideoStoreName = @"alpha-video";
         return nil;
     }
 
-    std::shared_ptr<avsource::Store> store;
-    if ([storage isEqualToString:@"disk"]) {
-        NSString *caches = NSSearchPathForDirectoriesInDomains(NSCachesDirectory, NSUserDomainMask, YES).firstObject;
-        store = avsource::Store::disk(stdString([caches stringByAppendingPathComponent:AlphaVideoStoreName]), maxStorageBytes);
-    } else if ([storage isEqualToString:@"memory"]) {
-        store = avsource::Store::memory(stdString(AlphaVideoStoreName), maxStorageBytes);
-    }
-
     std::string openError;
-    auto reader = avsource::RangeReader::open(std::move(upstream), std::move(store), stdString(key),
-                                              avsource::ReaderOptions(), openError);
+    std::shared_ptr<webm::SourceReader> reader;
+    if (const RangeSourcePlugin *plugin = AlphaVideoRangeSourcePlugin()) {
+        std::shared_ptr<webm_rs::Store> store;
+        if ([storage isEqualToString:@"disk"]) {
+            NSString *caches = NSSearchPathForDirectoriesInDomains(NSCachesDirectory, NSUserDomainMask, YES).firstObject;
+            store = webm_rs::Store::disk(plugin, stdString([caches stringByAppendingPathComponent:AlphaVideoStoreName]),
+                                         maxStorageBytes);
+        } else if ([storage isEqualToString:@"memory"]) {
+            store = webm_rs::Store::memory(plugin, stdString(AlphaVideoStoreName), maxStorageBytes);
+        }
+        reader = webm_rs::RangeReader::open(plugin, std::move(upstream), store, stdString(key),
+                                            webm_rs::ReaderOptions(), openError);
+    } else {
+        reader = webm_rs::DownloadReader::open(std::move(upstream), stdString(NSTemporaryDirectory()), openError);
+    }
     if (!reader) {
         if (error) *error = nsString(openError);
         return nil;
@@ -591,7 +609,7 @@ static NSString *const AlphaVideoStoreName = @"alpha-video";
     return NO;
 }
 
-- (std::shared_ptr<avsource::RangeReader>)rangeReader {
+- (std::shared_ptr<webm::SourceReader>)rangeReader {
     return _reader;
 }
 

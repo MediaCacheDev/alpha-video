@@ -438,7 +438,7 @@ Nothing is copied. Android reads `asset://` files and `res/raw` resources direct
 
 ### Streaming and storage
 
-An http(s) source is read by HTTP range requests as it plays, through the same reader as the web player ([alpha-video-source](https://github.com/MediaCacheDev/alpha-video-source)):
+An http(s) source is read by HTTP range requests as it plays, through the same reader as the web player ([range-source](https://github.com/MediaCacheDev/range-source)):
 
 - In `stream` and `streamAndPreload` mode (and on the Android hardware path in those modes) playback starts with the first frames. Playing from the start is one request, read on as the player needs it; a seek opens another where it lands, after one for the Cues (the seek index, which a WebM file keeps at the end). `preload` fetches the whole file first, since it decodes every frame before showing one.
 - A server without range support works too. The file is then read from the start, and a seek reads it again up to where it lands.

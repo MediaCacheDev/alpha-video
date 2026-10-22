@@ -23,11 +23,8 @@
 #include <list>
 #include <chrono>
 
+#include "RangeSource.h"
 #include "YuvToRgb.h"
-
-namespace avsource {
-class RangeReader;
-}
 
 namespace webm {
 
@@ -229,7 +226,7 @@ public:
     // A URL or an app's data source, read by range: reads wait for bytes being fetched, so the
     // stream modes start with the first frames. Preload decodes the whole clip before the first
     // frame, so it waits for the whole file. The reader may be shared with a probe.
-    bool loadFromReader(std::shared_ptr<avsource::RangeReader> reader);
+    bool loadFromReader(std::shared_ptr<SourceReader> reader);
     void unload();
     
     // Playback control
@@ -337,8 +334,8 @@ private:
     std::condition_variable decodeCV_;
     std::condition_variable_any prefetchCV_;  // Signal prefetch thread
     std::atomic<bool> shouldStop_{false};
-    std::atomic<bool> ioAbort_{false};  // Set by unload() so reads waiting on the network return
-    std::shared_ptr<avsource::RangeReader> reader_;  // For loadFromReader: why a read failed
+    AbortFlag ioAbort_{0};  // Set by unload() so reads waiting on the network return
+    std::shared_ptr<SourceReader> reader_;  // For loadFromReader: why a read failed
     std::atomic<int> prefetchTarget_{-1};  // Target frame for prefetch thread
     std::atomic<int> streamDecodePos_{0};  // Current sequential decode position for streaming
     std::atomic<bool> firstPassComplete_{false};  // For streamAndPreload: all frames cached after first pass

@@ -45,7 +45,8 @@ Pod::Spec.new do |s|
     'react-native/ios/**/*.{h,mm}',
     'cpp/**/*.{h,cpp}',
     'third_party/libwebm/webm_parser/**/*.{h,cc}',
-    'third_party/alpha-video-source/src/*.{h,cpp}'
+    'third_party/range-source/include/*.h',
+    'third_party/range-source/src/*.{h,cpp}'
   ] + codecs.flat_map { |codec| ["codecs/#{codec}/*.{h,cpp}", "ios/Sources/#{codec_targets[codec]}/**/*.{h,mm}"] }
   s.exclude_files = [
     'cpp/*_jni.cpp'
@@ -61,7 +62,7 @@ Pod::Spec.new do |s|
   
   header_paths = ['prebuilt/include', 'ios/Sources/AlphaVideo/include', 'cpp'] +
                  codecs.map { |codec| "codecs/#{codec}" } +
-                 ['third_party/alpha-video-source/src', 'third_party/libwebm/webm_parser', 'third_party/libwebm/webm_parser/include']
+                 ['third_party/range-source/include', 'third_party/range-source/src', 'third_party/libwebm/webm_parser', 'third_party/libwebm/webm_parser/include']
   s.pod_target_xcconfig = {
     'CLANG_CXX_LANGUAGE_STANDARD' => 'c++17',
     'CLANG_CXX_LIBRARY' => 'libc++',

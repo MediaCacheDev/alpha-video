@@ -9,7 +9,6 @@
 #include "WebMAlphaPlayer.h"
 #include "AlphaDemuxer.h"
 #include "ByteSource.h"
-#include "RangeReader.h"
 #include "VideoDecoder.h"
 
 #include <chrono>
@@ -502,7 +501,7 @@ bool WebMAlphaPlayer::loadFromFileRange(int fd, int64_t offset, int64_t length) 
     return finishLoad(std::move(source));
 }
 
-bool WebMAlphaPlayer::loadFromReader(std::shared_ptr<avsource::RangeReader> reader) {
+bool WebMAlphaPlayer::loadFromReader(std::shared_ptr<SourceReader> reader) {
     unload();
     
     shouldStop_ = false;

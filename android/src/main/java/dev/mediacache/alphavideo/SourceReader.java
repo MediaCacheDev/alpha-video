@@ -8,8 +8,10 @@ import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 
 /**
- * A native range reader over an {@link AlphaVideoDataSource}: blocks in memory and in an optional
- * store, fetched on the reader's own thread. The probe and the player of one source share it.
+ * A native reader over an {@link AlphaVideoDataSource}, fetching on its own thread. With the
+ * range-source add-on ({@link RangeSourceLink}), it reads by range, through blocks in memory and an
+ * optional store. Without it, the basic input: the file is downloaded whole into a temporary file,
+ * and read as it arrives. The probe and the player of one source share it.
  *
  * Native calls take their own reference with {@link #retain} and drop it with {@link #release},
  * so that {@link #close} on the main thread never frees a reader under a read.
@@ -34,14 +36,16 @@ final class SourceReader {
      * Opens the source at 0 to learn its size and version, unless the store holds it whole. Blocks
      * on the network.
      *
-     * @param storeDir the folder of the disk store, or the name of the memory one
-     * @param key what the store calls this file
+     * @param storeDir the folder of the disk store, or the name of the memory one; with the add-on
+     * @param key what the store calls this file; with the add-on
+     * @param downloadDir where the basic input downloads to, without the add-on
      */
     static SourceReader open(AlphaVideoDataSource source, Uri uri, Map<String, String> headers,
-                             Storage storage, String storeDir, String key, long maxStorageBytes) throws IOException {
+                             Storage storage, String storeDir, String key, long maxStorageBytes,
+                             String downloadDir) throws IOException {
         String[] error = new String[1];
-        long handle = nativeOpen(new Upstream(source, uri, headers), storage.ordinal(), storeDir, key,
-            maxStorageBytes, error);
+        long handle = nativeOpen(RangeSourceLink.plugin(), new Upstream(source, uri, headers), storage.ordinal(),
+            storeDir, key, maxStorageBytes, downloadDir, error);
         if (handle == 0) throw new IOException(error[0] != null ? error[0] : "Cannot open " + uri);
         return new SourceReader(handle);
     }
@@ -156,12 +160,13 @@ final class SourceReader {
     }
 
     /**
+     * @param plugin the add-on's table, or 0 for the basic input
      * @param storage a {@link Storage} ordinal
      * @param error set to why, when it returns 0
      * @return a reference to the reader, or 0
      */
-    private static native long nativeOpen(Upstream upstream, int storage, String storeDir, String key,
-                                          long maxStorageBytes, String[] error);
+    private static native long nativeOpen(long plugin, Upstream upstream, int storage, String storeDir, String key,
+                                          long maxStorageBytes, String downloadDir, String[] error);
     private static native long nativeRetain(long reference);
     private static native void nativeRelease(long reference);
     /** Null once the whole file is held, else why not. */

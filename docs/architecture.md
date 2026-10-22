@@ -49,7 +49,8 @@ React (JS) AlphaVideoView props
 ### Android (Java)
 
 - **`AlphaVideoViewManager`** — Creates `AlphaVideoView` and handles prop dispatch; `source.headers` and `source.dataSource` are set before the source.
-- **`SourceReader`** — Opens a C++ `avsource::RangeReader` (from alpha-video-source, vendored in `third_party/alpha-video-source`) over an `AlphaVideoDataSource` through a JNI `Upstream`, with the disk store (`cacheDir/alpha-video`), the memory store or none. The view and each player hold their own reference to it, so a new source doesn't close a reader a player is still reading.
+- **`SourceReader`** — Opens a C++ reader over an `AlphaVideoDataSource` through a JNI `Upstream`. With range-source (`RangeSourceLink.plugin()`, its C table), a `RangeReader` with the disk store (`cacheDir/alpha-video`), the memory store or none. Without it, a `DownloadReader`: the URL downloaded whole into a temporary file in `cacheDir`, read as it grows. The view and each player hold their own reference to it, so a new source doesn't close a reader a player is still reading.
+- **`RangeSourceLink`** — Finds range-source's C table (`RangeSourcePlugin`), checked for its ABI and size. Without it a data source fails with `NO_SOURCE_MODULE`, and `storage`, `maxStorageBytes` and `cacheKey` are ignored with one warning in the log.
 - **`AlphaVideoHttpDataSource`** — The built-in fetcher: `HttpURLConnection` with `Range: bytes=N-`, the source's headers, redirects, and 200 (skipped to the position) and 416 answers. `AlphaVideoDataSources` holds the app's data sources by name; `alpha-video-media3` adapts a Media3 `DataSource.Factory`.
 - **`AlphaVideoView`** — TextureView subclass, owns the EGL context and GL render thread. Routes to software or hardware path based on stream detection. Handles view lifecycle (attach/detach/z-index reorder) with deferred source reloading.
 - **`BufferedDualStreamPlayer`** — Hardware decode orchestrator. Manages the demux loop, codec thread, playback loop, and delegates rendering to the GL thread. Handles loop transitions (flush + seek).
@@ -60,7 +61,7 @@ React (JS) AlphaVideoView props
 ### iOS (Objective-C++)
 
 - **`RNAlphaVideoViewManager`** — Creates `RNAlphaVideoView`, an `AlphaVideoView` (the standalone iOS view, which holds `AlphaVideoMetalView`) that turns its delegate calls into `onLoad`, `onError` and `onEnd`.
-- **`AlphaVideoSourceReader`** (`AlphaVideoSource.mm`) — Opens a `RangeReader` with the disk store (`Caches/alpha-video`), the memory store or none, over a `URLSessionUpstream` (an open-ended `Range` request per read, suspended while 1 MB is waiting and resumed under 256 KB) or a `DataSourceUpstream`, which asks the app's `AlphaVideoDataSource` for 4 MB windows. The view opens it off the main thread.
+- **`AlphaVideoSourceReader`** (`AlphaVideoSource.mm`) — Opens a `RangeReader` with the disk store (`Caches/alpha-video`), the memory store or none, over a `URLSessionUpstream` (an open-ended `Range` request per read, suspended while 1 MB is waiting and resumed under 256 KB) or a `DataSourceUpstream`, which asks the app's `AlphaVideoDataSource` for 4 MB windows. Without range-source (`AlphaVideoRangeSourcePlugin()` returns nil) a URL is a `DownloadReader` into `NSTemporaryDirectory()`, and a data source fails with `AlphaVideoErrorNoSourceModule`. The view opens it off the main thread.
 - Exposes play/pause/stop/seek via `RCT_EXPORT_METHOD`. Delegate callbacks bridge events to JS.
 
 ### C++ Core (cross-platform, software path)
@@ -76,7 +77,8 @@ React (JS) AlphaVideoView props
   - `FrameCache` (LRU, mutex-protected) for decoded frames
   - Playback loop clocking frames at target FPS
   - `PlayerConfig`: cache size, `preloadAllFrames`, playback speed
-- **`avsource::RangeReader`** (`third_party/alpha-video-source/src`) — Reads a file by offset from an `Upstream`, in 256 KB blocks kept in memory (16 MB, LRU) and in the store. One fetch thread keeps one read open and moves it only for a read far from it, reads 2 MB ahead of the last read, retries a failed read 3 times, and drops a stored copy whose size or validator changed. A file the store holds whole is read without opening the upstream.
+- **`webm::SourceReader`** (`cpp/RangeSource.h`) — What `loadFromReader` reads: range-source's client `Reader`, in the namespace `webm_rs`. `DownloadReader` (`range_source_download.h`, header-only) is the basic input: one request at 0, reopened where it stopped if the connection drops, into an unlinked temporary file; a read waits for its bytes. `RangeReader` calls range-source through its C table (`range_source.h`, versioned by `RANGE_SOURCE_ABI`).
+- **range-source's reader** (`third_party/range-source/src`) — Reads a file by offset from an `Upstream`, in 256 KB blocks kept in memory (16 MB, LRU) and in the store. One fetch thread keeps one read open and moves it only for a read far from it, reads 2 MB ahead of the last read, retries a failed read 3 times, and drops a stored copy whose size or validator changed. A file the store holds whole is read without opening the upstream.
 
 ## Threading Model
 

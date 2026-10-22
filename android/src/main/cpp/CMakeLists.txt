@@ -12,8 +12,9 @@ get_filename_component(MODULE_ROOT "${CMAKE_CURRENT_SOURCE_DIR}/../../../.." ABS
 set(WEBM_PARSER "${MODULE_ROOT}/third_party/libwebm/webm_parser")
 file(GLOB WEBM_PARSER_SOURCES "${WEBM_PARSER}/src/*.cc")
 
-# Range reading and storage, vendored from alpha-video-source (scripts/vendor_alpha_video_source.sh)
-set(SOURCE_READER "${MODULE_ROOT}/third_party/alpha-video-source/src")
+# range-source, vendored by scripts/vendor_range_source.sh: its C interface and the basic input
+# (include/), and the add-on's reader and stores (src/), compiled in until the add-on is its own package
+set(RANGE_SOURCE "${MODULE_ROOT}/third_party/range-source")
 
 # Source files. The software decoders are codec modules (android/vpx, android/av1), each its own
 # library, which register with the core at run time (AlphaVideoCodecs.java).
@@ -21,8 +22,9 @@ set(NATIVE_SOURCES
     ${MODULE_ROOT}/cpp/AlphaDemuxer.cpp
     ${MODULE_ROOT}/cpp/Av1SequenceHeader.cpp
     ${MODULE_ROOT}/cpp/ByteSource.cpp
-    ${SOURCE_READER}/RangeReader.cpp
-    ${SOURCE_READER}/Store.cpp
+    ${RANGE_SOURCE}/src/RangeReader.cpp
+    ${RANGE_SOURCE}/src/Store.cpp
+    ${RANGE_SOURCE}/src/range_source.cpp
     ${MODULE_ROOT}/cpp/VideoDecoder.cpp
     ${MODULE_ROOT}/cpp/WebMAlphaPlayer.cpp
     ${MODULE_ROOT}/cpp/WebMAlphaPlayer_jni.cpp
@@ -35,7 +37,8 @@ add_library(alphavideo SHARED ${NATIVE_SOURCES})
 
 target_include_directories(alphavideo PRIVATE
     ${MODULE_ROOT}/cpp
-    ${SOURCE_READER}
+    ${RANGE_SOURCE}/include
+    ${RANGE_SOURCE}/src
     ${WEBM_PARSER}
     ${WEBM_PARSER}/include
 )

@@ -21,7 +21,7 @@ find_package(Threads REQUIRED)
 set(ROOT ${CMAKE_CURRENT_SOURCE_DIR}/../..)
 set(CORE ${ROOT}/cpp)
 set(WEBM_PARSER ${ROOT}/third_party/libwebm/webm_parser)
-set(SOURCE_READER ${ROOT}/third_party/alpha-video-source/src)
+set(RANGE_SOURCE ${ROOT}/third_party/range-source)
 file(GLOB WEBM_PARSER_SOURCES ${WEBM_PARSER}/src/*.cc)
 
 add_library(webm_parser STATIC ${WEBM_PARSER_SOURCES})
@@ -34,10 +34,11 @@ add_library(alpha_video_core STATIC
   ${CORE}/VideoDecoder.cpp
   ${CORE}/YuvToRgb.cpp
   ${CORE}/ByteSource.cpp
-  ${SOURCE_READER}/RangeReader.cpp
-  ${SOURCE_READER}/Store.cpp
+  ${RANGE_SOURCE}/src/RangeReader.cpp
+  ${RANGE_SOURCE}/src/Store.cpp
+  ${RANGE_SOURCE}/src/range_source.cpp
 )
-target_include_directories(alpha_video_core PUBLIC ${CORE} ${SOURCE_READER})
+target_include_directories(alpha_video_core PUBLIC ${CORE} ${RANGE_SOURCE}/include ${RANGE_SOURCE}/src)
 target_compile_options(alpha_video_core PRIVATE -Wall)
 target_link_libraries(alpha_video_core PUBLIC webm_parser Threads::Threads)
 
@@ -69,8 +70,8 @@ if(FFMPEG_FOUND)
 
   add_executable(demuxer_compare demuxer_compare.cpp
     ${CORE}/AlphaDemuxer.cpp ${CORE}/Av1SequenceHeader.cpp ${CORE}/YuvToRgb.cpp ${CORE}/ByteSource.cpp
-    ${SOURCE_READER}/RangeReader.cpp ${SOURCE_READER}/Store.cpp)
-  target_include_directories(demuxer_compare PRIVATE ${CORE} ${SOURCE_READER})
+    ${RANGE_SOURCE}/src/RangeReader.cpp ${RANGE_SOURCE}/src/Store.cpp ${RANGE_SOURCE}/src/range_source.cpp)
+  target_include_directories(demuxer_compare PRIVATE ${CORE} ${RANGE_SOURCE}/include ${RANGE_SOURCE}/src)
   target_compile_options(demuxer_compare PRIVATE -Wall)
   target_link_libraries(demuxer_compare PRIVATE ffmpeg_demuxer webm_parser Threads::Threads)
 endif()
