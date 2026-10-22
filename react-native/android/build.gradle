@@ -36,6 +36,12 @@ def readCodecs() {
 def codecs = readCodecs()
 logger.lifecycle("react-native-alpha-video: codecs ${codecs.isEmpty() ? 'none (MediaCodec only)' : codecs.join(', ')}")
 
+// range-source, the add-on the player reads URLs and data sources through, is the app's own
+// dependency, react-native-range-source, which autolinking adds; the player finds it at run time
+// (RangeSourceLink) and plays URLs without it.
+def rangeSourceProject = rootProject.findProject(':react-native-range-source')
+logger.lifecycle("react-native-alpha-video: range-source ${rangeSourceProject ? 'from react-native-range-source' : 'not installed (URLs are downloaded whole; npm i react-native-range-source for range streaming and storage)'}")
+
 if (isNewArchitectureEnabled()) {
     // The codegen tasks look for package.json and the specs next to this folder; both are two
     // levels up, in the package root.
@@ -89,24 +95,10 @@ android {
                 'src/main/java',
                 "${coreDir}/src/main/java",
                 isNewArchitectureEnabled() ? 'src/newarch/java' : 'src/oldarch/java',
+                // AppDataSource, against range-source's classes, or a stub without them
+                rangeSourceProject ? "${coreDir}/src/rangesource/java" : 'src/norangesource/java',
             ] + codecs.collect { "${coreDir}/${it}/src/main/java" }
         }
-    }
-}
-
-// range-source, the add-on the player reads URLs and data sources through, is the app's own
-// dependency, react-native-range-source, which autolinking adds; the player finds it at run time
-// (RangeSourceLink) and plays URLs without it. Its classes are only needed to compile: from that
-// package when it's installed, else from its Maven artifact.
-def rangeSourceProject = rootProject.findProject(':react-native-range-source')
-logger.lifecycle("react-native-alpha-video: range-source ${rangeSourceProject ? 'from react-native-range-source' : 'not installed (URLs are downloaded whole; npm i react-native-range-source for range streaming and storage)'}")
-
-repositories {
-    google()
-    mavenCentral()
-    // range-source from scripts/publish-android.sh local in its repository, before it's on Maven Central
-    mavenLocal {
-        content { includeModule 'dev.mediacache', 'range-source' }
     }
 }
 
@@ -114,7 +106,5 @@ dependencies {
     implementation 'com.facebook.react:react-android'
     if (rangeSourceProject) {
         compileOnly rangeSourceProject
-    } else {
-        compileOnly 'dev.mediacache:range-source:1.0.0'
     }
 }
