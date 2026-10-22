@@ -9,7 +9,7 @@
 #   AlphaVideoDav1d.xcframework.zip       build_xcframework.sh
 #   alpha-video-<version>-ios.zip         the CocoaPods source (alpha-video.podspec): the iOS sources,
 #                                         the codec modules, libwebm's parser, range-source's
-#                                         reader and both xcframeworks
+#                                         headers and both xcframeworks
 #   SHA256SUMS
 #
 # Uploads nothing. Afterwards, fetch-prebuilt.sh's SHA256 must be the prebuilt archive's,

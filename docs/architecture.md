@@ -27,12 +27,12 @@ React (JS) AlphaVideoView props
    │  source {uri, headers?, dataSource?}, cacheKey?, storage, maxStorageBytes, autoPlay, loop, paused, mode, decoder, verbose
    │
    ├─ Android: AlphaVideoViewManager → AlphaVideoView (TextureView)
-   │      ├─ http(s) or dataSource → SourceReader (RangeReader over AlphaVideoHttpDataSource or the app's AlphaVideoDataSource, store) → load from the reader
+   │      ├─ http(s) or dataSource → SourceReader (range-source's RangeReader over HttpFetcher or the app's RangeDataSource, store; without it a download) → load from the reader
    │      ├─ if colour + alpha VP8/VP9/AV1 streams + MediaCodecDecoders reserves 2 decoders → BufferedDualStreamPlayer (MediaCodec)
    │      └─ otherwise (decoder auto or software)                                    → WebMAlphaPlayer (C++)
    │
    ├─ iOS: RNAlphaVideoViewManager → RNAlphaVideoView (an AlphaVideoView) → AlphaVideoMetalView
-   │      └─ http(s) or dataSource → AlphaVideoSourceReader (RangeReader over URLSession or the app's AlphaVideoDataSource, store) → loadFromReader → WebMAlphaPlayer (C++)
+   │      └─ http(s) or dataSource → AlphaVideoSourceReader (range-source's RangeReader over URLSession or the app's RangeDataSource, store; without it a download) → loadFromReader → WebMAlphaPlayer (C++)
    │
    └─ Web: WebPlayer.web.tsx → alpha-video-web: <video> where the browser keeps the alpha,
           otherwise the C++ demuxer in WASM → WebCodecs, or WASM decoders in Workers → WebGL2
@@ -49,9 +49,10 @@ React (JS) AlphaVideoView props
 ### Android (Java)
 
 - **`AlphaVideoViewManager`** — Creates `AlphaVideoView` and handles prop dispatch; `source.headers` and `source.dataSource` are set before the source.
-- **`SourceReader`** — Opens a C++ reader over an `AlphaVideoDataSource` through a JNI `Upstream`. With range-source (`RangeSourceLink.plugin()`, its C table), a `RangeReader` with the disk store (`cacheDir/alpha-video`), the memory store or none. Without it, a `DownloadReader`: the URL downloaded whole into a temporary file in `cacheDir`, read as it grows. The view and each player hold their own reference to it, so a new source doesn't close a reader a player is still reading.
-- **`RangeSourceLink`** — Finds range-source's C table (`RangeSourcePlugin`), checked for its ABI and size. Without it a data source fails with `NO_SOURCE_MODULE`, and `storage`, `maxStorageBytes` and `cacheKey` are ignored with one warning in the log.
-- **`AlphaVideoHttpDataSource`** — The built-in fetcher: `HttpURLConnection` with `Range: bytes=N-`, the source's headers, redirects, and 200 (skipped to the position) and 416 answers. `AlphaVideoDataSources` holds the app's data sources by name; `alpha-video-media3` adapts a Media3 `DataSource.Factory`.
+- **`SourceReader`** — Opens a C++ reader over a `Fetcher` (`HttpFetcher`, or `AppDataSource` for an app's data source) through a JNI `Upstream`. With range-source (`RangeSourceLink.plugin()`, its C table), a `RangeReader` with the disk store (`cacheDir/alpha-video`), the memory store or none. Without it, a `DownloadReader`: the URL downloaded whole into a temporary file in `cacheDir`, read as it grows. The view and each player hold their own reference to it, so a new source doesn't close a reader a player is still reading.
+- **`RangeSourceLink`** — Finds the range-source add-on (`dev.mediacache:range-source`, a dependency the app can exclude) by class name, `dev.mediacache.rangesource.RangeSource`, and takes its C table (`RangeSourcePlugin`), checked for its ABI and size. Without it a data source fails with `NO_SOURCE_MODULE`, and a URL plays with one warning in the log.
+- **`HttpFetcher`** — The built-in fetcher, with or without the add-on: `HttpURLConnection` with `Range: bytes=N-`, the source's headers, redirects, and 200 (skipped to the position) and 416 answers.
+- **`AppDataSource`** (`android/src/rangesource`) — An app's data source from range-source's `RangeDataSources`, as a `Fetcher`: the only class that uses the add-on's types, loaded only once `RangeSourceLink` found it. React Native compiles it only with `react-native-range-source` installed, and a stub otherwise. `range-source-media3` adapts a Media3 `DataSource.Factory`.
 - **`AlphaVideoView`** — TextureView subclass, owns the EGL context and GL render thread. Routes to software or hardware path based on stream detection. Handles view lifecycle (attach/detach/z-index reorder) with deferred source reloading.
 - **`BufferedDualStreamPlayer`** — Hardware decode orchestrator. Manages the demux loop, codec thread, playback loop, and delegates rendering to the GL thread. Handles loop transitions (flush + seek).
 - **`MediaCodecDecoders`** — Picks the MediaCodec decoder for each track by kind, profile and free instances, and counts the instances players hold.
@@ -61,7 +62,7 @@ React (JS) AlphaVideoView props
 ### iOS (Objective-C++)
 
 - **`RNAlphaVideoViewManager`** — Creates `RNAlphaVideoView`, an `AlphaVideoView` (the standalone iOS view, which holds `AlphaVideoMetalView`) that turns its delegate calls into `onLoad`, `onError` and `onEnd`.
-- **`AlphaVideoSourceReader`** (`AlphaVideoSource.mm`) — Opens a `RangeReader` with the disk store (`Caches/alpha-video`), the memory store or none, over a `URLSessionUpstream` (an open-ended `Range` request per read, suspended while 1 MB is waiting and resumed under 256 KB) or a `DataSourceUpstream`, which asks the app's `AlphaVideoDataSource` for 4 MB windows. Without range-source (`AlphaVideoRangeSourcePlugin()` returns nil) a URL is a `DownloadReader` into `NSTemporaryDirectory()`, and a data source fails with `AlphaVideoErrorNoSourceModule`. The view opens it off the main thread.
+- **`AlphaVideoSourceReader`** (`AlphaVideoSource.mm`) — Opens a `RangeReader` with the disk store (`Caches/alpha-video`), the memory store or none, over a `URLSessionUpstream` (an open-ended `Range` request per read, suspended while 1 MB is waiting and resumed under 256 KB), or over the upstream the add-on makes for an app's `RangeDataSource` (`+[RangeSource getUpstream:forDataSourceNamed:URL:headers:]`, 4 MB windows). The player finds the add-on by class name, `RangeSource`, through a private protocol, and never links it. Without range-source (`AlphaVideoRangeSourcePlugin()` returns nil) a URL is a `DownloadReader` into `NSTemporaryDirectory()`, and a data source fails with `AlphaVideoErrorNoSourceModule`. The view opens it off the main thread.
 - Exposes play/pause/stop/seek via `RCT_EXPORT_METHOD`. Delegate callbacks bridge events to JS.
 
 ### C++ Core (cross-platform, software path)
@@ -78,7 +79,7 @@ React (JS) AlphaVideoView props
   - Playback loop clocking frames at target FPS
   - `PlayerConfig`: cache size, `preloadAllFrames`, playback speed
 - **`webm::SourceReader`** (`cpp/RangeSourceClient.h`) — What `loadFromReader` reads: range-source's client `Reader`, in the namespace `webm_rs`. `DownloadReader` (`range_source_download.h`, header-only) is the basic input: one request at 0, reopened where it stopped if the connection drops, into an unlinked temporary file; a read waits for its bytes. `RangeReader` calls range-source through its C table (`range_source.h`, versioned by `RANGE_SOURCE_ABI`).
-- **range-source's reader** (`third_party/range-source/src`) — Reads a file by offset from an `Upstream`, in 256 KB blocks kept in memory (16 MB, LRU) and in the store. One fetch thread keeps one read open and moves it only for a read far from it, reads 2 MB ahead of the last read, retries a failed read 3 times, and drops a stored copy whose size or validator changed. A file the store holds whole is read without opening the upstream.
+- **range-source's reader** (the add-on, [range-source](https://github.com/MediaCacheDev/range-source); this repository carries only its headers, `third_party/range-source/include`) — Reads a file by offset from an `Upstream`, in 256 KB blocks kept in memory (16 MB, LRU) and in the store. One fetch thread keeps one read open and moves it only for a read far from it, reads 2 MB ahead of the last read, retries a failed read 3 times, and drops a stored copy whose size or validator changed. A file the store holds whole is read without opening the upstream.
 
 ## Threading Model
 

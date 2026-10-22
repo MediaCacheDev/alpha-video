@@ -8,7 +8,7 @@ The code in this repository is MIT-licensed (see `LICENSE`). The native player (
 | [libvpx](https://chromium.googlesource.com/webm/libvpx) | 1.14.0, unmodified | BSD-3-Clause, plus the WebM patent grant | the vpx codec module (`alpha-video-vpx`, `AlphaVideoVPX`, `alpha-video/VPX`): `libvpx.a` in `prebuilt/` |
 | [dav1d](https://code.videolan.org/videolan/dav1d) | 1.5.1, unmodified | BSD-2-Clause | the av1 codec module (`alpha-video-av1`, `AlphaVideoAV1`, `alpha-video/AV1`): `libdav1d.a` in `prebuilt/` |
 
-The core also compiles in the C++ reader of [range-source](https://github.com/MediaCacheDev/range-source) (`third_party/range-source`), MIT-licensed by the same author, which reads files by range and keeps them between plays.
+The core carries the headers of [range-source](https://github.com/MediaCacheDev/range-source) (`third_party/range-source/include`): its C interface, and the basic input that downloads a URL when the add-on isn't installed. MIT-licensed, by the same author. The add-on itself is a separate package with its own `LICENSE`.
 
 On Android the core and each codec module have their own native library; on iOS they're linked into the app. React Native builds in the codecs the app's `package.json` selects, both by default. Licence texts: `licenses/libwebm-LICENSE.txt`, `licenses/libwebm-PATENTS.txt`, `licenses/libvpx-LICENSE.txt`, `licenses/libvpx-PATENTS.txt`, `licenses/dav1d-COPYING.txt`. An app shipping the player must reproduce the notices of what it ships, for example on an open-source licences screen.
 

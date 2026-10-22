@@ -91,11 +91,13 @@ A file whose codec has no module reports `onError` with the code `NO_DECODER`, a
 
 ### React Native
 
-**npm**, package `react-native-alpha-video`:
+**npm**, package `react-native-alpha-video`, with [range-source](#streaming-and-storage) for URLs:
 
 ```bash
-npm install react-native-alpha-video
+npm install react-native-alpha-video react-native-range-source
 ```
+
+`react-native-range-source` reads URLs by range, keeps them on disk or in memory, and reads [data sources](#data-sources). React Native only links an app's own dependencies, so it's in the install line rather than a dependency of the player. Without it, a URL is downloaded whole for each play ([Without range-source](#without-range-source)). One install serves `react-native-alpha-video-gpu` too.
 
 **iOS:** install the pods. The view builds from the podspec inside the npm package.
 
@@ -170,7 +172,17 @@ dependencies {
 }
 ```
 
-The core alone plays through MediaCodec; each codec module adds a software decoder ([Codecs](#codecs) says when it's needed). Each is its own AAR with its own native library, and registers itself when it's on the classpath, R8 keep rules included. Keep the three at one version. Native code is built for `arm64-v8a`, `armeabi-v7a` and `x86_64`. Android 7.0 (API 24) or later. To read videos through a Media3 `DataSource.Factory`, add `dev.mediacache:alpha-video-media3` too ([Data sources](#data-sources)).
+The core alone plays through MediaCodec; each codec module adds a software decoder ([Codecs](#codecs) says when it's needed). Each is its own AAR with its own native library, and registers itself when it's on the classpath, R8 keep rules included. Keep the three at one version. Native code is built for `arm64-v8a`, `armeabi-v7a` and `x86_64`. Android 7.0 (API 24) or later.
+
+The core brings [range-source](https://github.com/MediaCacheDev/range-source) (`dev.mediacache:range-source`, about 320 KB per architecture), which reads URLs by range and keeps them between plays. To leave it out ([Without range-source](#without-range-source)):
+
+```gradle
+implementation('dev.mediacache:alpha-video:1.0.0') {
+    exclude group: 'dev.mediacache', module: 'range-source'
+}
+```
+
+To read videos through a Media3 `DataSource.Factory`, add `dev.mediacache:range-source-media3` ([Data sources](#data-sources)).
 
 `dev.mediacache.alphavideo.AlphaVideoView` is a `TextureView`. It takes the same sources and options as the React Native component, through setters:
 
@@ -210,8 +222,8 @@ Control playback with `play()`, `pause()`, `stop()`, `seekToFrame(frame)` and `s
 
 ```ruby
 pod 'alpha-video', '1.0.0'
-# or one codec:
-pod 'alpha-video/VPX', '1.0.0'
+# or one codec, with range-source:
+pod 'alpha-video', '1.0.0', :subspecs => ['VPX', 'Source']
 ```
 
 **Swift Package Manager**, package `alpha-video`, a product per codec, each with the core:
@@ -223,7 +235,11 @@ pod 'alpha-video/VPX', '1.0.0'
 .product(name: "AlphaVideoAV1", package: "alpha-video"),
 ```
 
-The module is `AlphaVideo` either way. libvpx and dav1d come prebuilt, each with its codec. `AlphaVideoView` is a `UIView`:
+The module is `AlphaVideo` either way. libvpx and dav1d come prebuilt, each with its codec.
+
+Both bring [range-source](https://github.com/MediaCacheDev/range-source), which reads URLs by range and keeps them between plays: the pod's `Source` subspec, and the package's default trait, `Source` (Swift 6.1, Xcode 16.3 or later). To leave it out ([Without range-source](#without-range-source)), name the pod's subspecs without it, `:subspecs => ['VPX', 'AV1']`. From a package, depend on the player with `traits: []`. An Xcode app project can't choose a package's traits, so an app that adds the package in Xcode always has range-source.
+
+`AlphaVideoView` is a `UIView`:
 
 ```swift
 import AlphaVideo
@@ -427,7 +443,7 @@ console.log(info);
 
 ## Supported Source Types
 
-- **HTTP/HTTPS URLs**: `{ uri: 'https://example.com/video.webm', headers: { Authorization: '…' } }`. Read by range requests as it plays, by the platform's HTTP stack (`HttpURLConnection` on Android, `URLSession` on iOS), and kept on disk between plays. See [Streaming and storage](#streaming-and-storage).
+- **HTTP/HTTPS URLs**: `{ uri: 'https://example.com/video.webm', headers: { Authorization: '…' } }`. Read by range requests as it plays, by the platform's HTTP stack (`HttpURLConnection` on Android, `URLSession` on iOS), and kept on disk between plays. See [Streaming and storage](#streaming-and-storage); without range-source, downloaded whole.
 - **Anything a data source reads**: `{ uri, dataSource: 'name' }`, for an app that fetches, caches or decrypts the bytes itself. See [Data sources](#data-sources).
 - **Local files**: `{ uri: 'file:///path/to/video.webm' }` or an absolute path.
 - **Bundled files**: `{ uri: 'asset://videos/glow.webm' }`. On Android this is `android/app/src/main/assets/videos/glow.webm`. On iOS it is `videos/glow.webm` inside the app bundle. On web it is `/videos/glow.webm` from the site root.
@@ -438,7 +454,7 @@ Nothing is copied. Android reads `asset://` files and `res/raw` resources direct
 
 ### Streaming and storage
 
-An http(s) source is read by HTTP range requests as it plays, through the same reader as the web player ([range-source](https://github.com/MediaCacheDev/range-source)):
+An http(s) source is read by HTTP range requests as it plays, through [range-source](https://github.com/MediaCacheDev/range-source), whose web package the web player uses too. It's included on Android and iOS, and in React Native it's `react-native-range-source` ([Installation](#installation)):
 
 - In `stream` and `streamAndPreload` mode (and on the Android hardware path in those modes) playback starts with the first frames. Playing from the start is one request, read on as the player needs it; a seek opens another where it lands, after one for the Cues (the seek index, which a WebM file keeps at the end). `preload` fetches the whole file first, since it decodes every frame before showing one.
 - A server without range support works too. The file is then read from the start, and a seek reads it again up to where it lands.
@@ -458,6 +474,16 @@ Storage is partial: it keeps the ranges played so far, and a clip held whole pla
 
 Local files, bundled files and `content://` URIs are read in place and never stored.
 
+### Without range-source
+
+An app that leaves range-source out (to have no network or disk code of ours, or with its own caching) still plays local files, bundled files and `content://` URIs as before. A URL is downloaded whole, with one request from the start, into a temporary file, and plays as it arrives:
+- a seek past what has arrived waits for it;
+- loops and seeks back read the file;
+- nothing is kept between plays, so a replay downloads it again;
+- `headers` are sent.
+
+`storage`, `maxStorageBytes` and `cacheKey` have no effect, and the player logs once that range-source isn't installed. A data source reports `onError` with the code `NO_SOURCE_MODULE` (`AlphaVideoView.ERROR_NO_SOURCE_MODULE` on Android, `AlphaVideoErrorNoSourceModule` on iOS), with a message naming the add-on.
+
 ### Data sources
 
 An app that fetches, caches or decrypts video bytes itself registers a data source under a name, and names it in `source`. The player asks it for byte ranges as it plays and passes `uri` and `headers` through, so the URI can be anything the data source understands:
@@ -468,38 +494,44 @@ An app that fetches, caches or decrypts video bytes itself registers a data sour
 
 A data source's bytes aren't stored by default, since it usually caches them itself; `storage="disk"` or `"memory"` stores them too. On the native views, set `setDataSource("name")` (Android) or `dataSource = "name"` (iOS) before the source, with `setHeaders` or `headers`.
 
-**Android:** implement `dev.mediacache.alphavideo.AlphaVideoDataSource`. `open(uri, position, headers)` starts a read at `position` and returns the file's size and version (`new Info(size, etag, lastModified)`); `read` and `close` follow, and `cancel` (optional) stops a read blocked on the network from another thread. Register a factory, which makes one per player:
+Data sources are range-source's, so they need it ([Without range-source](#without-range-source)), and one registered once serves this player and `alpha-video-gpu`:
+
+**Android:** implement `dev.mediacache.rangesource.RangeDataSource`. `open(uri, position, headers)` starts a read at `position` and returns the file's size and version (`new Info(size, etag, lastModified)`); `read` and `close` follow, and `cancel` (optional) stops a read blocked on the network from another thread. Register a factory, which makes one per player:
 
 ```kotlin
-AlphaVideoDataSources.register("mine") { MyDataSource() }
+RangeDataSources.register("mine") { MyDataSource() }
 ```
 
-To read through a Media3 `DataSource.Factory` (OkHttp, Cronet, a `CacheDataSource`), add the adapter, which uses the app's own `androidx.media3:media3-datasource` (compiled against 1.8.0):
+To read through a Media3 `DataSource.Factory` (OkHttp, Cronet, a `CacheDataSource`), add range-source's adapter, which uses the app's own `androidx.media3:media3-datasource` (compiled against 1.8.0):
 
 ```gradle
-implementation 'dev.mediacache:alpha-video-media3:1.0.0'
+implementation 'dev.mediacache:range-source-media3:1.0.0'
 ```
 
 ```kotlin
-AlphaVideoDataSources.register("media3", Media3AlphaVideoDataSource.factory(dataSourceFactory))
+RangeDataSources.register("media3", Media3RangeDataSource.factory(dataSourceFactory))
 ```
 
-The built-in fetcher is public too, to register with other timeouts or a user agent: `AlphaVideoHttpDataSource.Factory().setConnectTimeoutMs(…).setReadTimeoutMs(…).setUserAgent(…)`.
+The built-in fetcher is public too, to register with other timeouts or a user agent: `RangeHttpDataSource.Factory().setConnectTimeoutMs(…).setReadTimeoutMs(…).setUserAgent(…)`.
 
-**iOS:** conform to `AlphaVideoDataSource`, the role of `AVAssetResourceLoaderDelegate` without the AVFoundation types. Each call reads a window of a few megabytes: call `response` once with the file's size and version, then `data` with the bytes in order, then `completion`. One instance serves every player, so a read mustn't depend on the one before:
+**iOS:** conform to `RangeDataSource`, the role of `AVAssetResourceLoaderDelegate` without the AVFoundation types. Each call reads a window of a few megabytes: call `response` once with the file's size and version, then `data` with the bytes in order, then `completion`. One instance serves every player, so a read mustn't depend on the one before:
 
 ```swift
-final class MyDataSource: NSObject, AlphaVideoDataSource {
+import RangeSource
+
+final class MyDataSource: NSObject, RangeDataSource {
     func read(url: URL, offset: Int64, length: Int64, headers: [String: String],
-              response: @escaping (AlphaVideoDataInfo) -> Void,
+              response: @escaping (RangeDataInfo) -> Void,
               data: @escaping (Data) -> Void,
-              completion: @escaping (Error?) -> Void) -> AlphaVideoCancellable {
-        // response(AlphaVideoDataInfo(size: total, etag: etag, lastModified: nil)), data(…), completion(nil)
+              completion: @escaping (Error?) -> Void) -> RangeCancellable {
+        // response(RangeDataInfo(size: total, etag: etag, lastModified: nil)), data(…), completion(nil)
     }
 }
 
-AlphaVideoDataSources.register(MyDataSource(), name: "mine")
+RangeDataSources.register(MyDataSource(), name: "mine")
 ```
+
+**React Native:** register in native code, as above, in `MainApplication` (Android) and `AppDelegate` (iOS, `import RangeSource`).
 
 ### Web
 
@@ -747,14 +779,14 @@ scripts/fetch-prebuilt.sh             # prebuilt/ from the GitHub Release, check
 
 ```bash
 scripts/build_xcframework.sh          # prebuilt/AlphaVideoLibvpx.xcframework and AlphaVideoDav1d.xcframework (.zip) for Package.swift
-scripts/publish-android.sh local      # dev.mediacache:alpha-video, -vpx, -av1 and -media3 into ~/.m2
+scripts/publish-android.sh local      # dev.mediacache:alpha-video, -vpx and -av1 into ~/.m2
 scripts/publish-android.sh central    # signed, to the Maven Central Portal
 scripts/package_release.sh            # the GitHub Release assets, in dist/release-v<version>/
 ```
 
 `Package.swift` uses the xcframeworks in `prebuilt/` when they exist, and the release zips otherwise. Their checksums must match the zips attached to the GitHub Release, so rebuilding an xcframework means updating its checksum. The same goes for the prebuilt archive and `fetch-prebuilt.sh`, although packaging the same libraries again gives the same archive. `package_release.sh` stops or warns when a checksum is out of date. `publish-android.sh` lists the environment variables it needs for Central.
 
-A release carries the prebuilt archive, `AlphaVideoLibvpx.xcframework.zip`, `AlphaVideoDav1d.xcframework.zip` and the CocoaPods zip (`alpha-video-<version>-ios.zip`, the source of `alpha-video.podspec`, whose `:sha256` must match it). `pod trunk push alpha-video.podspec` once the release is public.
+A release carries the prebuilt archive, `AlphaVideoLibvpx.xcframework.zip`, `AlphaVideoDav1d.xcframework.zip` and the CocoaPods zip (`alpha-video-<version>-ios.zip`, the source of `alpha-video.podspec`, whose `:sha256` must match it). `pod trunk push alpha-video.podspec` once the release is public. [range-source](https://github.com/MediaCacheDev/range-source) is released first on every channel, since the player depends on it (the `range-source` pod before this one).
 
 ### Repository layout
 
@@ -776,20 +808,21 @@ The fixtures in `tests/fixtures/` are test cards from the tester app: every fram
 |---|---|---|
 | Host (macOS) | `npm run test:core` | `core_tests`: the C++ core on every fixture (demuxing, keyframes, seeks, colour from the bitstream and the container, every frame decoded through the codec modules). `codec_registry_tests`: the modules registered one at a time, as an app installs them, and `NO_DECODER` naming the missing module |
 | Host, with FFmpeg | `tests/core/build/demuxer_compare tests/fixtures/*/*.webm` | The core's libwebm demuxer against an FFmpeg one: the same info, packets and seeks. Built by `test:core` when FFmpeg 6.1+ is installed |
-| iOS simulator | see below | The iOS library with each codec module linked alone: it finds the module by itself, plays its codecs, and reports `NO_DECODER` for the other's |
+| iOS simulator | see below | The iOS library with each codec module linked alone: it finds the module by itself, plays its codecs, and reports `NO_DECODER` for the other's. With range-source, a data source registered with it; without it (`tests/ios/WithoutRangeSource`), a file plays and a data source reports `NO_SOURCE_MODULE` |
 | Web, under Node | `cd web && npm test` | The WebAssembly demuxer on every fixture, also fed one block per fetch (packets, seeks, interruption, a failing source); sniffing; the YUV-to-RGB matrices |
 | Web, in browsers | `cd web && npm run test:browsers` | Chromium, Firefox and WebKit through Playwright: every engine (`<video>`, WebCodecs, software) on every fixture, frame codes after seeks, alpha and colour, then playback through a loop. `-- --isolated` repeats it cross-origin isolated (threaded software decoders); `-- chromium` picks browsers |
 | Web, streaming | `cd web && npm run test:streaming` | Range requests and a seek near the end, a server without range support, replay from storage with no requests |
 | Android and iOS devices | the tester app's `test:pixels` and `test:streaming` | Every Android decoder (MediaCodec hardware and software, the C++ core) and the iOS core on every card, pixel by pixel, and streaming; see below |
 
-The host tests need CMake, Ninja, pkg-config, libvpx and dav1d (`brew install cmake ninja pkg-config libvpx dav1d`; add `ffmpeg` for `demuxer_compare`). The web tests need `npm install` and `npm run build` in `web/` first, and Playwright's browsers (`npx playwright install chromium firefox webkit`); `test:streaming` makes its clip with ffmpeg.
+The host tests need CMake, Ninja, pkg-config, libvpx and dav1d (`brew install cmake ninja pkg-config libvpx dav1d`; add `ffmpeg` for `demuxer_compare`), and a [range-source](https://github.com/MediaCacheDev/range-source) checkout beside this repository (or `-DRANGE_SOURCE_DIR=`), whose reader they link as an app does. The web tests need `npm install` and `npm run build` in `web/` first, and Playwright's browsers (`npx playwright install chromium firefox webkit`); `test:streaming` makes its clip with ffmpeg.
 
-The iOS tests are two Swift Package test targets, `VPXOnlyTests` and `AV1OnlyTests`. Each links one codec module alone, so they run one at a time. They need the codec xcframeworks: with `prebuilt/` in place (see [Codec Build](#codec-build)), `scripts/build_xcframework.sh` makes them there, where `Package.swift` looks first.
+The iOS tests are Swift Package test targets: `VPXOnlyTests` and `AV1OnlyTests` each link one codec module alone, so they run one at a time, and `SourceTests` links range-source. `tests/ios/WithoutRangeSource` is a package that depends on this one with `traits: []`, as an app leaving range-source out does. They need the codec xcframeworks: with `prebuilt/` in place (see [Codec Build](#codec-build)), `scripts/build_xcframework.sh` makes them there, where `Package.swift` looks first. `RANGE_SOURCE_PATH` points them at a range-source checkout instead of its release.
 
 ```bash
-for t in VPXOnlyTests AV1OnlyTests; do
+for t in VPXOnlyTests AV1OnlyTests SourceTests; do
   xcodebuild test -scheme AlphaVideo-Package -destination 'platform=iOS Simulator,name=iPhone 16 Pro' -only-testing:$t
 done
+(cd tests/ios/WithoutRangeSource && xcodebuild test -scheme WithoutRangeSource-Package -destination 'platform=iOS Simulator,name=iPhone 16 Pro')
 ```
 
 Android has no tests of its own here: its paths need a device, so the tester app covers them. In [alpha-video-test](https://github.com/MediaCacheDev/alpha-video-test#tests), with this repo's tarball installed and a Release build on an emulator, phone or simulator:
@@ -802,12 +835,15 @@ npm run test:pixels -- --platform android --player cpp --playback             # 
 npm run test:streaming -- --platform android --player cpp  # range requests, storage, headers, Media3 data source
 ```
 
+The tester app installs `react-native-range-source`. Without it (`npm uninstall react-native-range-source`, then rebuild), `test:streaming` checks the basic input instead: one download per play, and `NO_SOURCE_MODULE` for a data source.
+
 `npm pack` here (and in `web/`) makes the tarballs the tester app installs; rebuild its app after installing them. Everything, in order:
 
 ```bash
 npm run test:core
 (cd web && npm run build && npm test && npm run test:browsers && npm run test:browsers -- --isolated && npm run test:streaming)
-for t in VPXOnlyTests AV1OnlyTests; do xcodebuild test -scheme AlphaVideo-Package -destination 'platform=iOS Simulator,name=iPhone 16 Pro' -only-testing:$t; done
+for t in VPXOnlyTests AV1OnlyTests SourceTests; do xcodebuild test -scheme AlphaVideo-Package -destination 'platform=iOS Simulator,name=iPhone 16 Pro' -only-testing:$t; done
+(cd tests/ios/WithoutRangeSource && xcodebuild test -scheme WithoutRangeSource-Package -destination 'platform=iOS Simulator,name=iPhone 16 Pro')
 # then, in alpha-video-test: test:pixels and test:streaming with --player cpp on each platform
 ```
 
