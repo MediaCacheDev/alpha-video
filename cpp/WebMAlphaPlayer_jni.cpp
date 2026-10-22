@@ -680,9 +680,9 @@ Java_dev_mediacache_alphavideo_WebMAlphaPlayerNative_nativeLoadFromReader(
 //==============================================================================
 
 JNIEXPORT jlong JNICALL
-Java_dev_mediacache_alphavideo_RangeSourceLink_nativeBuiltInPlugin(JNIEnv* env, jclass clazz) {
+Java_dev_mediacache_alphavideo_RangeSourceLink_nativeUsablePlugin(JNIEnv* env, jclass clazz, jlong address) {
     std::string why;
-    const RangeSourcePlugin* plugin = webm::usablePlugin(range_source_plugin(), why);
+    const RangeSourcePlugin* plugin = webm::usablePlugin(reinterpret_cast<const RangeSourcePlugin*>(address), why);
     if (!plugin && !why.empty()) LOGE("Not using range-source: %s", why.c_str());
     return reinterpret_cast<jlong>(plugin);
 }

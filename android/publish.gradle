@@ -1,4 +1,4 @@
-// Maven publication for dev.mediacache:alpha-video, and for alpha-video-media3, -vpx and -av1
+// Maven publication for dev.mediacache:alpha-video, and for alpha-video-vpx and -av1
 // (their build.gradle sets publishArtifactId, publishDescription and publishLicenses, the bundled
 // code's licences beside MIT, before applying this). Run it through scripts/publish-android.sh.
 //

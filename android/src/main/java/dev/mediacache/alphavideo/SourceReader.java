@@ -8,7 +8,7 @@ import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 
 /**
- * A native reader over an {@link AlphaVideoDataSource}, fetching on its own thread. With the
+ * A native reader over a {@link Fetcher}, fetching on its own thread. With the
  * range-source add-on ({@link RangeSourceLink}), it reads by range, through blocks in memory and an
  * optional store. Without it, the basic input: the file is downloaded whole into a temporary file,
  * and read as it arrives. The probe and the player of one source share it.
@@ -40,7 +40,7 @@ final class SourceReader {
      * @param key what the store calls this file; with the add-on
      * @param downloadDir where the basic input downloads to, without the add-on
      */
-    static SourceReader open(AlphaVideoDataSource source, Uri uri, Map<String, String> headers,
+    static SourceReader open(Fetcher source, Uri uri, Map<String, String> headers,
                              Storage storage, String storeDir, String key, long maxStorageBytes,
                              String downloadDir) throws IOException {
         String[] error = new String[1];
@@ -85,7 +85,7 @@ final class SourceReader {
     }
 
     /**
-     * The data source as the native reader calls it, on the reader's fetch thread, with failures
+     * The fetcher as the native reader calls it, on the reader's fetch thread, with failures
      * as return values.
      */
     static final class Upstream {
@@ -97,7 +97,7 @@ final class SourceReader {
             return t;
         });
 
-        private final AlphaVideoDataSource source;
+        private final Fetcher source;
         private final Uri uri;
         private final Map<String, String> headers;
         // Read by native code after open() and failures
@@ -105,7 +105,7 @@ final class SourceReader {
         String lastModified;
         String error;
 
-        Upstream(AlphaVideoDataSource source, Uri uri, Map<String, String> headers) {
+        Upstream(Fetcher source, Uri uri, Map<String, String> headers) {
             this.source = source;
             this.uri = uri;
             this.headers = headers;
@@ -114,7 +114,7 @@ final class SourceReader {
         /** The file's size, -1 if not known, or -2 with {@link #error} set. */
         long open(long position) {
             try {
-                AlphaVideoDataSource.Info info = source.open(uri, position, headers);
+                Fetcher.Info info = source.open(uri, position, headers);
                 etag = info.etag;
                 lastModified = info.lastModified;
                 return info.size;

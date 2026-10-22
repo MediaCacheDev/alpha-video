@@ -32,7 +32,6 @@ ios/Pods/
 
 # Android
 android/build/
-android/media3/build/
 android/vpx/build/
 android/vpx/.cxx/
 android/av1/build/
