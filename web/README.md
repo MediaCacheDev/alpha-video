@@ -62,14 +62,14 @@ Options: `src`, `autoPlay`, `loop`, `playbackSpeed`, `decoder`, `objectFit`, `he
 - **A URL.** `<video>` loads it itself, with the browser's HTTP cache. The canvas engines read it with HTTP range requests: playback starts once the headers and the first frames are in, the rest follows as it plays (a megabyte ahead), and a seek fetches the Cues and the cluster it lands in, not the bytes before. `headers` (for example `Authorization`) go with every request; `<video>` can't send headers, so with them a file `<video>` plays is fetched whole first and played from memory. A server without range support works too, read from the start.
 - **A `Blob` or `File`,** read with `slice`.
 - **An `ArrayBuffer` or `Uint8Array`.**
-- **A byte source** of your own: `{ size, read(offset, length, signal) }`, returning a `Promise<Uint8Array>`, for apps that fetch, decrypt or cache in their own code. See [alpha-video-source](https://github.com/MediaCacheDev/alpha-video-source/tree/main/web#sources) for the full interface; `httpSource`, `blobSource` and `memorySource` are re-exported here. The canvas engines read it by range; for `<video>` it's read whole into a `Blob`.
+- **A byte source** of your own: `{ size, read(offset, length, signal) }`, returning a `Promise<Uint8Array>`, for apps that fetch, decrypt or cache in their own code. See [range-source-web](https://github.com/MediaCacheDev/range-source/tree/main/web#sources), which the player depends on, for the full interface; `httpSource`, `blobSource` and `memorySource` are re-exported here. The canvas engines read it by range; for `<video>` it's read whole into a `Blob`.
 
 What the canvas engines keep a URL's bytes in between plays is the `storage` option:
 
 - `'auto'` (the default for URLs) is OPFS, falling back to IndexedDB where OPFS isn't available.
 - `'opfs'`, `'indexeddb'`, `'cache'` (the Cache API) or `'memory'` (this page only) pick one. Where it isn't available, the player falls back to IndexedDB, then memory.
 - `'none'` stores nothing. Clips up to 16 MB still stay in memory, so loops don't fetch again.
-- A `ByteStore` of your own (from `createStore`, or written against alpha-video-source's interface).
+- A `ByteStore` of your own (from `createStore`, or written against range-source-web's interface).
 
 Storage is partial: it keeps the ranges played so far, and a clip held whole plays again without the network, offline too. `maxStorageBytes` (default 512 MB) caps what this player keeps across every clip, evicting the least recently played; the store is this player's own (namespace `'alpha-video'`), apart from alpha-video-gpu-web's. Stored clips are named by `cacheKey`, else the URL, so a presigned URL that changes on each visit can keep the same copy. A copy is dropped when the server's `ETag`, `Last-Modified` or length no longer matches it. A clip held whole isn't checked again; give a changed file a new `cacheKey` or URL.
 

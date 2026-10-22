@@ -1,6 +1,6 @@
 /**
  * The file a player was given, for either kind of engine: read by range through a ByteReader
- * (alpha-video-source) for the canvas engines, with a store for URLs, or as a URL for `<video>`.
+ * (range-source-web) for the canvas engines, with a store for URLs, or as a URL for `<video>`.
  */
 import {
   blobSource,
@@ -12,7 +12,7 @@ import {
   type ByteReader,
   type ByteSource,
   type ByteStore,
-} from 'alpha-video-source';
+} from 'range-source-web';
 import { AlphaVideoError } from './errors';
 import { fetchHead } from './sniff';
 import type { AlphaVideoOptions, AlphaVideoSource } from './types';

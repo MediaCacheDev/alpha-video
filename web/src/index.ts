@@ -36,5 +36,5 @@ export {
   memorySource,
   HttpSourceError,
   SourceChangedError,
-} from 'alpha-video-source';
-export type { ByteSource, ByteStore, SourceInfo, StorageKind, HttpSourceOptions } from 'alpha-video-source';
+} from 'range-source-web';
+export type { ByteSource, ByteStore, SourceInfo, StorageKind, HttpSourceOptions } from 'range-source-web';

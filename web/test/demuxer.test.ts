@@ -1,4 +1,4 @@
-import { memorySource, openReader, type ByteReader, type SourceInfo } from 'alpha-video-source';
+import { memorySource, openReader, type ByteReader, type SourceInfo } from 'range-source-web';
 import { afterAll, describe, expect, it } from 'vitest';
 import { WasmDemuxer, yuvToRgbMatrix, type DemuxPacket } from '../src/demuxer';
 import { AlphaVideoError } from '../src/errors';

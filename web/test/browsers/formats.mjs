@@ -11,7 +11,7 @@ const WEB = fileURLToPath(new URL('../..', import.meta.url));
 await build({
   stdin: {
     contents:
-      "export { WasmDemuxer } from './src/demuxer'; export { codecString } from './src/codec'; export { memorySource, openReader } from 'alpha-video-source';",
+      "export { WasmDemuxer } from './src/demuxer'; export { codecString } from './src/codec'; export { memorySource, openReader } from 'range-source-web';",
     resolveDir: WEB,
     loader: 'ts',
   },

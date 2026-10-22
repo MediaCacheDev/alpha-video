@@ -1,4 +1,4 @@
-import type { ByteSource, ByteStore, StorageKind } from 'alpha-video-source';
+import type { ByteSource, ByteStore, StorageKind } from 'range-source-web';
 import type { AlphaVideoError } from './errors';
 
 /**

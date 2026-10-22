@@ -24,7 +24,7 @@ const files = readdirSync(MEDIA).filter((f) => f.endsWith('.webm')).sort();
 await build({
   stdin: {
     contents:
-      "export { SoftwareSource } from './src/software-source'; export { WasmDemuxer } from './src/demuxer'; export { memorySource, openReader } from 'alpha-video-source';",
+      "export { SoftwareSource } from './src/software-source'; export { WasmDemuxer } from './src/demuxer'; export { memorySource, openReader } from 'range-source-web';",
     resolveDir: WEB,
     loader: 'ts',
   },

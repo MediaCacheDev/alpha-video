@@ -3,12 +3,12 @@
  * (cpp/YuvToRgb), compiled to WebAssembly. Loaded on first use only, so pages whose files
  * `<video>` plays never download it.
  *
- * The demuxer reads through a ByteReader (alpha-video-source), so a file streams in by range as
+ * The demuxer reads through a ByteReader (range-source-web), so a file streams in by range as
  * it plays and seeks fetch only what they need. WebAssembly can't wait for a fetch: when the
  * bytes it asks for aren't in memory it stops (ByteSource::kPending), this side fetches them,
  * and calls it again.
  */
-import type { ByteReader } from 'alpha-video-source';
+import type { ByteReader } from 'range-source-web';
 import { AlphaVideoError } from './errors';
 import type { DemuxerModule } from './wasm/demuxer.mjs';
 

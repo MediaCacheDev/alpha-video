@@ -10,7 +10,7 @@ The code of alpha-video-web is MIT-licensed (see `LICENSE`). Its WebAssembly mod
 
 Licence texts: `licenses/libwebm-LICENSE.txt`, `licenses/libwebm-PATENTS.txt`, `licenses/LGPL-2.1.txt`, `licenses/FFmpeg-LICENSE.md`, `licenses/dav1d-COPYING.txt`.
 
-The JavaScript also bundles [alpha-video-source](https://github.com/MediaCacheDev/alpha-video-source) (MIT, by the same author), which reads files by range and keeps them in the browser's storage.
+The JavaScript depends on [range-source-web](https://github.com/MediaCacheDev/range-source/tree/main/web) (MIT, by the same author), installed as its own package, which reads files by range and keeps them in the browser's storage.
 
 ## What the build contains
 
