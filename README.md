@@ -1,5 +1,11 @@
 # alpha-video
 
+<p align="center">
+  <img src="docs/alpha-video.avif" alt="Transparent videos playing over a checkerboard in the demo app on Android" width="360">
+  <br>
+  <a href="https://github.com/MediaCacheDev/alpha-video-test">Compare transparent formats in the demo app</a>
+</p>
+
 Transparent video that plays everywhere: Android, iOS, React Native and every modern browser, including browsers that can't show transparent video themselves. Safari drops WebM's alpha channel, and no browser shows the alpha track of a dual-stream file. If you want transparent video and need to be confident it plays on every platform, this is the package to use.
 
 It plays **VP8 or VP9 WebM with alpha** (standard YUVA WebM, what FFmpeg and libvpx write) and **dual-stream VP8, VP9 or AV1** (colour and alpha in separate video tracks). Each platform tries the fastest way first and falls back until one works:
