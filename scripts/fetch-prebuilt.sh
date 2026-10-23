@@ -13,7 +13,7 @@ set -euo pipefail
 
 RELEASE="v1.0.0"
 ARCHIVE="prebuilt-libvpx1.14.0-dav1d1.5.1.tar.gz"
-SHA256="5a109170b5a9162d8d4cb14044eea4dd723a248970ba334ca20b861a19d767cb"
+SHA256="b95e75aed9a75c41f92388a31cb3e1e311ab44f81d02140c4fbf5e570865195e"
 URL="https://github.com/MediaCacheDev/alpha-video/releases/download/$RELEASE/$ARCHIVE"
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"

@@ -2,7 +2,7 @@
 
 The packages built from this repository share one version: `react-native-alpha-video` and `alpha-video-web` on npm, `dev.mediacache:alpha-video`, `alpha-video-vpx` and `alpha-video-av1` on Maven Central, and the `alpha-video` Swift package and pod.
 
-## 1.0.0 - Unreleased
+## 1.0.0 - 2026-10-23
 
 First public release.
 

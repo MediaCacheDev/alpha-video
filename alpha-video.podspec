@@ -23,10 +23,11 @@ Pod::Spec.new do |s|
   s.author       = { 'Daniel Kasprowicz' => '9932671+danielkpl2@users.noreply.github.com' }
   s.platform     = :ios, '13.0'
   s.source       = { :http => "https://github.com/MediaCacheDev/alpha-video/releases/download/v#{s.version}/alpha-video-#{s.version}-ios.zip",
-                     :sha256 => '42cfc0297a74da447102fd1620f64a398b904661991467a675deb01adb83cd1c' }
+                     :sha256 => 'abe4b8eb0792df77e534f07331109c5c42ebd25bb7f9f024f1efb028ef260451' }
   s.default_subspecs = 'VPX', 'AV1', 'Source'
   s.pod_target_xcconfig = {
     'CLANG_CXX_LANGUAGE_STANDARD' => 'c++17',
+    'CLANG_WARN_DOCUMENTATION_COMMENTS' => 'NO',
     'HEADER_SEARCH_PATHS' => '"$(PODS_TARGET_SRCROOT)/cpp" "$(PODS_TARGET_SRCROOT)/codecs/vpx" "$(PODS_TARGET_SRCROOT)/codecs/av1" "$(PODS_TARGET_SRCROOT)/third_party/range-source/include" "$(PODS_TARGET_SRCROOT)/third_party/libwebm/webm_parser" "$(PODS_TARGET_SRCROOT)/third_party/libwebm/webm_parser/include"'
   }
 
