@@ -123,8 +123,7 @@ extern NSString *const AlphaVideoErrorNoSourceModule;
 
 // Legacy stream property (deprecated, use mode instead)
 @property (nonatomic) BOOL stream;            // Default: YES
-@property (nonatomic) int streamCacheSize;    // Default: 30 (frames to keep in cache when streaming)
-@property (nonatomic) int streamPrefetchAhead; // Default: 15 (frames to decode ahead)
+@property (nonatomic) int streamPrefetchAhead; // Default: 8 (frames decoded ahead; all stream mode keeps)
 
 + (instancetype)defaultConfig;
 
@@ -277,8 +276,7 @@ extern NSString *const AlphaVideoErrorNoSourceModule;
 // before playing; "streamAndPreload" starts like stream and keeps every frame after the first
 // pass. The stream modes play URLs as they arrive; preload fetches the whole file first.
 @property (nonatomic, copy) NSString *mode;
-@property (nonatomic) int streamCacheSize;      // Frames kept while streaming. Default: 30
-@property (nonatomic) int streamPrefetchAhead;  // Frames decoded ahead while streaming. Default: 15
+@property (nonatomic) int streamPrefetchAhead;  // Frames decoded ahead while streaming, all it keeps. Default: 8
 // Preload and streamAndPreload decode one clip at a time across all views. Default: YES
 @property (nonatomic) BOOL useDecodeQueue;
 

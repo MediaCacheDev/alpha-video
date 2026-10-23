@@ -90,8 +90,7 @@ static void AlphaVideoWarnWithoutAddOn(void) {
     _paused = NO;
     _playbackSpeed = 1.0;
     _mode = @"stream";
-    _streamCacheSize = 30;
-    _streamPrefetchAhead = 15;
+    _streamPrefetchAhead = 8;
     _useDecodeQueue = YES;
     _storage = @"auto";
     _maxStorageBytes = AlphaVideoDefaultMaxStorageBytes;
@@ -197,13 +196,8 @@ static void AlphaVideoWarnWithoutAddOn(void) {
     [self updatePlayerConfig];
 }
 
-- (void)setStreamCacheSize:(int)streamCacheSize {
-    _streamCacheSize = streamCacheSize > 0 ? streamCacheSize : 30;
-    [self updatePlayerConfig];
-}
-
 - (void)setStreamPrefetchAhead:(int)streamPrefetchAhead {
-    _streamPrefetchAhead = streamPrefetchAhead > 0 ? streamPrefetchAhead : 15;
+    _streamPrefetchAhead = streamPrefetchAhead > 0 ? streamPrefetchAhead : 8;
     [self updatePlayerConfig];
 }
 
@@ -211,11 +205,10 @@ static void AlphaVideoWarnWithoutAddOn(void) {
     AlphaVideoConfig *config = [self.metalView.player getConfig];
     config.mode = _mode;
     config.stream = [_mode isEqualToString:@"stream"];
-    config.streamCacheSize = _streamCacheSize;
     config.streamPrefetchAhead = _streamPrefetchAhead;
     [self.metalView.player setConfig:config];
     
-    WEBM_VLOG(@"AlphaVideoView mode: %@, cacheSize=%d, prefetchAhead=%d", _mode, _streamCacheSize, _streamPrefetchAhead);
+    WEBM_VLOG(@"AlphaVideoView mode: %@, prefetchAhead=%d", _mode, _streamPrefetchAhead);
 }
 
 #pragma mark - Source Loading

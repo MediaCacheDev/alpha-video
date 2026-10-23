@@ -74,7 +74,6 @@ static const std::shared_ptr<const RNAlphaVideoViewProps> &RNAlphaVideoViewDefau
   const auto &next = *std::static_pointer_cast<const RNAlphaVideoViewProps>(props);
 
   if (previous.mode != next.mode) _player.mode = RCTNSStringFromString(toString(next.mode));
-  if (previous.streamCacheSize != next.streamCacheSize) _player.streamCacheSize = next.streamCacheSize;
   if (previous.streamPrefetchAhead != next.streamPrefetchAhead) _player.streamPrefetchAhead = next.streamPrefetchAhead;
   if (previous.useDecodeQueue != next.useDecodeQueue) _player.useDecodeQueue = next.useDecodeQueue;
   if (previous.verbose != next.verbose) _player.verbose = next.verbose;

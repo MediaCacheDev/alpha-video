@@ -88,18 +88,11 @@ export interface NativeProps extends ViewProps {
   decoder?: WithDefault<'auto' | 'mediacodec' | 'mediacodec-hw' | 'mediacodec-sw' | 'software', 'auto'>;
 
   /**
-   * Number of frames to keep in cache when streaming.
-   * Default: 30 frames (~1 second at 30fps)
+   * Number of frames decoded ahead of the shown one when streaming; stream mode keeps only these.
+   * Default: 8 frames (about 0.27 seconds at 30fps)
    * Only used when mode='stream'
    */
-  streamCacheSize?: WithDefault<Int32, 30>;
-
-  /**
-   * Number of frames to prefetch ahead of playback position when streaming.
-   * Default: 15 frames (~0.5 seconds at 30fps)
-   * Only used when mode='stream' or mode='streamAndPreload'
-   */
-  streamPrefetchAhead?: WithDefault<Int32, 15>;
+  streamPrefetchAhead?: WithDefault<Int32, 8>;
 
   /**
    * Enable global decode queue for non-stream mode.

@@ -198,8 +198,9 @@ struct PlayerConfig {
     // Legacy: kept for backwards compatibility, use mode instead
     bool stream = true;
     
-    int streamCacheSize = 30;       // Frames to keep in cache when streaming (default: ~1 second at 30fps)
-    int streamPrefetchAhead = 15;   // Frames to decode ahead of playback position
+    // Frames decoded ahead of the playhead while streaming. Stream mode keeps these and nothing
+    // behind the playhead, so it is also the cache size.
+    int streamPrefetchAhead = 8;
 };
 
 /**

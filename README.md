@@ -132,8 +132,7 @@ import { AlphaVideoView } from 'react-native-alpha-video';
   playbackSpeed={1.0}          // changeable while playing; doesn't move the playhead
   decoder="auto"               // Android only; see Choosing the Decoder
   mode="stream"                // decodes a few frames ahead (default), or 'preload', 'streamAndPreload'
-  streamCacheSize={30}         // 'stream': decoded frames kept
-  streamPrefetchAhead={15}     // 'stream' and 'streamAndPreload': frames decoded ahead
+  streamPrefetchAhead={8}     // 'stream': frames kept decoded ahead; see Buffering
   useDecodeQueue={true}        // 'preload' and 'streamAndPreload': one clip decodes at a time, app-wide
   verbose={false}              // true logs lifecycle and per-frame events; errors always log
   onLoad={({ totalFrames, width, height, decoder }) => console.log(totalFrames, decoder)}
@@ -197,8 +196,7 @@ view.setPaused(false)                  // a hold, for example while the screen i
 view.setPlaybackSpeed(1.0)             // changeable while playing; doesn't move the playhead
 view.setDecoder("auto")                // see Choosing the Decoder
 view.setMode("stream")                 // decodes a few frames ahead (default), or "preload", "streamAndPreload"
-view.setStreamCacheSize(30)            // "stream": decoded frames kept
-view.setStreamPrefetchAhead(15)        // "stream" and "streamAndPreload": frames decoded ahead
+view.setStreamPrefetchAhead(8)         // "stream": frames kept decoded ahead; see Buffering
 view.setUseDecodeQueue(true)           // "preload" and "streamAndPreload": one clip decodes at a time, app-wide
 view.setVerbose(false)                 // true logs lifecycle and per-frame events to Logcat
 view.setCallback(object : AlphaVideoView.PlayerCallback {
@@ -254,8 +252,7 @@ view.loop = true                       // the default; false plays once, then ca
 view.paused = false                    // a hold, for example while the screen is hidden
 view.playbackSpeed = 1.0               // changeable while playing; doesn't move the playhead
 view.mode = "stream"                   // decodes a few frames ahead (default), or "preload", "streamAndPreload"
-view.streamCacheSize = 30              // "stream": decoded frames kept
-view.streamPrefetchAhead = 15          // "stream" and "streamAndPreload": frames decoded ahead
+view.streamPrefetchAhead = 8           // "stream": frames kept decoded ahead; see Buffering
 view.useDecodeQueue = true             // "preload" and "streamAndPreload": one clip decodes at a time, app-wide
 view.verbose = false                   // true logs lifecycle and per-frame events to the Xcode console
 // No decoder setting: iOS always decodes in software, with the C++ core
@@ -293,8 +290,7 @@ function MyComponent() {
       playbackSpeed={1.0}          // changeable while playing; doesn't move the playhead
       decoder="auto"               // Android only; see Choosing the Decoder
       mode="stream"                // decodes a few frames ahead (default), or 'preload', 'streamAndPreload'
-      streamCacheSize={30}         // 'stream': decoded frames kept
-      streamPrefetchAhead={15}     // 'stream' and 'streamAndPreload': frames decoded ahead
+      streamPrefetchAhead={8}     // 'stream': frames kept decoded ahead; see Buffering
       useDecodeQueue={true}        // 'preload' and 'streamAndPreload': one clip decodes at a time, app-wide
       verbose={false}              // true logs lifecycle and per-frame events; errors always log
       onLoad={({ totalFrames, width, height, decoder }) => console.log(totalFrames, decoder)}
@@ -315,7 +311,7 @@ The player automatically detects whether a file contains a single YUVA stream or
 
 The examples under [Installation](#installation) and [Usage](#usage) set every option, each to its default. `paused`, `playbackSpeed` and `verbose` change at once; the others are read when a source loads, so set them before the source.
 
-iOS has no `decoder`: it always decodes in software. The cache, prefetch and queue settings apply to the C++ core's software decoding; MediaCodec on Android streams with its own buffers and ignores them, and so does the web, where the browser plays the file. On the web `mode`, `decoder`, `source.dataSource` and the stream and queue props have no effect (see [Web](#web)).
+iOS has no `decoder`: it always decodes in software. The prefetch and queue settings apply to the C++ core's software decoding; MediaCodec on Android streams with its own buffers and ignores them, and so does the web, where the browser plays the file. On the web `mode`, `decoder`, `source.dataSource` and the stream and queue props have no effect (see [Web](#web)).
 
 ### Props
 
@@ -336,8 +332,7 @@ iOS has no `decoder`: it always decodes in software. The cache, prefetch and que
 | `mode` | `'preload' \| 'stream' \| 'streamAndPreload'` | `'stream'` | Playback mode (software path only, see below) |
 | `decoder` | `'auto' \| 'mediacodec' \| 'mediacodec-hw' \| 'mediacodec-sw' \| 'software'` | `'auto'` | Android: the decoding engine (see [Choosing the Decoder](#choosing-the-decoder-android)). iOS accepts it and uses the C++ core; the web has `webDecoder` |
 | `webDecoder` | `'auto' \| 'browser' \| 'webcodecs' \| 'webcodecs-hw' \| 'webcodecs-sw' \| 'software'` | `'auto'` | Web: the engine (see [Web](#web)). `'browser'` is a plain `<video>`; a forced engine reports `onError` rather than fall back |
-| `streamCacheSize` | `number` | `30` | Decoded frames kept in `stream` mode (an LRU cache) |
-| `streamPrefetchAhead` | `number` | `15` | Frames decoded ahead of the playhead in `stream` and `streamAndPreload` mode |
+| `streamPrefetchAhead` | `number` | `8` | Frames kept decoded ahead of the shown one in `stream` mode, 1 or more: a safety margin that costs memory (see [Buffering](#buffering-stream-mode)) |
 | `useDecodeQueue` | `boolean` | `true` | In `preload` and `streamAndPreload` mode, decode one clip at a time across all players, so many at once don't saturate the CPU (see [Global Decode Queue](#global-decode-queue)) |
 | `verbose` | `boolean` | `false` | Log lifecycle and per-frame events (Logcat, the Xcode console); errors always log |
 
@@ -633,6 +628,24 @@ The `mode` prop controls the software decode path; the default is `stream`. The 
 For http(s) sources, "Immediate" means as soon as the first frames have arrived, and `preload` also waits for the whole file ([Streaming and storage](#streaming-and-storage)).
 
 **Key insight**: `preload` mode has **zero CPU cost during playback** since all frames are already decoded. This means 20+ preloaded videos can play simultaneously with minimal CPU impact (only GPU rendering).
+
+### Buffering (stream mode)
+
+In `stream` mode the decoder runs ahead of the playhead and pauses once `streamPrefetchAhead` frames after the shown one are ready. Each frame is dropped once it has been shown, so the player holds `streamPrefetchAhead` + 2 decoded frames: the shown one, the ones ahead of it, and the previous one until it's dropped. That is the only buffer setting; there is no separate cache size.
+
+The frames ahead are a safety margin. Decoding usually keeps well ahead, but some stretches take longer than a frame's time: keyframes, the jump back to the start at each loop, other players or the app busy on the CPU, or the bytes of a URL still arriving. While frames are left ahead, playback carries on through them; when none are left, the shown frame stays up until the next is decoded. A larger margin rides out longer slow stretches and costs memory, about 2.5 bytes a pixel per frame (the Y, U, V and alpha planes):
+
+| Frame size | One frame | At the default (10 frames) |
+|---|---|---|
+| 400×400 | 0.4 MB | 4 MB |
+| 1080×1080 | 2.9 MB | 29 MB |
+| 1920×1080 | 5.2 MB | 52 MB |
+
+The default, 8, is about a quarter of a second at 30 fps. On a Galaxy A52s (Snapdragon 778G) playing a 400×400 clip, the buffer stayed within 1 or 2 frames of full from the second pass on with as many as 16 players at once, from 3 frames up; at 1 and 2, 9 and 16 players ran out and held frames. So 3 to 5 is enough for small clips on a phone like that, and 8 leaves room for larger frames and slower phones. Go higher for large frames on low-end phones, or lower to save memory when many small clips play at once.
+
+It doesn't change the decoding work, only how far ahead it's done, and it doesn't buffer bytes: with range-source, the reads ahead of the decoder are its own (see [Streaming and storage](#streaming-and-storage)). `streamAndPreload` and `preload` decode the whole clip whatever it's set to, and MediaCodec on Android and the web use their own buffers and ignore it.
+
+To tune it, turn on `verbose`. At the end of every pass through the clip the player logs a line like `Pass buffer: fewest frames ahead 6 of 8, stalls 0`: the fewest frames it had ready during the pass, and how many times it had none and held a frame. Watch a few loops on the slowest device you support, with as many players as the app shows at once. If the fewest stays well above 0 and there are no stalls, a smaller value saves memory; with stalls, a larger one helps if they come from short slow stretches, but if decoding can't keep up on average no margin will, and `preload` or fewer players at once will.
 
 ## Global Decode Queue
 

@@ -172,20 +172,10 @@ public class AlphaVideoViewManager extends AlphaVideoViewManagerSpec<AlphaVideoV
     }
     
     /**
-     * Set the cache size when streaming (number of frames to keep in memory)
-     * Default: 30 frames (~1 second at 30fps)
+     * Set how many frames to decode ahead of the shown one when streaming
+     * Default: 8 frames (about 0.27 seconds at 30fps)
      */
-    @ReactProp(name = "streamCacheSize", defaultInt = 30)
-    @Override
-    public void setStreamCacheSize(AlphaVideoView view, int size) {
-        view.setStreamCacheSize(size);
-    }
-    
-    /**
-     * Set how many frames to prefetch ahead of playback position when streaming
-     * Default: 15 frames (~0.5 seconds at 30fps)
-     */
-    @ReactProp(name = "streamPrefetchAhead", defaultInt = 15)
+    @ReactProp(name = "streamPrefetchAhead", defaultInt = 8)
     @Override
     public void setStreamPrefetchAhead(AlphaVideoView view, int frames) {
         view.setStreamPrefetchAhead(frames);

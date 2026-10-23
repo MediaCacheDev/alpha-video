@@ -626,6 +626,24 @@ static void registerTests() {
                   << waiter.alphaMismatches.size() << ", first " << waiter.alphaMismatches.front());
         });
 
+        add("stream mode plays and loops with one frame decoded ahead", [](const Fixture& fx) {
+            PlayerConfig config;
+            config.mode = PlaybackMode::Stream;
+            config.loopPlayback = true;
+            config.playbackSpeed = 4;
+            config.streamPrefetchAhead = 1;
+            auto p = std::make_unique<WebMAlphaPlayer>();
+            p->setConfig(config);
+            FrameWaiter waiter;
+            waiter.card = fx.card;
+            waiter.attach(*p);
+            CHECK(p->loadFromFile(fx.path), fx.path);
+            p->play();
+            CHECK(waiter.waitFor(fx.card.frames - 1, std::chrono::seconds(10)), "playback never reached the last frame");
+            waiter.clear();
+            CHECK(waiter.waitFor(5, std::chrono::seconds(5)), "playback didn't loop to frame 5");
+        });
+
         add("alpha plane range", [](const Fixture& fx) {
             auto p = load(fx, onDemandConfig());
             auto f = p->getFrame(0);

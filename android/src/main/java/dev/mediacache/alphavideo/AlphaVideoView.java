@@ -149,8 +149,7 @@ public class AlphaVideoView extends TextureView implements
     public static final String ERROR_NO_SOURCE_MODULE = "NO_SOURCE_MODULE";
     // A URL played without the add-on is warned of once per process
     private static final AtomicBoolean warnedWithoutAddOn = new AtomicBoolean(false);
-    private int streamCacheSize = 30;      // Frames to keep in cache when streaming
-    private int streamPrefetchAhead = 15;  // Frames to decode ahead of playback
+    private int streamPrefetchAhead = 8;  // Frames to decode ahead of playback
     
     // Use global decode queue for preload/streamAndPreload modes to prevent CPU saturation
     // When true (default): decoding is serialized across all players
@@ -258,10 +257,10 @@ public class AlphaVideoView extends TextureView implements
         // preloadAllFrames should be false for stream mode, true for preload/streamAndPreload
         boolean preloadAllFrames = !MODE_STREAM.equals(mode);
         logV("Creating player with mode=" + mode + ", preloadAllFrames=" + preloadAllFrames + 
-              ", streamCacheSize=" + streamCacheSize);
+              ", streamPrefetchAhead=" + streamPrefetchAhead);
         playerId = WebMAlphaPlayerNative.nativeCreate(
             decodeThreads, cacheSize, preloadAllFrames, loop, playbackSpeed,
-            mode, streamCacheSize, streamPrefetchAhead
+            mode, streamPrefetchAhead
         );
         WebMAlphaPlayerNative.nativeSetListener(playerId, this);
         WebMAlphaPlayerNative.nativeSetVerbose(playerId, verbose);
@@ -393,19 +392,12 @@ public class AlphaVideoView extends TextureView implements
     }
     
     /**
-     * Set the cache size when streaming (number of frames to keep in memory)
-     * Default: 30 frames (~1 second at 30fps)
-     */
-    public void setStreamCacheSize(int size) {
-        this.streamCacheSize = size > 0 ? size : 30;
-    }
-    
-    /**
-     * Set how many frames to prefetch ahead of playback position when streaming
-     * Default: 15 frames (~0.5 seconds at 30fps)
+     * Set how many frames to decode ahead of the shown one when streaming. Stream mode keeps
+     * only these, so this is also its memory: each is a decoded YUVA frame, about 2.5 bytes a pixel.
+     * Default: 8 frames (about 0.27 seconds at 30fps)
      */
     public void setStreamPrefetchAhead(int frames) {
-        this.streamPrefetchAhead = frames > 0 ? frames : 15;
+        this.streamPrefetchAhead = frames > 0 ? frames : 8;
     }
     
     /**

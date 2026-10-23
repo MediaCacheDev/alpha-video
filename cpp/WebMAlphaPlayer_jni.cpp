@@ -258,7 +258,6 @@ Java_dev_mediacache_alphavideo_WebMAlphaPlayerNative_nativeCreate(
     jboolean loopPlayback,
     jdouble playbackSpeed,
     jstring modeStr,
-    jint streamCacheSize,
     jint streamPrefetchAhead
 ) {
     auto player = std::make_shared<webm::WebMAlphaPlayer>();
@@ -286,8 +285,7 @@ Java_dev_mediacache_alphavideo_WebMAlphaPlayerNative_nativeCreate(
     config.playbackSpeed = playbackSpeed;
     config.mode = mode;
     config.stream = (mode == webm::PlaybackMode::Stream);  // Legacy compatibility
-    config.streamCacheSize = streamCacheSize > 0 ? streamCacheSize : 30;
-    config.streamPrefetchAhead = streamPrefetchAhead > 0 ? streamPrefetchAhead : 15;
+    config.streamPrefetchAhead = streamPrefetchAhead > 0 ? streamPrefetchAhead : 8;
     player->setConfig(config);
     
     std::lock_guard<std::mutex> lock(playersMutex);

@@ -144,15 +144,9 @@ export interface AlphaVideoViewProps extends ViewProps {
   stream?: boolean;
   
   /**
-   * Number of frames to keep in cache when streaming.
-   * Default: 30 frames (~1 second at 30fps)
-   * Only used when mode='stream'
-   */
-  streamCacheSize?: number;
-  
-  /**
-   * Number of frames to prefetch ahead of playback position when streaming.
-   * Default: 15 frames (~0.5 seconds at 30fps)
+   * Number of frames decoded ahead of the shown one when streaming. Stream mode keeps only
+   * these, so this is also its memory: more absorbs slow decodes, fewer uses less memory.
+   * Default: 8 frames (about 0.27 seconds at 30fps)
    * Only used when mode='stream'
    */
   streamPrefetchAhead?: number;
@@ -291,7 +285,6 @@ const NativePlayer = forwardRef<AlphaVideoViewRef, AlphaVideoViewProps>(
         maxStorageBytes={props.maxStorageBytes}
         mode={resolveMode(props.mode, props.stream)}
         decoder={props.decoder}
-        streamCacheSize={props.streamCacheSize}
         streamPrefetchAhead={props.streamPrefetchAhead}
         useDecodeQueue={props.useDecodeQueue}
         verbose={props.verbose}

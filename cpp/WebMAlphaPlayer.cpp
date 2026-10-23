@@ -540,11 +540,12 @@ bool WebMAlphaPlayer::finishLoad(std::unique_ptr<ByteSource> source) {
     
     // Handle playback modes
     if (config_.mode == PlaybackMode::Stream) {
-        // Stream mode: use smaller cache, sequential background decode, evict old frames
-        int streamCacheSize = config_.streamCacheSize > 0 ? config_.streamCacheSize : 30;
-        frameCache_->setMaxSize(streamCacheSize);
-        VLOGI("📺 Stream mode enabled: cacheSize=%d, prefetchAhead=%d", 
-             streamCacheSize, config_.streamPrefetchAhead);
+        // Stream mode: sequential background decode, frames behind the playhead evicted. The
+        // cache holds the shown frame, the frames decoded after it, and the previous frame until
+        // it's evicted; anything more would be evicted by LRU, the next frame to show first.
+        int prefetchAhead = config_.streamPrefetchAhead > 0 ? config_.streamPrefetchAhead : 8;
+        frameCache_->setMaxSize(prefetchAhead + 2);
+        VLOGI("📺 Stream mode enabled: prefetchAhead=%d", prefetchAhead);
         
         // Reset streaming decode position
         streamDecodePos_ = 0;
@@ -1071,7 +1072,7 @@ void WebMAlphaPlayer::seekToFrame(int frameIndex) {
         // then, shows it. StreamAndPreload decodes the whole clip in order, so it only waits.
         pendingSeekFrame_ = frameIndex;
         int decodePos = streamDecodePos_.load();
-        int prefetchAhead = config_.streamPrefetchAhead > 0 ? config_.streamPrefetchAhead : 15;
+        int prefetchAhead = config_.streamPrefetchAhead > 0 ? config_.streamPrefetchAhead : 8;
         bool decodingTowardsIt = frameIndex >= decodePos && frameIndex - decodePos < prefetchAhead;
         if (config_.mode == PlaybackMode::Stream && !decodingTowardsIt) {
             seekRequest_ = frameIndex;
@@ -1094,6 +1095,19 @@ void WebMAlphaPlayer::playbackLoop() {
     
     int framesEmitted = 0;
     auto loopStartTime = std::chrono::high_resolution_clock::now();
+    
+    // Per pass in Stream mode, for tuning streamPrefetchAhead: the fewest frames decoded after
+    // the shown one, and how often playback waited for the decoder
+    int fewestAhead = totalFrames_;
+    int stalls = 0;
+    bool stalled = false;
+    auto logPassBuffer = [&]() {
+        if (config_.mode != PlaybackMode::Stream) return;
+        VLOGI("📺 Pass buffer: fewest frames ahead %d of %d, stalls %d",
+             fewestAhead, config_.streamPrefetchAhead, stalls);
+        fewestAhead = totalFrames_;
+        stalls = 0;
+    };
     
     while (!shouldStop_ && loaded_) {
         if (!playing_) {
@@ -1122,6 +1136,10 @@ void WebMAlphaPlayer::playbackLoop() {
             if (frame) {
                 emitFrame(frame);
                 framesEmitted++;
+                stalled = false;
+                int ahead = streamDecodePos_.load() - frameIdx - 1;
+                if (ahead < 0) ahead += totalFrames_;  // the decoder has wrapped to the start
+                fewestAhead = std::min(fewestAhead, ahead);
                 
                 // Log FPS every 30 frames
                 if (framesEmitted % 30 == 0) {
@@ -1132,6 +1150,10 @@ void WebMAlphaPlayer::playbackLoop() {
                 }
             } else if (preloading_ || config_.mode == PlaybackMode::Stream || config_.mode == PlaybackMode::StreamAndPreload) {
                 // Frame not decoded yet - don't advance, wait for the preload or prefetch
+                if (!stalled) {
+                    stalled = true;
+                    stalls++;
+                }
                 VLOGI("🎬 Frame %d not ready, waiting for prefetch (decode at %d)", frameIdx, streamDecodePos_.load());
                 std::this_thread::sleep_for(std::chrono::milliseconds(5));
                 continue;  // Try again without advancing frame
@@ -1147,6 +1169,7 @@ void WebMAlphaPlayer::playbackLoop() {
             // Advance frame
             frameIdx++;
             if (frameIdx >= totalFrames_) {
+                logPassBuffer();
                 if (config_.loopPlayback) {
                     frameIdx = 0;
                     // In streaming modes, request prefetch from start on loop
@@ -1186,7 +1209,7 @@ void WebMAlphaPlayer::playbackLoop() {
 void WebMAlphaPlayer::streamingPrefetch(int currentFrame) {
     if (!frameCache_ || !loaded_) return;
     
-    int prefetchAhead = config_.streamPrefetchAhead > 0 ? config_.streamPrefetchAhead : 15;
+    int prefetchAhead = config_.streamPrefetchAhead > 0 ? config_.streamPrefetchAhead : 8;
     int endFrame = std::min(currentFrame + prefetchAhead, totalFrames_);
     
     // Handle loop wraparound
@@ -1219,7 +1242,7 @@ void WebMAlphaPlayer::evictOldFrames(int currentFrame) {
     }
     
     // Check each cached frame and evict if behind playback
-    // This keeps exactly prefetchAhead frames in cache (current + ahead)
+    // This keeps the shown frame and the ones decoded after it
     for (int i = 0; i < totalFrames_ && !shouldStop_; i++) {
         std::string key = makeFrameKey(i);
         if (!frameCache_->contains(key)) continue;
@@ -1257,7 +1280,7 @@ void WebMAlphaPlayer::prefetchLoop() {
     Picture picture;
     
     int frameIndex = streamDecodePos_.load();
-    int prefetchAhead = config_.streamPrefetchAhead > 0 ? config_.streamPrefetchAhead : 15;
+    int prefetchAhead = config_.streamPrefetchAhead > 0 ? config_.streamPrefetchAhead : 8;
     bool isHybridMode = (config_.mode == PlaybackMode::StreamAndPreload);
     auto passStart = std::chrono::high_resolution_clock::now();
     
@@ -1427,8 +1450,9 @@ void WebMAlphaPlayer::prefetchLoop() {
                 }
             }
             
-            // If we're sufficiently ahead, PAUSE and wait for playback to catch up
-            if (aheadBy >= prefetchAhead) {
+            // If we're sufficiently ahead, PAUSE and wait for playback to catch up. aheadBy
+            // counts the shown frame, so this keeps prefetchAhead frames after it.
+            if (aheadBy > prefetchAhead) {
                 std::this_thread::sleep_for(std::chrono::milliseconds(10));
                 continue;
             }

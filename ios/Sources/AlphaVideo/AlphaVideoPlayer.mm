@@ -106,8 +106,7 @@
     config.playbackSpeed = 1.0;
     config.mode = @"stream";
     config.stream = YES;
-    config.streamCacheSize = 30;
-    config.streamPrefetchAhead = 15;
+    config.streamPrefetchAhead = 8;
     return config;
 }
 
@@ -131,8 +130,7 @@
         cfg.stream = true;
     }
     
-    cfg.streamCacheSize = self.streamCacheSize > 0 ? self.streamCacheSize : 30;
-    cfg.streamPrefetchAhead = self.streamPrefetchAhead > 0 ? self.streamPrefetchAhead : 15;
+    cfg.streamPrefetchAhead = self.streamPrefetchAhead > 0 ? self.streamPrefetchAhead : 8;
     return cfg;
 }
 
@@ -272,7 +270,6 @@
     config.loopPlayback = cfg.loopPlayback;
     config.playbackSpeed = cfg.playbackSpeed;
     config.stream = cfg.stream;
-    config.streamCacheSize = cfg.streamCacheSize;
     config.streamPrefetchAhead = cfg.streamPrefetchAhead;
     
     // Convert mode enum back to string
