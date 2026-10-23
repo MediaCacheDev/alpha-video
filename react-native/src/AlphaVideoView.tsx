@@ -178,7 +178,8 @@ export interface AlphaVideoViewProps extends ViewProps {
   onLoad?: (event: AlphaVideoLoadEvent) => void;
   /**
    * Callback when error occurs. On the web, `code` tells the errors apart: `'LOAD_FAILED'`,
-   * `'UNSUPPORTED_FILE'`, `'NO_ALPHA_PATH'`, `'DECODER_UNSUPPORTED'`, `'DECODE_FAILED'` or `'WEBGL_UNSUPPORTED'`.
+   * `'UNSUPPORTED_FILE'`, `'NO_ALPHA_PATH'`, `'DECODER_UNSUPPORTED'`, `'DECODE_FAILED'`, `'WEBGL_UNSUPPORTED'`
+   * or `'NEEDS_SERVICE_WORKER'`.
    * On iOS and Android, `'NO_DECODER'` is a file needing a codec left out of the build (see the
    * app's `package.json` `"react-native-alpha-video": { "codecs": [...] }`); other errors have none.
    */

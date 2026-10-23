@@ -20,12 +20,14 @@ export type Decoder = 'auto' | 'browser' | 'webcodecs' | 'webcodecs-hw' | 'webco
  * A URL (fetched with CORS when it isn't same-origin, unless `<video>` plays it), the file itself
  * (a Blob or File, or its bytes), or a ByteSource that reads it by offset (an app's own fetcher
  * or cache). The canvas engines read it by range as they play, so a long clip starts at once and
- * a seek fetches only what it needs; `<video>` loads a URL itself.
+ * a seek fetches only what it needs. `<video>` does the same through the range-source Service
+ * Worker (`registerRangeSourceWorker`); without it, `<video>` loads a URL itself, or a Blob,
+ * and the rest go to the canvas engines.
  */
 export type AlphaVideoSource = string | Blob | ArrayBuffer | Uint8Array | ByteSource;
 
 /**
- * Where the canvas engines keep a URL's bytes between plays: 'auto' (OPFS, else IndexedDB),
+ * Where a URL's bytes are kept between plays: 'auto' (OPFS, else IndexedDB),
  * 'opfs', 'indexeddb', 'cache' (the Cache API), 'memory' (this page only), 'none', or your own
  * store.
  */
@@ -60,7 +62,8 @@ export interface AlphaVideoOptions {
   fetchInit?: RequestInit;
   /**
    * Sent with every request for a URL, e.g. Authorization (merged over `fetchInit.headers`).
-   * `<video>` can't send headers, so with them it plays the file from memory once fetched.
+   * `<video>` can't send headers: the range-source Service Worker sends them for it, and without
+   * it the canvas engines play the file.
    */
   headers?: Record<string, string>;
   /**
@@ -69,9 +72,9 @@ export interface AlphaVideoOptions {
    */
   cacheKey?: string;
   /**
-   * Where the canvas engines keep a URL's bytes between plays, read back by range (`<video>`
-   * uses the browser's HTTP cache). Default: 'auto' for URLs, 'none' for the rest. With
-   * 'none', a clip under 16 MB still stays in memory for loops.
+   * Where a URL's bytes are kept between plays, read back by range. `<video>` uses it through
+   * the range-source Service Worker, and the browser's HTTP cache without it. Default: 'auto' for
+   * URLs, 'none' for the rest. With 'none', a clip under 16 MB still stays in memory for loops.
    */
   storage?: AlphaVideoStorage;
   /** Cap on the bytes stored across every clip, evicting the least recently played. Default: 512 MB */

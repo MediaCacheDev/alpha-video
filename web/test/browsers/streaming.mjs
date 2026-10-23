@@ -1,11 +1,13 @@
 // Streams a 10 s, 4 MB dual-stream clip into the canvas engines in Chromium, Firefox and WebKit:
 // from a server with Range requests (a far seek fetches from near the end, past what was read
 // ahead), from one without (the whole file, in one response), and again from the store with no
-// requests at all.
+// requests at all. Then a single-track alpha clip, which <video> plays where it keeps alpha,
+// through the range-source Service Worker (stored, headers, bytes) and without it (a Blob; bytes
+// go to the canvas engines, or fail with NEEDS_SERVICE_WORKER when <video> is asked for).
 //
 //   npm run build && node test/browsers/streaming.mjs [chromium firefox webkit]
 //
-// Makes the clip with ffmpeg (libvpx-vp9) on first run, in test/browsers/build.
+// Makes the clips with ffmpeg (libvpx-vp9) on first run, in test/browsers/build.
 import { execFileSync } from 'node:child_process';
 import { createReadStream, existsSync, mkdirSync, statSync } from 'node:fs';
 import { createServer } from 'node:http';
@@ -33,15 +35,30 @@ if (!existsSync(CLIP)) {
   ]);
 }
 const SIZE = statSync(CLIP).size;
+const ALPHA_CLIP = join(BUILD, 'alpha.webm');
+if (!existsSync(ALPHA_CLIP)) {
+  // Alpha in BlockAdditional, a single track
+  execFileSync('ffmpeg', [
+    '-v', 'error', '-y',
+    '-f', 'lavfi', '-i', 'testsrc2=s=480x270:r=30:d=10,noise=alls=12:allf=t',
+    '-f', 'lavfi', '-i', 'gradients=s=480x270:r=30:d=10',
+    '-filter_complex', '[1:v]format=gray[a];[0:v][a]alphamerge,format=yuva420p',
+    '-c:v', 'libvpx-vp9', '-crf', '36', '-b:v', '0', '-g', '30', '-auto-alt-ref', '0',
+    '-deadline', 'realtime', '-cpu-used', '8', '-row-mt', '1',
+    ALPHA_CLIP,
+  ]);
+}
+const CLIPS = { '/stream.webm': CLIP, '/alpha.webm': ALPHA_CLIP };
+const WORKER_SCRIPT = join(WEB, 'node_modules/range-source-web/dist/range-source-sw.js');
 
-/** Serves the page and /stream.webm, with or without Range support, logging the clip's requests. */
+/** Serves the page, the clips and /range-source-sw.js, with or without Range support, logging the clips' requests. */
 function serve(ranges) {
   const log = [];
   const server = createServer((req, res) => {
     const url = new URL(req.url, 'http://localhost');
     const path = decodeURIComponent(url.pathname);
-    const clip = path === '/stream.webm';
-    const file = clip ? CLIP : join(WEB, normalize(path));
+    const clip = path in CLIPS;
+    const file = clip ? CLIPS[path] : path === '/range-source-sw.js' ? WORKER_SCRIPT : join(WEB, normalize(path));
     let size;
     try {
       size = statSync(file).size;
@@ -61,7 +78,7 @@ function serve(ranges) {
     } else {
       res.writeHead(200, { ...headers, 'Content-Length': size });
     }
-    if (clip) log.push({ query: url.search, start });
+    if (clip) log.push({ query: url.search, start, token: req.headers['x-token'] });
     const stream = createReadStream(file, { start, end });
     stream.pipe(res);
     res.on('close', () => stream.destroy());
@@ -69,23 +86,42 @@ function serve(ranges) {
   return new Promise((resolve) => server.listen(0, '127.0.0.1', () => resolve({ server, log, origin: `http://localhost:${server.address().port}` })));
 }
 
-/** In the page: loads the clip paused, seeks, and reports whether a frame with alpha is on the canvas. */
-async function playCase({ src, storage, seekTo, playMs }) {
+/**
+ * In the page: loads the clip paused, seeks, and reports whether a frame with alpha is on the
+ * canvas or the video. `bytesFrom` and `blobFrom` fetch the clip first and play its bytes or a Blob.
+ */
+async function playCase({ src, bytesFrom, blobFrom, storage, headers, decoder, seekTo, playMs }) {
   const { createAlphaVideo } = await import('/dist/index.mjs');
   const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+  if (bytesFrom) src = new Uint8Array(await (await fetch(bytesFrom)).arrayBuffer());
+  if (blobFrom) src = await (await fetch(blobFrom)).blob();
   const container = document.createElement('div');
   document.body.append(container);
   let error = null;
-  const player = createAlphaVideo(container, { src, storage, autoPlay: false, loop: false, onError: (e) => (error = `${e.code}: ${e.message}`) });
+  let code = null;
+  const player = createAlphaVideo(container, {
+    src,
+    storage,
+    headers,
+    decoder,
+    autoPlay: false,
+    loop: false,
+    onError: (e) => {
+      code = e.code;
+      error = `${e.code}: ${e.message}`;
+    },
+  });
   try {
     const start = performance.now();
     const loaded = await player.loaded.catch(() => null);
-    if (!loaded) return { error };
+    if (!loaded) return { error, code };
     const loadMs = Math.round(performance.now() - start);
     const drawn = () => {
+      const element = player.element;
       const canvas = document.createElement('canvas');
-      canvas.width = player.element.width;
-      canvas.height = player.element.height;
+      canvas.width = element.videoWidth || element.width;
+      canvas.height = element.videoHeight || element.height;
+      if (!canvas.width) return false;
       const ctx = canvas.getContext('2d', { willReadFrequently: true });
       ctx.drawImage(player.element, 0, 0);
       const pixels = ctx.getImageData(0, 0, canvas.width, canvas.height).data;
@@ -166,6 +202,59 @@ for (const [name, type] of Object.entries({ chromium, firefox, webkit })) {
     'replay from the store',
     first.error ?? again.error ?? `${firstRequests} requests, then ${againRequests}; load ${first.loadMs} ms, then ${again.loadMs} ms`,
   );
+
+  // Without a worker: a Blob plays in <video> as itself; bytes go to the canvas engines, and
+  // fail with NEEDS_SERVICE_WORKER when <video> is asked for
+  const alpha = (t) => `/alpha.webm?${name}-${t}`;
+  const blob = await page.evaluate(playCase, { blobFrom: alpha('blob'), decoder: 'browser' });
+  report(!blob.error && blob.shown, 'a Blob in <video> without a worker', blob.error ?? `${blob.decoder}, load ${blob.loadMs} ms`);
+  const bytes = await page.evaluate(playCase, { bytesFrom: alpha('bytes'), decoder: 'browser' });
+  report(bytes.code === 'NEEDS_SERVICE_WORKER', "bytes in <video> without a worker: NEEDS_SERVICE_WORKER", bytes.error ?? `${bytes.decoder}`);
+  const canvas = await page.evaluate(playCase, { bytesFrom: alpha('bytes-auto') });
+  report(!canvas.error && canvas.shown && canvas.decoder !== 'browser', 'bytes without a worker play on a canvas', canvas.error ?? canvas.decoder);
+
+  // With the range-source worker controlling the page (its own context, so the cases above have none)
+  const context = await browser.newContext();
+  const swPage = await context.newPage();
+  swPage.on('pageerror', (e) => console.log(`  [${name}] page error: ${e.message}`));
+  await swPage.goto(`${ranged.origin}/test/browsers/page.html`);
+  await swPage.waitForFunction(() => window.ready);
+  const controlled = await swPage.evaluate(async () => {
+    const { registerRangeSourceWorker, rangeSourceWorker } = await import('/dist/index.mjs');
+    await registerRangeSourceWorker('/range-source-sw.js', { scope: '/' });
+    return rangeSourceWorker();
+  });
+  report(controlled, 'the worker controls the page', String(controlled));
+  if (controlled) {
+    // <video> keeps alpha in Chromium and Firefox; WebKit plays alpha on a canvas
+    const browserDecoder = name !== 'webkit';
+    const asExpected = (r) => !r.error && r.shown && (r.decoder === 'browser') === browserDecoder;
+    const log = (t) => ranged.log.filter((r) => r.query === `?${name}-${t}`);
+
+    const first = await swPage.evaluate(playCase, { src: alpha('sw-stored'), storage: 'auto', playMs: 1500 });
+    const firstStarts = log('sw-stored').map((r) => r.start);
+    const again = await swPage.evaluate(playCase, { src: alpha('sw-stored'), storage: 'auto', seekTo: 5 });
+    const againRequests = log('sw-stored').length - firstStarts.length;
+    // The worker takes the head the page stored, so nothing is fetched twice
+    const fromZero = firstStarts.filter((s) => s === 0).length;
+    report(
+      asExpected(first) && asExpected(again) && againRequests === 0 && fromZero === 1,
+      'through the worker, then from the store',
+      first.error ?? again.error ?? `${first.decoder}, requests from ${firstStarts.join(', ')}, then ${againRequests}`,
+    );
+
+    const auth = await swPage.evaluate(playCase, { src: alpha('sw-headers'), headers: { 'x-token': 'secret' } });
+    const tokens = log('sw-headers').map((r) => r.token);
+    report(
+      asExpected(auth) && tokens.length > 0 && tokens.every((t) => t === 'secret'),
+      'headers through the worker',
+      auth.error ?? `${auth.decoder}, ${tokens.length} requests with the token`,
+    );
+
+    const held = await swPage.evaluate(playCase, { bytesFrom: alpha('sw-bytes'), decoder: 'browser' });
+    report(!held.error && held.shown, 'bytes in <video> through the worker', held.error ?? `${held.decoder}, load ${held.loadMs} ms`);
+  }
+  await context.close();
   await browser.close();
 }
 

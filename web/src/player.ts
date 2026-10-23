@@ -7,7 +7,7 @@ import { CanvasEngine } from './canvas-engine';
 import { WasmDemuxer } from './demuxer';
 import type { Engine, EngineEvents, EngineOptions } from './engine';
 import { AlphaVideoError } from './errors';
-import { Input } from './input';
+import { Input, type VideoSource } from './input';
 import { videoElementKeepsWebMAlpha } from './probe';
 import { sniffWebM } from './sniff';
 import { SoftwareSource } from './software-source';
@@ -112,7 +112,7 @@ async function startEngine(
   events: EngineEvents,
   signal: AbortSignal,
 ): Promise<Engine> {
-  if (decoder === 'browser') return videoEngine(input, options, events, signal);
+  if (decoder === 'browser') return videoEngine(input, options, events);
   if (decoder !== 'auto') {
     const demuxer = await demux(input, signal);
     if (!demuxer.info.hasAlpha) {
@@ -125,24 +125,43 @@ async function startEngine(
   }
 
   const keepsAlpha = await videoElementKeepsWebMAlpha();
-  if (keepsAlpha) {
-    // Only a dual-stream file needs more than <video>; the first bytes tell
-    let head: Uint8Array | null;
-    try {
-      head = await input.head(signal);
-    } catch (e) {
-      if (signal.aborted) throw e;
-      // Unreadable from script (CORS), so <video> is all that can play it
-      if (input.videoLoadable) return videoEngine(input, options, events, signal);
-      throw new AlphaVideoError('LOAD_FAILED', `Fetching ${String(input.src)} failed: ${(e as Error)?.message ?? e}`);
+  // Where <video> keeps alpha, it plays every file but a dual-stream one, if it can load it
+  const video = keepsAlpha ? await input.videoSource() : null;
+  let videoUsed = false;
+  const toVideo = (source: VideoSource) => {
+    videoUsed = true;
+    return new VideoEngine(source, options, events);
+  };
+  try {
+    if (video) {
+      // The first bytes tell a dual-stream file
+      let head: Uint8Array | null;
+      try {
+        head = await input.head(signal);
+      } catch (e) {
+        if (signal.aborted) throw e;
+        // Unreadable from script (CORS), so <video> is all that can play it
+        return toVideo(video);
+      }
+      if (head && sniffWebM(head)?.layout !== 'dual') return toVideo(video);
     }
-    if (head && sniffWebM(head)?.layout !== 'dual') return videoEngine(input, options, events, signal);
+    const demuxer = await demux(input, signal);
+    if (video && (!demuxer.info.hasAlpha || demuxer.info.alphaInBlockAdditional)) {
+      demuxer.close();
+      return toVideo(video);
+    }
+    if (!demuxer.info.hasAlpha) {
+      demuxer.close();
+      return videoEngine(input, options, events);
+    }
+    return startCanvasEngine(demuxer, options, events);
+  } finally {
+    if (!videoUsed) video?.release();
   }
-  const demuxer = await demux(input, signal);
-  if (!demuxer.info.hasAlpha || (keepsAlpha && demuxer.info.alphaInBlockAdditional)) {
-    demuxer.close();
-    return videoEngine(input, options, events, signal);
-  }
+}
+
+/** WebCodecs, else the software decoders. */
+function startCanvasEngine(demuxer: WasmDemuxer, options: EngineOptions, events: EngineEvents): Promise<Engine> {
   return withDemuxer(demuxer, async () => {
     try {
       return await webCodecsEngine(demuxer, 'no-preference', options, events);
@@ -158,9 +177,15 @@ async function startEngine(
   });
 }
 
-async function videoEngine(input: Input, options: EngineOptions, events: EngineEvents, signal: AbortSignal): Promise<Engine> {
-  const { url, owned } = await input.videoUrl(signal);
-  return new VideoEngine(url, options, events, owned ? url : undefined);
+async function videoEngine(input: Input, options: EngineOptions, events: EngineEvents): Promise<Engine> {
+  const source = await input.videoSource();
+  if (!source) {
+    throw new AlphaVideoError(
+      'NEEDS_SERVICE_WORKER',
+      '<video> can only load bytes, a ByteSource or a URL with headers through the range-source Service Worker; register it with registerRangeSourceWorker',
+    );
+  }
+  return new VideoEngine(source, options, events);
 }
 
 /** Closes `demuxer` if `start` fails; once it succeeds, the engine's source owns it. */

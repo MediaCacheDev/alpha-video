@@ -34,6 +34,8 @@ export {
   createStore,
   httpSource,
   memorySource,
+  rangeSourceWorker,
+  registerRangeSourceWorker,
   HttpSourceError,
   SourceChangedError,
 } from 'range-source-web';

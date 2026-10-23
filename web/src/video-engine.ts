@@ -1,19 +1,20 @@
 /** The `<video>` engine: what react-native-alpha-video does on the web today. */
 import { styleElement, type Engine, type EngineEvents, type EngineOptions } from './engine';
 import { AlphaVideoError } from './errors';
+import type { VideoSource } from './input';
 
 /** The browser doesn't expose the frame rate. */
 const WEB_FPS = 30;
 
 export class VideoEngine implements Engine {
   readonly element: HTMLVideoElement;
-  private readonly ownedUrl: string | null;
+  private readonly source: VideoSource;
   private readonly options: EngineOptions;
 
-  /** `ownedUrl`: a blob: URL to revoke on destroy */
-  constructor(url: string, options: EngineOptions, events: EngineEvents, ownedUrl: string | null = null) {
+  /** Plays `source.url`, and releases `source` on destroy. */
+  constructor(source: VideoSource, options: EngineOptions, events: EngineEvents) {
     this.options = options;
-    this.ownedUrl = ownedUrl;
+    this.source = source;
     const video = document.createElement('video');
     this.element = video;
     video.muted = true;
@@ -37,7 +38,7 @@ export class VideoEngine implements Engine {
       events.onError(new AlphaVideoError('LOAD_FAILED', video.error?.message || 'The video element could not load the file'));
     });
     video.addEventListener('ended', () => events.onEnd());
-    video.src = url;
+    video.src = source.url;
   }
 
   play(): void {
@@ -83,6 +84,6 @@ export class VideoEngine implements Engine {
     video.removeAttribute('src');
     video.load();
     video.remove();
-    if (this.ownedUrl) URL.revokeObjectURL(this.ownedUrl);
+    this.source.release();
   }
 }

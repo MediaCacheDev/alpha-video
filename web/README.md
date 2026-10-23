@@ -12,7 +12,7 @@ npm install alpha-video-web
 
 `<video>` is the fastest way to play a WebM, but it doesn't always keep the alpha, and `canPlayType` can't tell: every browser answers `"probably"`, including Safari, which drops it. So the first time a page plays a file, a 599-byte clip is drawn into a canvas and two of its pixels are read (about 25 ms in Chromium, 5 ms in Firefox, once per page). Then, best first:
 
-1. **`browser`**: a `<video>` element, when the probe shows it keeps WebM alpha (Chromium, Firefox) and the file is a single VP8 or VP9 track with alpha. The first 64 KB of the file tell which kind it is, so nothing else is downloaded.
+1. **`browser`**: a `<video>` element, when the probe shows it keeps WebM alpha (Chromium, Firefox), the file is a single VP8 or VP9 track with alpha, and `<video>` can load the source (any source with [the Service Worker](#video-and-the-service-worker); without it, a URL without headers or a Blob). The first 64 KB of the file tell which kind it is, so nothing else is downloaded.
 2. **`webcodecs`**: the C++ demuxer in WebAssembly reads the file by range and feeds two WebCodecs `VideoDecoder`s, one for colour and one for alpha, and WebGL2 draws the pair with the native players' colour matrix. For dual-stream files, and for every alpha WebM in Safari.
 3. **`software`**: the same demuxer feeding FFmpeg's VP8 and VP9 decoders and dav1d (AV1) in WebAssembly, for streams WebCodecs can't decode: VP9 profile 1 alpha, the RGB-coded kind, in Safari (no decoder) and Firefox (converts it as if it were YUV). Colour and alpha each decode in their own Web Worker, in parallel and off the page's thread. On a [cross-origin isolated](#threads) page each decoder also runs threads of its own.
 
@@ -59,12 +59,12 @@ Options: `src`, `autoPlay`, `loop`, `playbackSpeed`, `decoder`, `objectFit`, `he
 
 `src` takes:
 
-- **A URL.** `<video>` loads it itself, with the browser's HTTP cache. The canvas engines read it with HTTP range requests: playback starts once the headers and the first frames are in, the rest follows as it plays (a megabyte ahead), and a seek fetches the Cues and the cluster it lands in, not the bytes before. `headers` (for example `Authorization`) go with every request; `<video>` can't send headers, so with them a file `<video>` plays is fetched whole first and played from memory. A server without range support works too, read from the start.
+- **A URL.** The canvas engines read it with HTTP range requests: playback starts once the headers and the first frames are in, the rest follows as it plays (a megabyte ahead), and a seek fetches the Cues and the cluster it lands in, not the bytes before. `<video>` reads it by range too, through the store with [the Service Worker](#video-and-the-service-worker), else with the browser's HTTP cache. `headers` (for example `Authorization`) go with every request; `<video>` can't send them itself, so without the worker a URL with headers plays on a canvas. A server without range support works too, read from the start.
 - **A `Blob` or `File`,** read with `slice`.
 - **An `ArrayBuffer` or `Uint8Array`.**
-- **A byte source** of your own: `{ size, read(offset, length, signal) }`, returning a `Promise<Uint8Array>`, for apps that fetch, decrypt or cache in their own code. See [range-source-web](https://github.com/MediaCacheDev/range-source/tree/main/web#sources), which the player depends on, for the full interface; `httpSource`, `blobSource` and `memorySource` are re-exported here. The canvas engines read it by range; for `<video>` it's read whole into a `Blob`.
+- **A byte source** of your own: `{ size, read(offset, length, signal) }`, returning a `Promise<Uint8Array>`, for apps that fetch, decrypt or cache in their own code. See [range-source-web](https://github.com/MediaCacheDev/range-source/tree/main/web#sources), which the player depends on, for the full interface; `httpSource`, `blobSource` and `memorySource` are re-exported here. The canvas engines read it by range, and so does `<video>` through the Service Worker.
 
-What the canvas engines keep a URL's bytes in between plays is the `storage` option:
+What a URL's bytes are kept in between plays is the `storage` option:
 
 - `'auto'` (the default for URLs) is OPFS, falling back to IndexedDB where OPFS isn't available.
 - `'opfs'`, `'indexeddb'`, `'cache'` (the Cache API) or `'memory'` (this page only) pick one. Where it isn't available, the player falls back to IndexedDB, then memory.
@@ -75,9 +75,24 @@ Storage is partial: it keeps the ranges played so far, and a clip held whole pla
 
 Blobs and byte sources default to `'none'`, as the data is local already, or the source does its own caching. With `storage` and a `cacheKey` they are stored too.
 
-A Service Worker controlling the page sees the player's range requests as plain `fetch`es, so it can answer them from its own cache.
-
 Cross-origin URLs need CORS for the canvas engines (under `auto`, one without it plays in `<video>`, as far as `<video>` can). To check versions, the server must expose `ETag` (or `Last-Modified`) and `Content-Range` with `Access-Control-Expose-Headers`; without them, copies aren't checked.
+
+### `<video>` and the Service Worker
+
+`<video>` makes its own requests, which the page can't see. To stream and store what it plays as the canvas engines do, register range-source's Service Worker before rendering any player:
+
+```ts
+import { registerRangeSourceWorker } from 'alpha-video-web';
+
+await registerRangeSourceWorker('/range-source-sw.js');
+// then render the players
+```
+
+Serve `node_modules/range-source-web/dist/range-source-sw.js` (installed with the player) at the site's root, by copying it in your build; the folder it's served from is the part of the site it controls. `registerRangeSourceWorker` resolves once the worker controls the page, so the first player's requests go through it too: about 50–100 ms on a first visit, nothing on later ones, and it gives up after 2 s. An app with a Service Worker of its own adds range-source's handler to it instead ([range-source-web](https://github.com/MediaCacheDev/range-source/tree/main/web#service-worker)).
+
+With it, `<video>` plays a URL on the page's origin that the worker answers. Range requests come from the store first, every block fetched goes into it (`storage`, `maxStorageBytes` and `cacheKey` apply as for the canvas engines), and a clip played whole plays again offline. The worker sends `headers` for `<video>`. For a Blob, bytes or a byte source, and for a URL with `fetchInit` options other than headers, `'memory'` or a store of your own, the page reads the file and the worker passes the ranges on. A file on another origin needs CORS to be stored; without it, the worker passes it through, unstored.
+
+Without it, `<video>` plays a URL as it is, with the browser's HTTP cache, and a Blob or File through a `blob:` URL of itself (not a copy; revoked on `destroy()`). URLs with `headers`, bytes and byte sources go to the canvas engines, and `decoder: 'browser'` with one of them, or such a file without alpha, which only `<video>` plays, reports `NEEDS_SERVICE_WORKER`.
 
 ## React
 
@@ -99,6 +114,7 @@ Props: the options above, plus `paused`, `className` and `style` for the contain
 - `'DECODER_UNSUPPORTED'`: a forced engine has no decoder for the file.
 - `'DECODE_FAILED'`: a decoder failed while playing.
 - `'WEBGL_UNSUPPORTED'`: no WebGL2 context for the canvas engines.
+- `'NEEDS_SERVICE_WORKER'`: only `<video>` can play the file (`decoder: 'browser'`, or a file without alpha), and it can't load bytes, a byte source or a URL with `headers` without [the Service Worker](#video-and-the-service-worker).
 
 ## Threads
 
@@ -136,7 +152,7 @@ npm run build            # dist/
 npm test                 # the WebAssembly demuxer on the test cards in ../tests/fixtures, under node
 npm run test:browsers    # Chromium, Firefox and WebKit through Playwright: every engine on every test card
 npm run test:browsers -- --isolated   # the same, cross-origin isolated: software with threads
-npm run test:streaming   # range requests, a server without them, and replay from storage
+npm run test:streaming   # range requests, a server without them, replay from storage, and <video> with and without the Service Worker
 ```
 
 `npm test` also reads every card through a reader that hands over one block per fetch, so the demuxer stops for bytes mid-header and mid-frame, and checks it gives the same packets and seeks, gives up a wait when interrupted, and reports a failing source. `npm run test:browsers` serves the page from http://localhost and checks, per browser, engine and card: the frame codes after seeks (colour and alpha separately), the alpha ramp and the colour swatches, against the tolerance of the C++ host tests (6 levels); then plays clips through a loop. `npm run test:streaming` makes a 10 s, 4 MB dual-stream clip with ffmpeg on first run, and checks that a seek near its end fetches from near the end, that a server without range support plays it, and that once played it plays again with no requests. More tools, each taking a directory of `.webm` files:

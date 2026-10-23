@@ -6,6 +6,9 @@
  * - `DECODER_UNSUPPORTED`: the chosen engine has no decoder for the file's codec.
  * - `DECODE_FAILED`: the decoder reported an error while playing.
  * - `WEBGL_UNSUPPORTED`: no WebGL2 context could be created for the canvas engines.
+ * - `NEEDS_SERVICE_WORKER`: only `<video>` can play the file (`decoder: 'browser'`, or a file
+ *   without alpha), and it can't load bytes, a ByteSource or a URL with headers without the
+ *   range-source Service Worker.
  */
 export type AlphaVideoErrorCode =
   | 'LOAD_FAILED'
@@ -13,7 +16,8 @@ export type AlphaVideoErrorCode =
   | 'NO_ALPHA_PATH'
   | 'DECODER_UNSUPPORTED'
   | 'DECODE_FAILED'
-  | 'WEBGL_UNSUPPORTED';
+  | 'WEBGL_UNSUPPORTED'
+  | 'NEEDS_SERVICE_WORKER';
 
 /** An error passed to `onError` that callers can tell apart by `code`. */
 export class AlphaVideoError extends Error {
